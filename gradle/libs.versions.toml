@@ -6,6 +6,7 @@ core = "1.13.1"
 constraintlayout = "2.0.1"
 lifecycle = "2.8.3"
 junit = "4.13.2"
+onnxruntime = "1.29.0"
 
 [libraries]
 material = { group = "com.google.android.material", name = "material", version.ref = "material" }
@@ -14,6 +15,7 @@ core = { group = "androidx.core", name = "core", version.ref = "core" }
 constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "constraintlayout" }
 lifecycle-runtime = { group = "androidx.lifecycle", name = "lifecycle-runtime", version.ref = "lifecycle" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxruntime" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

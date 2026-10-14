@@ -37,4 +37,5 @@ dependencies {
     implementation(libs.material)
     implementation(libs.constraintlayout)
     implementation(libs.lifecycle.runtime)
+    implementation(libs.onnxruntime.android)
 }

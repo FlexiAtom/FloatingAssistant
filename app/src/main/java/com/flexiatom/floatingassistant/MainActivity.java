@@ -9,6 +9,7 @@ import android.widget.TextView;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.flexiatom.floatingassistant.capture.P0Benchmark;
+import com.flexiatom.floatingassistant.ocr.OcrOrtProbe;
 import com.flexiatom.floatingassistant.service.SphereAccessibilityService;
 
 public class MainActivity extends AppCompatActivity {
@@ -17,6 +18,13 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P0_ITERATIONS = "p0_iterations";
     public static final String EXTRA_P0_DELAY_MS = "p0_delay_ms";
     public static final String EXTRA_P0_LABEL = "p0_label";
+
+    public static final String EXTRA_RUN_ORT = "run_ort";
+    public static final String EXTRA_ORT_MODEL = "ort_model";
+    public static final String EXTRA_ORT_H = "ort_h";
+    public static final String EXTRA_ORT_W = "ort_w";
+    public static final String EXTRA_ORT_THREADS = "ort_threads";
+    public static final String EXTRA_ORT_ITERATIONS = "ort_iterations";
 
     private TextView statusText;
 
@@ -31,6 +39,7 @@ public class MainActivity extends AppCompatActivity {
                 new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
 
         maybeRunP0(getIntent());
+        maybeRunOrtProbe(getIntent());
     }
 
     @Override
@@ -38,6 +47,7 @@ public class MainActivity extends AppCompatActivity {
         super.onNewIntent(intent);
         setIntent(intent);
         maybeRunP0(intent);
+        maybeRunOrtProbe(intent);
     }
 
     private void maybeRunP0(Intent intent) {
@@ -52,6 +62,21 @@ public class MainActivity extends AppCompatActivity {
         }
         final String lbl = label;
         new Thread(() -> P0Benchmark.run(iterations, delayMs, lbl), "p0-benchmark").start();
+    }
+
+    private void maybeRunOrtProbe(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_RUN_ORT, false)) {
+            return;
+        }
+        String model = intent.getStringExtra(EXTRA_ORT_MODEL);
+        if (model == null) {
+            return;
+        }
+        int h = intent.getIntExtra(EXTRA_ORT_H, 448);
+        int w = intent.getIntExtra(EXTRA_ORT_W, 960);
+        int threads = intent.getIntExtra(EXTRA_ORT_THREADS, 4);
+        int iterations = intent.getIntExtra(EXTRA_ORT_ITERATIONS, 5);
+        new Thread(() -> OcrOrtProbe.run(this, model, h, w, threads, iterations), "ort-probe").start();
     }
 
     @Override
