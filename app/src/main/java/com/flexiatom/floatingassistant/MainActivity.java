@@ -10,6 +10,7 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import com.flexiatom.floatingassistant.capture.P0Benchmark;
 import com.flexiatom.floatingassistant.ocr.OcrOrtProbe;
+import com.flexiatom.floatingassistant.ocr.P1Runner;
 import com.flexiatom.floatingassistant.service.SphereAccessibilityService;
 
 public class MainActivity extends AppCompatActivity {
@@ -26,6 +27,11 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_ORT_THREADS = "ort_threads";
     public static final String EXTRA_ORT_ITERATIONS = "ort_iterations";
 
+    public static final String EXTRA_RUN_P1 = "run_p1";
+    public static final String EXTRA_P1_MODE = "p1_mode";
+    public static final String EXTRA_P1_DELAY_MS = "p1_delay_ms";
+    public static final String EXTRA_P1_THREADS = "p1_threads";
+
     private TextView statusText;
 
     @Override
@@ -40,6 +46,7 @@ public class MainActivity extends AppCompatActivity {
 
         maybeRunP0(getIntent());
         maybeRunOrtProbe(getIntent());
+        maybeRunP1(getIntent());
     }
 
     @Override
@@ -48,6 +55,7 @@ public class MainActivity extends AppCompatActivity {
         setIntent(intent);
         maybeRunP0(intent);
         maybeRunOrtProbe(intent);
+        maybeRunP1(intent);
     }
 
     private void maybeRunP0(Intent intent) {
@@ -77,6 +85,22 @@ public class MainActivity extends AppCompatActivity {
         int threads = intent.getIntExtra(EXTRA_ORT_THREADS, 4);
         int iterations = intent.getIntExtra(EXTRA_ORT_ITERATIONS, 5);
         new Thread(() -> OcrOrtProbe.run(this, model, h, w, threads, iterations), "ort-probe").start();
+    }
+
+    private void maybeRunP1(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_RUN_P1, false)) {
+            return;
+        }
+        String mode = intent.getStringExtra(EXTRA_P1_MODE);
+        if (mode == null) {
+            mode = "both";
+        }
+        long delayMs = (long) intent.getIntExtra(EXTRA_P1_DELAY_MS, 6000);
+        int threads = intent.getIntExtra(EXTRA_P1_THREADS, 4);
+        final String m = mode;
+        new Thread(() -> P1Runner.run(this, m, delayMs, threads,
+                "ch_PP-OCRv4_det_infer.onnx", "ch_PP-OCRv4_rec_infer.onnx", "ppocr_keys_v1.txt"),
+                "p1-runner").start();
     }
 
     @Override
