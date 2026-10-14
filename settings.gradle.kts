@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "FloatingAssistant"
 include(":app")
+include(":lib:beast")
