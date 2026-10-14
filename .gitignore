@@ -7,3 +7,7 @@ local.properties
 captures/
 .externalNativeBuild/
 .cxx/
+
+# P1 基准模型二进制（体积；来源与哈希见 bench/models/MANIFEST.md）
+bench/models/*.onnx
+bench/models/*.txt
