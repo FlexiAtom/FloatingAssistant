@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">悬浮助手</string>
+    <string name="accessibility_label">悬浮助手</string>
+    <string name="accessibility_description">启用悬浮球与端侧工具（截图 / 覆盖层 / 文本注入）。所有处理在本机完成，不联网。</string>
+    <string name="main_enable_accessibility">开启无障碍服务</string>
+    <string name="main_status_prefix">服务状态：</string>
+    <string name="main_status_connected">已连接</string>
+    <string name="main_status_disconnected">未连接</string>
+    <string name="main_disclaimer_hint">本软件按「现状」提供，不担保（GPLv3 §15/§16）。仅在 Redmi 13R 5G / HyperOS 2.0.208 / Android 15 / 安全补丁 2026-03-01 上验证过。</string>
+</resources>
