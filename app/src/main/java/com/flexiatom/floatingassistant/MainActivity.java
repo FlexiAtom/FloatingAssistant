@@ -15,6 +15,8 @@ public class MainActivity extends AppCompatActivity {
 
     public static final String EXTRA_RUN_P0 = "run_p0";
     public static final String EXTRA_P0_ITERATIONS = "p0_iterations";
+    public static final String EXTRA_P0_DELAY_MS = "p0_delay_ms";
+    public static final String EXTRA_P0_LABEL = "p0_label";
 
     private TextView statusText;
 
@@ -43,7 +45,13 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         int iterations = intent.getIntExtra(EXTRA_P0_ITERATIONS, 30);
-        new Thread(() -> P0Benchmark.run(iterations), "p0-benchmark").start();
+        long delayMs = (long) intent.getIntExtra(EXTRA_P0_DELAY_MS, 0);
+        String label = intent.getStringExtra(EXTRA_P0_LABEL);
+        if (label == null) {
+            label = "-";
+        }
+        final String lbl = label;
+        new Thread(() -> P0Benchmark.run(iterations, delayMs, lbl), "p0-benchmark").start();
     }
 
     @Override

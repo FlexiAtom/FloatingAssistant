@@ -22,12 +22,32 @@ public final class P0Benchmark {
 
     /** 在后台线程运行 {@code iterations} 次截图并汇总。需在无障碍服务已连接时调用。 */
     public static void run(int iterations) {
+        run(iterations, 0L, "-");
+    }
+
+    /**
+     * 带启动延迟与场景标签的采集：先睡 {@code startDelayMs}（留出把目标 App 切到前台的窗口），
+     * 再连续采集；结果 {@code RESULT} 行附带 {@code label} 便于区分普通页/视频页/游戏页。
+     */
+    public static void run(int iterations, long startDelayMs, String label) {
         SphereAccessibilityService service = SphereAccessibilityService.getInstance();
         if (service == null) {
-            Log.e(TAG, "RESULT error=no_service_connected");
+            Log.e(TAG, "RESULT label=" + label + " error=no_service_connected");
             return;
         }
         ScreenCapturer capturer = service.capturer();
+
+        if (startDelayMs > 0) {
+            Log.i(TAG, "READY label=" + label + " iterations=" + iterations
+                    + " 请在 " + startDelayMs + "ms 内把目标 App 切到前台");
+            try {
+                Thread.sleep(startDelayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                Log.e(TAG, "RESULT label=" + label + " error=interrupted_before_start");
+                return;
+            }
+        }
 
         int ok = 0;
         int black = 0;
@@ -44,7 +64,7 @@ public final class P0Benchmark {
                 ok++;
                 okLatencies.add(ms);
                 bmp.recycle();
-                Log.i(TAG, "attempt=" + i + " outcome=OK ms=" + ms
+                Log.i(TAG, "attempt=" + i + " label=" + label + " outcome=OK ms=" + ms
                         + " size=" + bmp.getWidth() + "x" + bmp.getHeight());
             } catch (ScreenCapturer.CaptureException e) {
                 long ms = (System.nanoTime() - t0) / 1_000_000L;
@@ -54,14 +74,15 @@ public final class P0Benchmark {
                     case SECURED: secured++; break;
                     default: error++; break;
                 }
-                Log.i(TAG, "attempt=" + i + " outcome=" + e.outcome + " ms=" + ms
+                Log.i(TAG, "attempt=" + i + " label=" + label + " outcome=" + e.outcome + " ms=" + ms
                         + " msg=" + e.getMessage());
             }
         }
 
         double rate = iterations == 0 ? 0 : (100.0 * ok / iterations);
         String latency = summarize(okLatencies);
-        Log.i(TAG, "RESULT iterations=" + iterations
+        Log.i(TAG, "RESULT label=" + label
+                + " iterations=" + iterations
                 + " ok=" + ok + " black=" + black + " timeout=" + timeout
                 + " secured=" + secured + " error=" + error
                 + " successRate=" + String.format("%.1f", rate) + "%"
