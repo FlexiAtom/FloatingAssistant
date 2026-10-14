@@ -4,6 +4,8 @@ import android.accessibilityservice.AccessibilityService;
 import android.view.accessibility.AccessibilityEvent;
 
 import com.flexiatom.floatingassistant.capture.ScreenCapturer;
+import com.flexiatom.floatingassistant.core.CaptureStateRouter;
+import com.flexiatom.floatingassistant.core.StubOcrEngine;
 import com.flexiatom.floatingassistant.overlay.OverlayManager;
 
 public class SphereAccessibilityService extends AccessibilityService {
@@ -13,6 +15,7 @@ public class SphereAccessibilityService extends AccessibilityService {
 
     private OverlayManager overlayManager;
     private ScreenCapturer screenCapturer;
+    private CaptureStateRouter router;
 
     public static boolean isConnected() {
         return connected;
@@ -38,13 +41,20 @@ public class SphereAccessibilityService extends AccessibilityService {
         instance = this;
         if (overlayManager == null) {
             overlayManager = new OverlayManager(this);
+        } else {
+            // 重建时先清残留，避免双份悬浮球/幽灵窗（§4.1 约定 4）
+            overlayManager.removeAllImmediate();
         }
+        if (router == null) {
+            router = new CaptureStateRouter(this, overlayManager, new StubOcrEngine());
+        }
+        overlayManager.setOnSphereTap(() -> router.runOnce());
         overlayManager.showSphere();
     }
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // M0 脚手架：事件分发在后续里程碑接入 ToolRegistry
+        // 事件分发在后续里程碑接入 ToolRegistry
     }
 
     @Override
@@ -56,7 +66,7 @@ public class SphereAccessibilityService extends AccessibilityService {
         connected = false;
         instance = null;
         if (overlayManager != null) {
-            overlayManager.hideSphere();
+            overlayManager.removeAllImmediate();
         }
         return super.onUnbind(intent);
     }
@@ -65,12 +75,16 @@ public class SphereAccessibilityService extends AccessibilityService {
     public void onDestroy() {
         connected = false;
         instance = null;
+        if (router != null) {
+            router.shutdown();
+            router = null;
+        }
         if (screenCapturer != null) {
             screenCapturer.shutdown();
             screenCapturer = null;
         }
         if (overlayManager != null) {
-            overlayManager.hideSphere();
+            overlayManager.removeAllImmediate();
             overlayManager = null;
         }
         super.onDestroy();
