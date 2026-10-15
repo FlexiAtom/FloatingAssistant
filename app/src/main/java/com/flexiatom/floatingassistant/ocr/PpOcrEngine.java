@@ -113,17 +113,6 @@ public final class PpOcrEngine implements OcrEngine {
             float[] probMap = runDet(detIn, rw, rh);
             lastDetInferMs = msSince(t);
 
-            float mx = -1e9f, sum = 0f;
-            int on = 0;
-            for (float v : probMap) {
-                if (v > mx) mx = v;
-                sum += v;
-                if (v > DET_BIN_TH) on++;
-            }
-            lastProbMax = mx;
-            lastProbMean = sum / probMap.length;
-            lastProbOn = on;
-
             t = System.nanoTime();
             List<int[]> boxes = dbPostprocess(probMap, rw, rh, srcW, srcH);
             lastDbMs = msSince(t);
@@ -201,10 +190,8 @@ public final class PpOcrEngine implements OcrEngine {
 
     private List<int[]> dbPostprocess(float[] prob, int rw, int rh, int srcW, int srcH) {
         int n = rw * rh;
-        boolean[] bin = new boolean[n];
-        for (int i = 0; i < n; i++) {
-            bin[i] = prob[i] > DET_BIN_TH;
-        }
+        // 单次扫描：同时算概率图统计（max/mean/on）并做 8-邻接连通域。
+        // 不再预建 boolean[] bin（省一次 430k 分配+写）；前景判定在触碰处直接比 prob。
         int[] labels = new int[n];
         java.util.Arrays.fill(labels, -1);
         int[] qx = new int[n];
@@ -213,13 +200,20 @@ public final class PpOcrEngine implements OcrEngine {
         float fx = srcW / (float) rw;
         float fy = srcH / (float) rh;
         List<int[]> boxes = new ArrayList<>();
+        float mx = -1e9f, sum = 0f;
+        int on = 0;
         int label = 0;
         for (int y = 0; y < rh; y++) {
+            int rowBase = y * rw;
             for (int x = 0; x < rw; x++) {
-                int idx = y * rw + x;
-                if (!bin[idx] || labels[idx] >= 0) {
+                int idx = rowBase + x;
+                float p = prob[idx];
+                if (p > mx) mx = p;
+                sum += p;
+                if (p <= DET_BIN_TH || labels[idx] >= 0) {
                     continue;
                 }
+                on++;
                 int head = 0, tail = 0;
                 qx[tail] = x;
                 qy[tail] = y;
@@ -235,15 +229,15 @@ public final class PpOcrEngine implements OcrEngine {
                     if (cx > maxX) maxX = cx;
                     if (cy < minY) minY = cy;
                     if (cy > maxY) maxY = cy;
-                    for (int dy = -1; dy <= 1; dy++) {
-                        for (int dx = -1; dx <= 1; dx++) {
-                            int nx = cx + dx, ny = cy + dy;
-                            if (nx < 0 || ny < 0 || nx >= rw || ny >= rh) {
-                                continue;
-                            }
-                            int ni = ny * rw + nx;
-                            if (bin[ni] && labels[ni] < 0) {
+                    int yLo = Math.max(0, cy - 1), yHi = Math.min(rh - 1, cy + 1);
+                    int xLo = Math.max(0, cx - 1), xHi = Math.min(rw - 1, cx + 1);
+                    for (int ny = yLo; ny <= yHi; ny++) {
+                        int nb = ny * rw;
+                        for (int nx = xLo; nx <= xHi; nx++) {
+                            int ni = nb + nx;
+                            if (labels[ni] < 0 && prob[ni] > DET_BIN_TH) {
                                 labels[ni] = label;
+                                on++;
                                 qx[tail] = nx;
                                 qy[tail] = ny;
                                 tail++;
@@ -274,6 +268,9 @@ public final class PpOcrEngine implements OcrEngine {
                 boxes.add(new int[]{ox0, oy0, ox1, oy1});
             }
         }
+        lastProbMax = mx;
+        lastProbMean = sum / n;
+        lastProbOn = on;
         // 阅读顺序：先上后下，再左后右
         Collections.sort(boxes, (a, b) -> a[1] != b[1] ? Integer.compare(a[1], b[1])
                 : Integer.compare(a[0], b[0]));
