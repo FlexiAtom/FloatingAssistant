@@ -33,16 +33,20 @@ public final class CaptureStateRouter {
     private final SphereAccessibilityService service;
     private final OverlayManager overlayManager;
     private final Supplier<OcrEngine> engineFactory;
+    private final Supplier<MtEngine> mtFactory;
     /** 懒建：模型加载 ~0.5s，放到工作线程首用时再做，别卡服务主线程。单工作线程串行，故无竞态。 */
     private OcrEngine ocrEngine;
+    /** 懒建 MT：首屏加载 ~26s（STQ 1.25-bit），同样放工作线程；缺模型/加载失败 → 降级只显 OCR 原文。 */
+    private MtEngine mtEngine;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final AtomicBoolean busy = new AtomicBoolean(false);
 
     public CaptureStateRouter(SphereAccessibilityService service, OverlayManager overlayManager,
-                              Supplier<OcrEngine> engineFactory) {
+                              Supplier<OcrEngine> engineFactory, Supplier<MtEngine> mtFactory) {
         this.service = service;
         this.overlayManager = overlayManager;
         this.engineFactory = engineFactory;
+        this.mtFactory = mtFactory;
     }
 
     private OcrEngine engine() {
@@ -50,6 +54,13 @@ public final class CaptureStateRouter {
             ocrEngine = engineFactory.get();
         }
         return ocrEngine;
+    }
+
+    private MtEngine mt() {
+        if (mtEngine == null) {
+            mtEngine = mtFactory.get();
+        }
+        return mtEngine;
     }
 
     /** 提交一次采集-判定-展示；已有进行中的运行则忽略（配合截图节流，避免叠加）。 */
@@ -111,6 +122,10 @@ public final class CaptureStateRouter {
             };
             engine().recognizeStream(bmp, sink);
             bmp.recycle();
+            // 整屏 OCR 完成后一次性翻（非逐行，避免每行 23s prefill）。acc 在 onDone 后已满。
+            if (acc.length() > 0) {
+                runTranslateOnce(acc.toString(), w, h);
+            }
             return;
         }
 
@@ -123,6 +138,35 @@ public final class CaptureStateRouter {
             String text = "C 此页面不支持 · 截图失败(" + capErr.outcome + ") 且树无可读文本";
             Log.i(TAG, "ROUTE=C " + text);
             overlayManager.showTextOverlay(RESULT_KEY, text);
+        }
+    }
+
+    /**
+     * 整屏 MT：原文→译文双语叠加。全程 try/catch(Throwable)，**绝不让 MT 失败波及 OCR 覆盖层**。
+     * 未就绪 → 记 "MT off" 直接返回（OCR 原文留在屏上不动）；翻译 null/blank → 保留 OCR 原文不覆盖。
+     */
+    private void runTranslateOnce(String orig, int w, int h) {
+        try {
+            MtEngine m = mt();
+            if (!m.isReady()) {
+                Log.i(TAG, "MT off (engine not ready) chars=" + orig.length());
+                return;
+            }
+            overlayManager.showTextOverlay(RESULT_KEY, "翻译中…（首次加载约26s）\n" + orig);
+            long t = System.nanoTime();
+            String trans = m.translate(orig);
+            long transMs = (System.nanoTime() - t) / 1_000_000L;
+            if (trans == null || trans.isBlank()) {
+                Log.i(TAG, "MT empty transMs=" + transMs + " srcChars=" + orig.length() + " → 保留原文");
+                overlayManager.showTextOverlay(RESULT_KEY, "A 可截图 " + w + "×" + h + "（MT 无输出）\n" + orig);
+                return;
+            }
+            overlayManager.showTextOverlay(RESULT_KEY, "原文：\n" + orig + "\n\n译文：\n" + trans);
+            Log.i(TAG, "MT done transMs=" + transMs + " srcChars=" + orig.length()
+                    + " outChars=" + trans.length());
+        } catch (Throwable err) {
+            Log.e(TAG, "MT failed (OCR overlay untouched): " + err.getClass().getSimpleName()
+                    + ": " + err.getMessage());
         }
     }
 
@@ -166,6 +210,9 @@ public final class CaptureStateRouter {
         worker.shutdownNow();
         if (ocrEngine != null) {
             ocrEngine.close();
+        }
+        if (mtEngine != null) {
+            mtEngine.close();
         }
     }
 

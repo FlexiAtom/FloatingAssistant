@@ -1,0 +1,49 @@
+悬浮助手 · 第三方组件许可声明（随 APK 分发）
+
+本应用以 GPLv3 授权。下列第三方组件的许可与 GPLv3 兼容，静态/动态链入产物合法。
+
+1) llama.cpp / ggml
+   许可：MIT License
+   用途：端侧翻译推理引擎（libllama.so / libggml*.so / libggml-cpu.so）
+   来源：llama.cpp PR #22836 head，附带本项目 STQ1_0↔Q2_0 重编号补丁
+   版权：Georgi Gerganov 及 llama.cpp 贡献者
+
+   MIT License
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+2) ONNX Runtime (Android)
+   许可：MIT License
+   用途：OCR 推理后端（PaddleOCR 模型运行）
+   来源：com.microsoft.onnxruntime:onnxruntime-android
+   版权：Microsoft Corporation
+
+3) PP-OCRv4 mobile 模型 (det/rec + 字典)
+   许可：Apache License 2.0
+   用途：端侧文本检测与识别
+   来源：RapidOCR / PaddleOCR
+   版权：PaddlePaddle / RapidOCR 贡献者
+
+4) Hy-MT2-1.8B 1.25-bit GGUF 翻译模型
+   许可：Apache License 2.0（LICENSE.txt 实测纯 Apache-2.0，无附加限制）
+   用途：端侧整屏翻译权重（模型文件由用户 out-of-band 投递，不随 APK 分发）
+   来源：AngelSlim/Hy-MT2-1.8B-1.25bit-GGUF
+   版权：模型作者
+
+Apache License 2.0 全文见 http://www.apache.org/licenses/LICENSE-2.0

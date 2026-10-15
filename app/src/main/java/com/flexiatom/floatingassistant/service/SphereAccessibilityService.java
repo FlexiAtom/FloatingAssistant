@@ -6,6 +6,7 @@ import android.view.accessibility.AccessibilityEvent;
 import com.flexiatom.floatingassistant.capture.ScreenCapturer;
 import com.flexiatom.floatingassistant.core.CaptureStateRouter;
 import com.flexiatom.floatingassistant.ocr.PpOcrEngineFactory;
+import com.flexiatom.floatingassistant.mt.MtEngineFactory;
 import com.flexiatom.floatingassistant.overlay.OverlayManager;
 
 public class SphereAccessibilityService extends AccessibilityService {
@@ -55,7 +56,8 @@ public class SphereAccessibilityService extends AccessibilityService {
         }
         if (router == null) {
             router = new CaptureStateRouter(this, overlayManager,
-                    () -> PpOcrEngineFactory.create(this));
+                    () -> PpOcrEngineFactory.create(this),
+                    () -> MtEngineFactory.create(this));
         }
         overlayManager.setOnSphereTap(() -> router.runOnce());
         overlayManager.showSphere();
