@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# 构建时校验 STQ 特化是否到位。两种模式：
+# 构建时校验 STQ 特化是否到位。三种模式：
 #   verify-stq.sh source <ggml.h>            # 编译前：枚举值必须 STQ1_0=42 / Q2_0=43 / COUNT=44
 #   verify-stq.sh so <libggml-cpu.so>        # 编译后：必须是 aarch64 ELF 且含 NEON ggml_vec_dot_stq1_0_q8_K
+#   verify-stq.sh jni <libmtjni.so>          # JNI 桥：aarch64 ELF + 导出 native* 符号 + NEEDED 引擎库
 set -euo pipefail
 NM="${NM:-$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm}"
 READELF="${READELF:-$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf}"
-mode="${1:?用法: verify-stq.sh source|so <路径>}"
+mode="${1:?用法: verify-stq.sh source|so|jni <路径>}"
 target="${2:?缺少目标文件}"
 
 if [ "$mode" = source ]; then
@@ -19,6 +20,20 @@ elif [ "$mode" = so ]; then
   "$NM" -C "$target" 2>/dev/null | grep -qE ' T ggml_vec_dot_stq1_0_q8_K$' \
     || { echo "FAIL: 缺 NEON ggml_vec_dot_stq1_0_q8_K"; exit 1; }
   echo "PASS so: aarch64 + NEON ggml_vec_dot_stq1_0_q8_K 已在 $target"
+elif [ "$mode" = jni ]; then
+  "$READELF" -h "$target" | grep -qE 'Machine:.*AArch64' || { echo "FAIL: 非 aarch64 ELF"; exit 1; }
+  # 先整体取动态符号表进变量，再逐项 grep——避免 grep -q 提前关管道触发 nm SIGPIPE（pipefail 下会误判 FAIL）
+  SYMS="$("$NM" -D --defined-only "$target" 2>/dev/null || true)"
+  grep -q 'Java_com_flexiatom_floatingassistant_mt_LlamaMtEngine_nativeInit' <<< "$SYMS" \
+    || { echo "FAIL: 缺 nativeInit 导出"; exit 1; }
+  grep -q 'Java_com_flexiatom_floatingassistant_mt_LlamaMtEngine_nativeTranslate' <<< "$SYMS" \
+    || { echo "FAIL: 缺 nativeTranslate 导出"; exit 1; }
+  grep -q 'Java_com_flexiatom_floatingassistant_mt_LlamaMtEngine_nativeRelease' <<< "$SYMS" \
+    || { echo "FAIL: 缺 nativeRelease 导出"; exit 1; }
+  NEEDS="$("$READELF" -d "$target" 2>/dev/null || true)"
+  grep -q 'Shared library: \[libllama\.so\]' <<< "$NEEDS" \
+    || { echo "FAIL: 未 NEEDED libllama.so"; exit 1; }
+  echo "PASS jni: aarch64 + native* 导出 + NEEDED libllama 已在 $target"
 else
   echo "未知模式: $mode"; exit 2
 fi
