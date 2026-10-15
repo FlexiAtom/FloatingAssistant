@@ -10,6 +10,7 @@ import androidx.appcompat.app.AppCompatActivity;
 
 import com.flexiatom.floatingassistant.capture.P0Benchmark;
 import com.flexiatom.floatingassistant.ocr.OcrOrtProbe;
+import com.flexiatom.floatingassistant.ocr.NnapiProbe;
 import com.flexiatom.floatingassistant.ocr.P1Runner;
 import com.flexiatom.floatingassistant.service.SphereAccessibilityService;
 
@@ -26,6 +27,7 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_ORT_W = "ort_w";
     public static final String EXTRA_ORT_THREADS = "ort_threads";
     public static final String EXTRA_ORT_ITERATIONS = "ort_iterations";
+    public static final String EXTRA_RUN_ORT_NNAPI = "run_ort_nnapi";
 
     public static final String EXTRA_RUN_P1 = "run_p1";
     public static final String EXTRA_P1_MODE = "p1_mode";
@@ -48,6 +50,7 @@ public class MainActivity extends AppCompatActivity {
 
         maybeRunP0(getIntent());
         maybeRunOrtProbe(getIntent());
+        maybeRunOrtNnapi(getIntent());
         maybeRunP1(getIntent());
     }
 
@@ -57,6 +60,7 @@ public class MainActivity extends AppCompatActivity {
         setIntent(intent);
         maybeRunP0(intent);
         maybeRunOrtProbe(intent);
+        maybeRunOrtNnapi(intent);
         maybeRunP1(intent);
     }
 
@@ -87,6 +91,22 @@ public class MainActivity extends AppCompatActivity {
         int threads = intent.getIntExtra(EXTRA_ORT_THREADS, 4);
         int iterations = intent.getIntExtra(EXTRA_ORT_ITERATIONS, 5);
         new Thread(() -> OcrOrtProbe.run(this, model, h, w, threads, iterations), "ort-probe").start();
+    }
+
+    private void maybeRunOrtNnapi(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_RUN_ORT_NNAPI, false)) {
+            return;
+        }
+        String model = intent.getStringExtra(EXTRA_ORT_MODEL);
+        if (model == null) {
+            model = "ch_PP-OCRv4_det_infer.onnx";
+        }
+        int h = intent.getIntExtra(EXTRA_ORT_H, 448);
+        int w = intent.getIntExtra(EXTRA_ORT_W, 960);
+        int threads = intent.getIntExtra(EXTRA_ORT_THREADS, 2);
+        int iterations = intent.getIntExtra(EXTRA_ORT_ITERATIONS, 5);
+        final String mdl = model;
+        new Thread(() -> NnapiProbe.run(this, mdl, h, w, threads, iterations), "ort-nnapi").start();
     }
 
     private void maybeRunP1(Intent intent) {
