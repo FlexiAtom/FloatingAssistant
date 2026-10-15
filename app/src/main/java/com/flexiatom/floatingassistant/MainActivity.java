@@ -20,6 +20,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P0_ITERATIONS = "p0_iterations";
     public static final String EXTRA_P0_DELAY_MS = "p0_delay_ms";
     public static final String EXTRA_P0_LABEL = "p0_label";
+    /** P0 负样本：给本窗口加 FLAG_SECURE 并显示正文页，复现"银行/支付"受保护画面，触发 SECURED/BLACK 分类。 */
+    public static final String EXTRA_P0_SECURE = "p0_secure";
 
     public static final String EXTRA_RUN_ORT = "run_ort";
     public static final String EXTRA_ORT_MODEL = "ort_model";
@@ -71,9 +73,13 @@ public class MainActivity extends AppCompatActivity {
         }
         int iterations = intent.getIntExtra(EXTRA_P0_ITERATIONS, 30);
         long delayMs = (long) intent.getIntExtra(EXTRA_P0_DELAY_MS, 0);
+        boolean secure = intent.getBooleanExtra(EXTRA_P0_SECURE, false);
+        if (secure) {
+            showSecurePage();
+        }
         String label = intent.getStringExtra(EXTRA_P0_LABEL);
         if (label == null) {
-            label = "-";
+            label = secure ? "secure" : "-";
         }
         final String lbl = label;
         new Thread(() -> P0Benchmark.run(iterations, delayMs, lbl), "p0-benchmark").start();
@@ -176,6 +182,22 @@ public class MainActivity extends AppCompatActivity {
         tv.setText(DENSE_PAGE_TEXT);
         sv.addView(tv);
         setContentView(sv);
+    }
+
+    /** P0 负样本页：加 FLAG_SECURE，复现受保护画面（银行/支付），供截图三态分类验证。 */
+    private void showSecurePage() {
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().hide();
+        }
+        TextView tv = new TextView(this);
+        tv.setText("FLAG_SECURE 负样本正文区。若截图返回 BLACK 或 SECURED，则证明受保护画面被三态判定拦截，"
+                + "上层应提示\"此页面不支持\"。此行在白底上本应清晰可读——若截图却读到它，说明 SECURED 分类未生效。");
+        tv.setTextColor(android.graphics.Color.BLACK);
+        tv.setBackgroundColor(android.graphics.Color.WHITE);
+        tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 18f);
+        tv.setPadding(48, 260, 48, 48);
+        setContentView(tv);
     }
 
     @Override

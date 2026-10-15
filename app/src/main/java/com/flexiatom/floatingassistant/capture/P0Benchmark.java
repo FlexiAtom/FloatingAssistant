@@ -61,11 +61,13 @@ public final class P0Benchmark {
             try {
                 Bitmap bmp = capturer.capture();
                 long ms = (System.nanoTime() - t0) / 1_000_000L;
+                int bw = bmp.getWidth();
+                int bh = bmp.getHeight();
+                bmp.recycle();
                 ok++;
                 okLatencies.add(ms);
-                bmp.recycle();
                 Log.i(TAG, "attempt=" + i + " label=" + label + " outcome=OK ms=" + ms
-                        + " size=" + bmp.getWidth() + "x" + bmp.getHeight());
+                        + " size=" + bw + "x" + bh);
             } catch (ScreenCapturer.CaptureException e) {
                 long ms = (System.nanoTime() - t0) / 1_000_000L;
                 switch (e.outcome) {
