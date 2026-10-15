@@ -72,6 +72,9 @@ public final class P1Runner {
             if ("dense".equals(mode) || "all".equals(mode)) {
                 runDense(engine, base);
             }
+            if ("small".equals(mode)) {
+                runSmall(engine, base);
+            }
             if ("both".equals(mode) || "live".equals(mode) || "all".equals(mode)) {
                 runLive(ctx, engine, base, delayMs, detLimit);
             }
@@ -109,6 +112,52 @@ public final class P1Runner {
     private static void runDense(PpOcrEngine engine, File base) {
         runSynthCard(engine, base, DENSE_LINES, drawCard(DENSE_LINES, 34f, 92f, 120f),
                 "P1_dense", "DENSE");
+    }
+
+    // 小字密排：8 行 ~18px 正文，模拟真实长文/设置详情页，用于测"分辨率→小字召回"的断崖。
+    private static final String[] SMALL_LINES = {
+            "本软件按「现状」提供，不担保（GPLv3 §15/§16）。",
+            "仅在 Redmi 13R 5G / HyperOS 2.0.208 / Android 15 上验证过。",
+            "全屏翻译依赖无障碍截图与端侧 OCR，不上传任何图像内容。",
+            "点击悬浮球可即时翻译当前屏，长按进入设置面板。",
+            "识别结果以浮层覆盖显示，支持复制与朗读。",
+            "端侧模型：PP-OCRv4 检测识别，Hy-MT2 翻译，Piper 语音。",
+            "内存占用受档位限制，低端机建议关闭后台常驻。",
+            "如遇 FLAG_SECURE 页面（银行/支付）将提示不支持截屏。",
+    };
+
+    private static void runSmall(PpOcrEngine engine, File base) {
+        Bitmap card = drawCard(SMALL_LINES, 18f, 40f, 60f);
+        try {
+            File out = new File(base, "P1_small.png");
+            try (FileOutputStream fos = new FileOutputStream(out)) {
+                card.compress(Bitmap.CompressFormat.PNG, 100, fos);
+            } catch (IOException e) {
+                Log.w(TAG, "small png save failed: " + e.getMessage());
+            }
+            engine.recognize(card); // 预热去冷-JIT
+            int orig = engine.detLimitSide;
+            for (int lim : new int[]{960, 736, 640, 512, 448}) {
+                engine.detLimitSide = lim;
+                long t = System.nanoTime();
+                OcrEngine.Result r = engine.recognize(card);
+                long totalMs = (System.nanoTime() - t) / 1_000_000L;
+                String joined = String.join("\n", r.lines);
+                String noSp = joined.replace(" ", "");
+                int hit = 0;
+                for (String exp : SMALL_LINES) {
+                    if (noSp.contains(exp.replace(" ", ""))) hit++;
+                }
+                Log.i(TAG, "SMALL lim=" + lim + " detHxW=" + engine.lastDetH + "x" + engine.lastDetW
+                        + " exactLines=" + hit + "/" + SMALL_LINES.length
+                        + " boxes=" + engine.lastNBoxes + " totalMs=" + totalMs
+                        + " detail[" + breakdown(engine) + "]");
+                Log.i(TAG, "SMALL[" + lim + "] got=" + joined.replace("\n", " ⏎ "));
+            }
+            engine.detLimitSide = orig;
+        } finally {
+            card.recycle();
+        }
     }
 
     private static void runSynthCard(PpOcrEngine engine, File base, String[] lines, Bitmap card,
