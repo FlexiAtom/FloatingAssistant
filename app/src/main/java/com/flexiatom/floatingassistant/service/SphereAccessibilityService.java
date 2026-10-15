@@ -5,7 +5,7 @@ import android.view.accessibility.AccessibilityEvent;
 
 import com.flexiatom.floatingassistant.capture.ScreenCapturer;
 import com.flexiatom.floatingassistant.core.CaptureStateRouter;
-import com.flexiatom.floatingassistant.core.StubOcrEngine;
+import com.flexiatom.floatingassistant.ocr.PpOcrEngineFactory;
 import com.flexiatom.floatingassistant.overlay.OverlayManager;
 
 public class SphereAccessibilityService extends AccessibilityService {
@@ -34,6 +34,14 @@ public class SphereAccessibilityService extends AccessibilityService {
         return screenCapturer;
     }
 
+    /** 以程序方式触发一次采集-OCR-覆盖层（等同点悬浮球）；服务未就绪则忽略。 */
+    public void runOnceNow() {
+        CaptureStateRouter r = router;
+        if (r != null) {
+            r.runOnce();
+        }
+    }
+
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
@@ -46,7 +54,8 @@ public class SphereAccessibilityService extends AccessibilityService {
             overlayManager.removeAllImmediate();
         }
         if (router == null) {
-            router = new CaptureStateRouter(this, overlayManager, new StubOcrEngine());
+            router = new CaptureStateRouter(this, overlayManager,
+                    () -> PpOcrEngineFactory.create(this));
         }
         overlayManager.setOnSphereTap(() -> router.runOnce());
         overlayManager.showSphere();

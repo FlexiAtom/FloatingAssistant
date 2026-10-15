@@ -13,6 +13,7 @@ import java.util.Deque;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /**
  * 截图 → 三态判定 → 展示型覆盖层（提案 §4.3 A/B/C 路由）。
@@ -31,15 +32,24 @@ public final class CaptureStateRouter {
 
     private final SphereAccessibilityService service;
     private final OverlayManager overlayManager;
-    private final OcrEngine ocrEngine;
+    private final Supplier<OcrEngine> engineFactory;
+    /** 懒建：模型加载 ~0.5s，放到工作线程首用时再做，别卡服务主线程。单工作线程串行，故无竞态。 */
+    private OcrEngine ocrEngine;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final AtomicBoolean busy = new AtomicBoolean(false);
 
     public CaptureStateRouter(SphereAccessibilityService service, OverlayManager overlayManager,
-                              OcrEngine ocrEngine) {
+                              Supplier<OcrEngine> engineFactory) {
         this.service = service;
         this.overlayManager = overlayManager;
-        this.ocrEngine = ocrEngine;
+        this.engineFactory = engineFactory;
+    }
+
+    private OcrEngine engine() {
+        if (ocrEngine == null) {
+            ocrEngine = engineFactory.get();
+        }
+        return ocrEngine;
     }
 
     /** 提交一次采集-判定-展示；已有进行中的运行则忽略（配合截图节流，避免叠加）。 */
@@ -68,12 +78,39 @@ public final class CaptureStateRouter {
         }
 
         if (bmp != null) {
-            OcrEngine.Result r = ocrEngine.recognize(bmp);
-            int w = bmp.getWidth(), h = bmp.getHeight();
+            final int w = bmp.getWidth();
+            final int h = bmp.getHeight();
+            final StringBuilder acc = new StringBuilder();
+            final int[] boxCount = {0};
+            // 逐框流式：首行 ~0.2s 即到、逐行补全（B3）；overlay 同 key 原位更新，非阻塞主线程。
+            OcrEngine.LineSink sink = new OcrEngine.LineSink() {
+                @Override
+                public void onBoxes(int total) {
+                    boxCount[0] = total;
+                    overlayManager.showTextOverlay(RESULT_KEY,
+                            "A 可截图 " + w + "×" + h + " · 检测 " + total + " 框，识别中…");
+                }
+
+                @Override
+                public void onLine(int index, int total, int[] box, String text) {
+                    if (acc.length() > 0) {
+                        acc.append('\n');
+                    }
+                    acc.append(text.trim());
+                    overlayManager.showTextOverlay(RESULT_KEY,
+                            "识别中 " + (index + 1) + "/" + total + "\n" + acc);
+                }
+
+                @Override
+                public void onDone() {
+                    String head = "A 可截图 " + w + "×" + h + " · " + boxCount[0] + " 框";
+                    String body = acc.length() == 0 ? head + " · 未识到文本" : head + "\n" + acc;
+                    overlayManager.showTextOverlay(RESULT_KEY, body);
+                    Log.i(TAG, "ROUTE=A " + head + " chars=" + acc.length());
+                }
+            };
+            engine().recognizeStream(bmp, sink);
             bmp.recycle();
-            String text = "A 可截图 " + w + "×" + h + " · " + r.note + " · 文本行=" + r.lines.size();
-            Log.i(TAG, "ROUTE=A " + text);
-            overlayManager.showTextOverlay(RESULT_KEY, text);
             return;
         }
 
@@ -127,6 +164,9 @@ public final class CaptureStateRouter {
 
     public void shutdown() {
         worker.shutdownNow();
+        if (ocrEngine != null) {
+            ocrEngine.close();
+        }
     }
 
     private static String clip(String s) {

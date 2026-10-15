@@ -38,6 +38,10 @@ public interface OcrEngine {
         void onDone();
     }
 
+    /** 释放引擎持有的本地资源（如 ONNX 会话）；桩默认无操作。 */
+    default void close() {
+    }
+
     final class Result {
         /** 人读结论（桩为"待接入"说明）。 */
         public final String note;

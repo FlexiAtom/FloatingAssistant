@@ -39,6 +39,10 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P1_DET_LIMIT = "p1_det_limit";
     public static final String EXTRA_P1_DENSE = "p1_dense";
 
+    /** P3 端到端演示：铺密集正文页 → 程序触发 router 一次 → 覆盖层逐框流式显示真 OCR。 */
+    public static final String EXTRA_P3_DEMO = "p3_demo";
+    public static final String EXTRA_P3_DEMO_DELAY_MS = "p3_demo_delay_ms";
+
     private TextView statusText;
 
     @Override
@@ -55,6 +59,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunOrtProbe(getIntent());
         maybeRunOrtNnapi(getIntent());
         maybeRunP1(getIntent());
+        maybeRunP3Demo(getIntent());
     }
 
     @Override
@@ -65,6 +70,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunOrtProbe(intent);
         maybeRunOrtNnapi(intent);
         maybeRunP1(intent);
+        maybeRunP3Demo(intent);
     }
 
     private void maybeRunP0(Intent intent) {
@@ -136,6 +142,28 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> P1Runner.run(this, m, delayMs, threads, recMaxW, detLimit,
                 "ch_PP-OCRv4_det_infer.onnx", "ch_PP-OCRv4_rec_infer.onnx", "ppocr_keys_v1.txt"),
                 "p1-runner").start();
+    }
+
+    private void maybeRunP3Demo(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_P3_DEMO, false)) {
+            return;
+        }
+        showDensePage(); // 屏上铺真实密集正文，供生产管线 OCR
+        long delayMs = (long) intent.getIntExtra(EXTRA_P3_DEMO_DELAY_MS, 3000);
+        new Thread(() -> {
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            SphereAccessibilityService svc = SphereAccessibilityService.getInstance();
+            if (svc == null) {
+                android.util.Log.e("P3DEMO", "no accessibility service connected");
+                return;
+            }
+            svc.runOnceNow(); // 走生产路径：capture → 懒建 PpOcrEngine → 流式覆盖层
+        }, "p3-demo").start();
     }
 
     // C 用：真实文本栈渲染的密集小字页（TextView 排版 + 自然折行 + 真实 AA），

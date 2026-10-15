@@ -63,7 +63,7 @@ public final class PpOcrEngine implements OcrEngine {
     public int recMaxW = REC_MAX_W;
     /** det 输入长边上限（默认 960）；越小 det_pre/det_infer/db_post 越快，但小字召回下降——须真机验证。 */
     public int detLimitSide = DET_LIMIT_SIDE;
-    /** 伪框过滤：丢弃 y1 ≤ 此值的框（系统状态栏区，非正文）。默认 0=关。 */
+    /** 伪框过滤：丢弃竖直中心 ≤ 此值的框（系统状态栏带，非正文）。默认 0=关。 */
     public int skipTopPx = 0;
     /** 伪框过滤：丢弃高度 < 此值的框（图标/杂点）。默认 0=关。 */
     public int minBoxH = 0;
@@ -146,10 +146,11 @@ public final class PpOcrEngine implements OcrEngine {
             lastDbMs = msSince(t);
             lastDetBoxes = raw.size();
 
-            // 伪框过滤：丢弃整框落在状态栏区（底边 y1 ≤ skipTopPx）与矮框（高 < minBoxH，图标/杂点）。
+            // 伪框过滤：丢弃中心落在状态栏带内者（框竖直中心 ≤ skipTopPx，比底边更稳：
+            // 时钟框常略探出名义状态栏底）与矮框（高 < minBoxH，图标/杂点）。
             List<int[]> boxes = new ArrayList<>(raw.size());
             for (int[] b : raw) {
-                if (b[3] <= skipTopPx) {
+                if ((b[1] + b[3]) / 2 <= skipTopPx) {
                     continue;
                 }
                 if (b[3] - b[1] < minBoxH) {
@@ -429,6 +430,7 @@ public final class PpOcrEngine implements OcrEngine {
         return sb.toString();
     }
 
+    @Override
     public synchronized void close() {
         if (closed) {
             return;
