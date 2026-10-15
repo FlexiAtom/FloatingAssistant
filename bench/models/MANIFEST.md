@@ -41,7 +41,7 @@ NDK r29、`armv8.2-a+dotprod+i8mm+fp16`、`c++_static`。sha256（重建后应�
 | `libggml-cpu.so` | `75d80b59b5af2ea13b6b50979ef16df4e8921dd5c565486e9378b0bcdc9b416d` |
 | `libggml.so` | `66c4a7c0a1e05fee5fd5efcc4e1c3724e702dd06401c177b603384b3bdce6d91` |
 | `libllama.so` | `f0d11ae50befdf841d470a34c5dc35b36c1b4c8c025f32e90f69afd71266f432` |
-| `libmtjni.so` | `9f114ce5b822b7b17fbe59073fcd7194072ca6b13d78b2deffebf0d331fbe58b` |
+| `libmtjni.so` | `b993c444ced41f17481b445c82bb3591ed4bf2b98943dccd43e7eed41c55e46a` |
 
 缺模型 → `PassthroughMtEngine`（只显 OCR 原文）；缺 .so → `assembleDebug` 时 `verifyStqSo` fail，或运行时 `UnsatisfiedLinkError` 降级。
 

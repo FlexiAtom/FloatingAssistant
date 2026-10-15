@@ -226,12 +226,19 @@ Java_com_flexiatom_floatingassistant_mt_LlamaMtEngine_nativeTranslate(
         off += take;
     }
 
-    // 贪心生成。
+    // 贪心生成。Hy-MT2 在此量化下不吐 EOG：句子讲完会复读 BOS(120000) 等控制 token
+    // （special=false 解码成空串）。故显式把 BOS / 控制 token 当终止符，避免跑满 kMaxGen 白烧算力。
+    const llama_token bos = llama_vocab_bos(S->vocab);
     std::string out;
     int gen = 0;
+    int empty_streak = 0;
     for (; gen < kMaxGen; gen++) {
         llama_token id = llama_sampler_sample(S->smpl, S->ctx, -1);
         if (llama_vocab_is_eog(S->vocab, id)) {
+            break;
+        }
+        // 复读 BOS（模型"想重新开始"）或任何控制 token → 视为本句结束。
+        if (id == bos || llama_vocab_is_control(S->vocab, id)) {
             break;
         }
         llama_sampler_accept(S->smpl, id);
@@ -240,6 +247,9 @@ Java_com_flexiatom_floatingassistant_mt_LlamaMtEngine_nativeTranslate(
         int pn = llama_token_to_piece(S->vocab, id, piece, (int32_t) sizeof(piece), 0, /*special=*/ false);
         if (pn > 0) {
             out.append(piece, (size_t) pn);
+            empty_streak = 0;
+        } else if (++empty_streak >= 8) {
+            break;   // 连续空解码：兜底防退化循环
         }
 
         if (n_past >= S->n_ctx) {   // 上下文创满，停止
