@@ -37,6 +37,11 @@ public final class P1Runner {
 
     private static final String TAG = "P1OCR";
 
+    // stream 过滤 A/B 的"开"档阈值：pass A dump 显示状态栏时钟框 y1=83、通知杂框 y1=58，
+    // 正文首行 y0=125（y1=158）。取 100 ∈ (83,125) 干净丢弃两枚伪框、不伤正文。
+    private static final int STREAM_SKIP_TOP_PX = 100;
+    private static final int STREAM_MIN_BOX_H = 12;
+
     private P1Runner() {
     }
 
@@ -83,6 +88,9 @@ public final class P1Runner {
             if ("recquant".equals(mode)) {
                 runRecQuant(ctx, base, det, rec, dict, threads, delayMs,
                         detLimit > 0 ? detLimit : 640);
+            }
+            if ("stream".equals(mode)) {
+                runStream(ctx, engine, base, delayMs, detLimit);
             }
         } catch (Throwable t) {
             Log.e(TAG, "RESULT error=" + t.getClass().getSimpleName() + " msg=" + t.getMessage(), t);
@@ -387,6 +395,96 @@ public final class P1Runner {
             }
         }
         return best;
+    }
+
+    // B3：流式逐框出字。量两件事——① 首行到达延迟 vs 总时长（流式的体感收益）；
+    // ② 伪框过滤（状态栏 + 矮框）对"检测框数/总时长/首行"的影响。pass A 逐框 dump 坐标供校准阈值。
+    private static void runStream(Context ctx, PpOcrEngine engine, File base, long delayMs, int detLimit)
+            throws InterruptedException, IOException {
+        if (delayMs > 0) {
+            Log.i(TAG, "stream waiting " + delayMs + "ms — 请切到要测的页面（含状态栏/悬浮球）");
+            Thread.sleep(delayMs);
+        }
+        SphereAccessibilityService svc = SphereAccessibilityService.getInstance();
+        if (svc == null) {
+            Log.e(TAG, "stream skipped: 无障碍服务未连接");
+            return;
+        }
+        Bitmap shot;
+        try {
+            shot = svc.capturer().capture();
+        } catch (Throwable e) {
+            Log.e(TAG, "stream capture failed: " + e.getMessage());
+            return;
+        }
+        int origLimit = engine.detLimitSide;
+        if (detLimit > 0) {
+            engine.detLimitSide = detLimit;
+        }
+        try {
+            Log.i(TAG, "STREAM captured src=" + shot.getWidth() + "x" + shot.getHeight()
+                    + " detLimit=" + engine.detLimitSide);
+            engine.recognize(shot); // 丢弃式预热，去冷-JIT
+            // Pass A：过滤关，逐框 dump 坐标。
+            engine.skipTopPx = 0;
+            engine.minBoxH = 0;
+            StreamProbe a = new StreamProbe();
+            engine.recognizeStream(shot, a);
+            Log.i(TAG, "STREAM A(off) detBoxes=" + engine.lastDetBoxes
+                    + " keptBoxes=" + engine.lastNBoxes + " lines=" + a.lines
+                    + " detDoneMs=" + a.boxesMs + " firstLineMs=" + a.firstLineMs
+                    + " totalMs=" + a.totalMs);
+            // Pass B：过滤开（状态栏区 + 矮框）。
+            engine.skipTopPx = STREAM_SKIP_TOP_PX;
+            engine.minBoxH = STREAM_MIN_BOX_H;
+            StreamProbe b = new StreamProbe();
+            engine.recognizeStream(shot, b);
+            Log.i(TAG, "STREAM B(on skip=" + STREAM_SKIP_TOP_PX + " minH=" + STREAM_MIN_BOX_H
+                    + ") detBoxes=" + engine.lastDetBoxes + " keptBoxes=" + engine.lastNBoxes
+                    + " lines=" + b.lines + " detDoneMs=" + b.boxesMs
+                    + " firstLineMs=" + b.firstLineMs + " totalMs=" + b.totalMs);
+        } finally {
+            engine.skipTopPx = 0;
+            engine.minBoxH = 0;
+            engine.detLimitSide = origLimit;
+            shot.recycle();
+        }
+    }
+
+    /** 流式探测：记录相对起点的每行到达时刻，量"首行延迟 vs 总时长"，并逐框 dump 坐标。 */
+    private static final class StreamProbe implements OcrEngine.LineSink {
+        final long startNs = System.nanoTime();
+        long boxesMs = -1;
+        long firstLineMs = -1;
+        long totalMs = -1;
+        int lines = 0;
+
+        @Override
+        public void onBoxes(int total) {
+            boxesMs = (System.nanoTime() - startNs) / 1_000_000L;
+            Log.i(TAG, "STREAM onBoxes=" + total + " +" + boxesMs + "ms");
+        }
+
+        @Override
+        public void onLine(int index, int total, int[] box, String text) {
+            long off = (System.nanoTime() - startNs) / 1_000_000L;
+            if (firstLineMs < 0) {
+                firstLineMs = off;
+            }
+            lines++;
+            String coord = box == null ? "?"
+                    : ("[" + box[0] + "," + box[1] + "," + box[2] + "," + box[3] + "]");
+            String s = text.trim();
+            if (s.length() > 40) {
+                s = s.substring(0, 40) + "…";
+            }
+            Log.i(TAG, "STREAM line#" + index + " +" + off + "ms " + coord + " \"" + s + "\"");
+        }
+
+        @Override
+        public void onDone() {
+            totalMs = (System.nanoTime() - startNs) / 1_000_000L;
+        }
     }
 
     private static String breakdown(PpOcrEngine e) {

@@ -63,8 +63,14 @@ public final class PpOcrEngine implements OcrEngine {
     public int recMaxW = REC_MAX_W;
     /** det 输入长边上限（默认 960）；越小 det_pre/det_infer/db_post 越快，但小字召回下降——须真机验证。 */
     public int detLimitSide = DET_LIMIT_SIDE;
+    /** 伪框过滤：丢弃 y1 ≤ 此值的框（系统状态栏区，非正文）。默认 0=关。 */
+    public int skipTopPx = 0;
+    /** 伪框过滤：丢弃高度 < 此值的框（图标/杂点）。默认 0=关。 */
+    public int minBoxH = 0;
     /** 调试：最近一次的文本框（原图像素坐标 x0,y0,x1,y1）与 det 概率图统计。 */
     public List<int[]> lastBoxes = Collections.emptyList();
+    /** det 原始框数（过滤前）；lastNBoxes 为过滤后实际送 rec 的框数。 */
+    public int lastDetBoxes;
     public float lastProbMax, lastProbMean;
     public int lastProbOn;
 
@@ -100,11 +106,24 @@ public final class PpOcrEngine implements OcrEngine {
 
     @Override
     public Result recognize(Bitmap src) {
+        return run(src, null);
+    }
+
+    @Override
+    public void recognizeStream(Bitmap src, LineSink sink) {
+        run(src, sink);
+    }
+
+    /**
+     * 端到端一次识别。sink 非空 → 逐框流式回调（B3：首字 ~0.4s 即出、逐行补全）；
+     * sink 为空 → 退化为阻塞聚合，返回全部文本行。两条路径共用同一管线与过滤，保证口径一致。
+     */
+    private Result run(Bitmap src, LineSink sink) {
         int srcW = src.getWidth();
         int srcH = src.getHeight();
         List<String> lines = new ArrayList<>();
         try {
-            // --- det 输入尺寸：长边限 960，宽高各 round 到 32 的倍数 ---
+            // --- det 输入尺寸：长边限 detLimitSide，宽高各 round 到 32 的倍数 ---
             float scale = detLimitSide / (float) Math.max(srcW, srcH);
             if (scale > 1f) {
                 scale = 1f;
@@ -123,13 +142,30 @@ public final class PpOcrEngine implements OcrEngine {
             lastDetInferMs = msSince(t);
 
             t = System.nanoTime();
-            List<int[]> boxes = dbPostprocess(probMap, rw, rh, srcW, srcH);
+            List<int[]> raw = dbPostprocess(probMap, rw, rh, srcW, srcH);
             lastDbMs = msSince(t);
+            lastDetBoxes = raw.size();
+
+            // 伪框过滤：丢弃整框落在状态栏区（底边 y1 ≤ skipTopPx）与矮框（高 < minBoxH，图标/杂点）。
+            List<int[]> boxes = new ArrayList<>(raw.size());
+            for (int[] b : raw) {
+                if (b[3] <= skipTopPx) {
+                    continue;
+                }
+                if (b[3] - b[1] < minBoxH) {
+                    continue;
+                }
+                boxes.add(b);
+            }
             lastNBoxes = boxes.size();
             lastBoxes = boxes;
 
-            t = System.nanoTime();
+            if (sink != null) {
+                sink.onBoxes(boxes.size());
+            }
+
             long recT = 0, ctcT = 0;
+            int emitted = 0;
             for (int[] b : boxes) {
                 long r0 = System.nanoTime();
                 float[] recIn = buildRecInput(src, b);
@@ -142,11 +178,21 @@ public final class PpOcrEngine implements OcrEngine {
                 ctcT += (r2 - r1) / 1_000_000L;
                 if (!line.trim().isEmpty()) {
                     lines.add(line);
+                    if (sink != null) {
+                        sink.onLine(emitted, boxes.size(), b, line);
+                    }
+                    emitted++;
                 }
             }
             lastRecMs = recT;
             lastCtcMs = ctcT;
+            if (sink != null) {
+                sink.onDone();
+            }
         } catch (Throwable err) {
+            if (sink != null) {
+                sink.onDone();
+            }
             return new Result("P1 管线异常: " + err.getClass().getSimpleName() + ": " + err.getMessage(),
                     Collections.emptyList());
         }
