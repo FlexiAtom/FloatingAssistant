@@ -8,6 +8,8 @@ import android.graphics.Paint;
 import android.graphics.Typeface;
 import android.util.Log;
 
+import ai.onnxruntime.OrtException;
+
 import com.flexiatom.floatingassistant.core.OcrEngine;
 import com.flexiatom.floatingassistant.service.SphereAccessibilityService;
 
@@ -77,6 +79,10 @@ public final class P1Runner {
             }
             if ("both".equals(mode) || "live".equals(mode) || "all".equals(mode)) {
                 runLive(ctx, engine, base, delayMs, detLimit);
+            }
+            if ("recquant".equals(mode)) {
+                runRecQuant(ctx, base, det, rec, dict, threads, delayMs,
+                        detLimit > 0 ? detLimit : 640);
             }
         } catch (Throwable t) {
             Log.e(TAG, "RESULT error=" + t.getClass().getSimpleName() + " msg=" + t.getMessage(), t);
@@ -290,6 +296,97 @@ public final class P1Runner {
         } finally {
             shot.recycle();
         }
+    }
+
+    // A/B：同一帧上 fp32 rec vs int8 rec —— 隔离"量化→rec 延迟/准确率"，det 与其余全同。
+    private static void runRecQuant(Context ctx, File base, File det, File recFp32,
+                                    List<String> dict, int threads, long delayMs, int detLimit)
+            throws InterruptedException, IOException, OrtException {
+        File recI8 = new File(base, "rec_int8.onnx");
+        if (!recI8.isFile()) {
+            Log.e(TAG, "RECQUANT missing " + recI8.getAbsolutePath());
+            return;
+        }
+        if (delayMs > 0) {
+            Log.i(TAG, "recquant waiting " + delayMs + "ms — 请切到要测的中文页面");
+            Thread.sleep(delayMs);
+        }
+        SphereAccessibilityService svc = SphereAccessibilityService.getInstance();
+        if (svc == null) {
+            Log.e(TAG, "recquant skipped: 无障碍服务未连接");
+            return;
+        }
+        Bitmap shot;
+        try {
+            shot = svc.capturer().capture();
+        } catch (Throwable e) {
+            Log.e(TAG, "recquant capture failed: " + e.getMessage());
+            return;
+        }
+        PpOcrEngine fp = null;
+        PpOcrEngine i8 = null;
+        try {
+            fp = new PpOcrEngine(det, recFp32, dict, threads);
+            i8 = new PpOcrEngine(det, recI8, dict, threads);
+            fp.detLimitSide = detLimit;
+            i8.detLimitSide = detLimit;
+            Log.i(TAG, "RECQUANT detLimit=" + detLimit + " threads=" + threads
+                    + " fp32loadRecMs=" + fp.loadRecMs + " int8loadRecMs=" + i8.loadRecMs);
+            fp.recognize(shot);
+            i8.recognize(shot); // 预热去冷-JIT
+            Bench bf = bench(fp, shot);
+            Bench bi = bench(i8, shot);
+            Log.i(TAG, "RECQUANT fp32 rec=" + bf.recMs + " total=" + bf.totalMs + " boxes=" + bf.boxes);
+            Log.i(TAG, "RECQUANT int8 rec=" + bi.recMs + " total=" + bi.totalMs + " boxes=" + bi.boxes);
+            Log.i(TAG, "RECQUANT fp32 text=" + bf.text);
+            Log.i(TAG, "RECQUANT int8 text=" + bi.text);
+            Log.i(TAG, "RECQUANT recSpeedup=" + ratio(bf.recMs, bi.recMs)
+                    + "x totalSpeedup=" + ratio(bf.totalMs, bi.totalMs) + "x");
+        } finally {
+            if (fp != null) {
+                fp.close();
+            }
+            if (i8 != null) {
+                i8.close();
+            }
+            shot.recycle();
+        }
+    }
+
+    private static String ratio(long a, long b) {
+        return b > 0 ? String.format("%.2f", (float) a / b) : "?";
+    }
+
+    private static final class Bench {
+        long recMs;
+        long totalMs;
+        int boxes;
+        String text;
+    }
+
+    private static Bench bench(PpOcrEngine e, Bitmap shot) {
+        Bench best = new Bench();
+        best.recMs = Long.MAX_VALUE;
+        best.totalMs = Long.MAX_VALUE;
+        for (int i = 0; i < 3; i++) {
+            long t = System.nanoTime();
+            OcrEngine.Result r = e.recognize(shot);
+            long total = (System.nanoTime() - t) / 1_000_000L;
+            if (total < best.totalMs) {
+                best.totalMs = total;
+                best.recMs = e.lastRecMs;
+                best.boxes = e.lastNBoxes;
+                StringBuilder sb = new StringBuilder();
+                for (String line : r.lines) {
+                    String s = line.trim();
+                    if (!s.isEmpty()) {
+                        sb.append(s.length() > 48 ? s.substring(0, 48) + "…" : s).append('⏎');
+                    }
+                }
+                best.text = sb.toString();
+            }
+        }
+        return best;
     }
 
     private static String breakdown(PpOcrEngine e) {
