@@ -38,8 +38,8 @@ public final class P1Runner {
     private P1Runner() {
     }
 
-    public static void run(Context ctx, String mode, long delayMs, int threads,
-                           String detRel, String recRel, String dictRel) {
+    public static void run(Context ctx, String mode, long delayMs, int threads, int recMaxW,
+                           int detLimit, String detRel, String recRel, String dictRel) {
         File base = ctx.getExternalFilesDir(null);
         File det = new File(base, detRel);
         File rec = new File(base, recRel);
@@ -56,13 +56,24 @@ public final class P1Runner {
         PpOcrEngine engine = null;
         try {
             engine = new PpOcrEngine(det, rec, dict, threads);
+            if (recMaxW > 0) {
+                engine.recMaxW = recMaxW;
+            }
+            if (detLimit > 0) {
+                engine.detLimitSide = detLimit;
+            }
             Log.i(TAG, "engine loaded loadDetMs=" + engine.loadDetMs
-                    + " loadRecMs=" + engine.loadRecMs);
+                    + " loadRecMs=" + engine.loadRecMs
+                    + " threads=" + threads + " recMaxW=" + engine.recMaxW
+                    + " detLimit=" + engine.detLimitSide);
             if ("both".equals(mode) || "synth".equals(mode)) {
                 runSynth(engine, base);
             }
-            if ("both".equals(mode) || "live".equals(mode)) {
-                runLive(ctx, engine, base, delayMs);
+            if ("dense".equals(mode) || "all".equals(mode)) {
+                runDense(engine, base);
+            }
+            if ("both".equals(mode) || "live".equals(mode) || "all".equals(mode)) {
+                runLive(ctx, engine, base, delayMs, detLimit);
             }
         } catch (Throwable t) {
             Log.e(TAG, "RESULT error=" + t.getClass().getSimpleName() + " msg=" + t.getMessage(), t);
@@ -82,39 +93,58 @@ public final class P1Runner {
             "设置无障碍服务权限",
     };
 
+    // 复刻实屏识别失败的**密集/小字/拉丁+符号**用例（字号小、行距紧、含型号串与中英混排）。
+    private static final String[] DENSE_LINES = {
+            "Redmi 13R 5G",
+            "HyperOS 2.0.208.0.VGQCNXM",
+            "安全补丁 2026-03-01",
+            "Android 15 · 天玑 6100+",
+    };
+
     private static void runSynth(PpOcrEngine engine, File base) {
-        Bitmap card = drawCard();
+        runSynthCard(engine, base, SYNTH_LINES, drawCard(SYNTH_LINES, 52f, 140f, 160f),
+                "P1_synth", "SYNTH");
+    }
+
+    private static void runDense(PpOcrEngine engine, File base) {
+        runSynthCard(engine, base, DENSE_LINES, drawCard(DENSE_LINES, 34f, 92f, 120f),
+                "P1_dense", "DENSE");
+    }
+
+    private static void runSynthCard(PpOcrEngine engine, File base, String[] lines, Bitmap card,
+                                     String pngBase, String tag) {
         try {
-            File out = new File(base, "P1_synth.png");
+            File out = new File(base, pngBase + ".png");
             try (FileOutputStream fos = new FileOutputStream(out)) {
                 card.compress(Bitmap.CompressFormat.PNG, 100, fos);
             } catch (IOException e) {
-                Log.w(TAG, "synth png save failed: " + e.getMessage());
+                Log.w(TAG, tag + " png save failed: " + e.getMessage());
             }
             long t = System.nanoTime();
             OcrEngine.Result r = engine.recognize(card);
             long totalMs = (System.nanoTime() - t) / 1_000_000L;
             String joined = String.join("\n", r.lines);
+            String joinedNoSp = joined.replace(" ", "");
             int hit = 0;
-            for (String exp : SYNTH_LINES) {
-                if (joined.replace(" ", "").contains(exp.replace(" ", ""))) {
+            StringBuilder miss = new StringBuilder();
+            for (String exp : lines) {
+                if (joinedNoSp.contains(exp.replace(" ", ""))) {
                     hit++;
+                } else {
+                    miss.append('{').append(exp).append("} ");
                 }
             }
-            Log.i(TAG, "SYNTH expectedLines=" + SYNTH_LINES.length + " exactLines=" + hit
+            Log.i(TAG, tag + " expectedLines=" + lines.length + " exactLines=" + hit
                     + " boxes=" + engine.lastNBoxes + " detHxW=" + engine.lastDetH + "x" + engine.lastDetW
                     + " totalMs=" + totalMs + " detail[" + breakdown(engine) + "]");
-            Log.i(TAG, "SYNTH probMax=" + engine.lastProbMax + " probMean=" + engine.lastProbMean
+            Log.i(TAG, tag + " probMax=" + engine.lastProbMax + " probMean=" + engine.lastProbMean
                     + " probOn(>0.3)=" + engine.lastProbOn);
-            StringBuilder bs = new StringBuilder();
-            for (int[] b : engine.lastBoxes) {
-                bs.append('[').append(b[0]).append(',').append(b[1]).append(',')
-                        .append(b[2]).append(',').append(b[3]).append("] ");
+            if (miss.length() > 0) {
+                Log.i(TAG, tag + " MISS=" + miss);
             }
-            Log.i(TAG, "SYNTH boxes=" + bs);
-            drawBoxes(card, engine.lastBoxes, new File(base, "P1_boxes.png"));
-            Log.i(TAG, "SYNTH got=" + joined.replace("\n", " ⏎ "));
-            Log.i(TAG, "SYNTH expected=" + String.join(" ⏎ ", SYNTH_LINES));
+            Log.i(TAG, tag + " got=" + joined.replace("\n", " ⏎ "));
+            Log.i(TAG, tag + " expected=" + String.join(" ⏎ ", lines));
+            drawBoxes(card, engine.lastBoxes, new File(base, pngBase + "_boxes.png"));
         } finally {
             card.recycle();
         }
@@ -138,7 +168,8 @@ public final class P1Runner {
         copy.recycle();
     }
 
-    private static Bitmap drawCard() {        int w = 720;
+    private static Bitmap drawCard(String[] lines, float textSize, float step, float y0) {
+        int w = 720;
         int h = 1600;
         Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas c = new Canvas(bmp);
@@ -146,18 +177,18 @@ public final class P1Runner {
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         p.setColor(Color.BLACK);
         p.setTypeface(Typeface.SANS_SERIF);
-        p.setTextSize(52f);
-        float y = 160f;
-        for (String line : SYNTH_LINES) {
+        p.setTextSize(textSize);
+        float y = y0;
+        for (String line : lines) {
             c.drawText(line, 48f, y, p);
-            y += 140f;
+            y += step;
         }
         return bmp;
     }
 
     // ---- 实屏：真实延迟 + 落盘供核对 ----
 
-    private static void runLive(Context ctx, PpOcrEngine engine, File base, long delayMs)
+    private static void runLive(Context ctx, PpOcrEngine engine, File base, long delayMs, int detLimit)
             throws InterruptedException, IOException {
         if (delayMs > 0) {
             Log.i(TAG, "live waiting " + delayMs + "ms — 请切到要测的中文页面");
@@ -180,22 +211,33 @@ public final class P1Runner {
             shot.compress(Bitmap.CompressFormat.PNG, 100, fos);
         }
         try {
-            long t = System.nanoTime();
-            OcrEngine.Result r = engine.recognize(shot);
-            long totalMs = (System.nanoTime() - t) / 1_000_000L;
-            Log.i(TAG, "LIVE src=" + shot.getWidth() + "x" + shot.getHeight()
-                    + " png=" + out.getAbsolutePath()
-                    + " lines=" + r.lines.size() + " boxes=" + engine.lastNBoxes
-                    + " detHxW=" + engine.lastDetH + "x" + engine.lastDetW
-                    + " totalMs=" + totalMs + " detail[" + breakdown(engine) + "]");
-            List<String> trimmed = new ArrayList<>();
-            for (String line : r.lines) {
-                String s = line.trim();
-                if (!s.isEmpty()) {
-                    trimmed.add(s.length() > 60 ? s.substring(0, 60) + "…" : s);
+            Log.i(TAG, "LIVE captured src=" + shot.getWidth() + "x" + shot.getHeight()
+                    + " png=" + out.getAbsolutePath());
+            // 丢弃式预热：让 Java 后处理循环先过 JIT，避免首个计时项被冷启动解释执行污染。
+            engine.recognize(shot);
+            // 同一帧上 A/B det 长边上限：隔离"分辨率→延迟/召回"，其余变量全同。
+            int[] limits = detLimit > 0
+                    ? new int[]{detLimit, 736, 640, 512}
+                    : new int[]{960, 736, 640, 512};
+            int orig = engine.detLimitSide;
+            for (int lim : limits) {
+                engine.detLimitSide = lim;
+                long t = System.nanoTime();
+                OcrEngine.Result r = engine.recognize(shot);
+                long totalMs = (System.nanoTime() - t) / 1_000_000L;
+                List<String> trimmed = new ArrayList<>();
+                for (String line : r.lines) {
+                    String s = line.trim();
+                    if (!s.isEmpty()) {
+                        trimmed.add(s.length() > 48 ? s.substring(0, 48) + "…" : s);
+                    }
                 }
+                Log.i(TAG, "LIVE lim=" + lim + " detHxW=" + engine.lastDetH + "x" + engine.lastDetW
+                        + " lines=" + r.lines.size() + " boxes=" + engine.lastNBoxes
+                        + " totalMs=" + totalMs + " detail[" + breakdown(engine) + "]");
+                Log.i(TAG, "LIVE[" + lim + "] text=" + String.join(" ⏎ ", trimmed));
             }
-            Log.i(TAG, "LIVE text=" + String.join(" ⏎ ", trimmed));
+            engine.detLimitSide = orig;
         } finally {
             shot.recycle();
         }

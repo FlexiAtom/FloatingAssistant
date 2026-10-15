@@ -34,7 +34,9 @@ public final class PpOcrEngine implements OcrEngine {
     private static final int DET_MIN_AREA = 30;
     private static final int REC_H = 48;
     private static final int REC_MIN_W = 16;
-    private static final int REC_MAX_W = 320;
+    // 320 会把长行截断（实测：~50 字英文/数字混排行在 320 下只出前几字，尾部丢失）。
+    // 640 完整恢复长行，960 相对 640 无进一步收益、纯增延迟 → 取 640。上限只对宽框生效，短行不受影响。
+    private static final int REC_MAX_W = 640;
     private static final float[] DET_MEAN = {0.485f, 0.456f, 0.406f};
     private static final float[] DET_STD = {0.229f, 0.224f, 0.225f};
 
@@ -54,6 +56,10 @@ public final class PpOcrEngine implements OcrEngine {
     public int lastDetW, lastDetH, lastNBoxes;
     /** rec 模型输出类别数（含 blank），首框推理时从张量形状取；与 charset.length+1 应一致。 */
     public int lastClasses;
+    /** rec 缩放宽度上限（默认 REC_MAX_W）；benchmark 可临时抬高以观密集拉丁的准确率/延迟权衡。 */
+    public int recMaxW = REC_MAX_W;
+    /** det 输入长边上限（默认 960）；越小 det_pre/det_infer/db_post 越快，但小字召回下降——须真机验证。 */
+    public int detLimitSide = DET_LIMIT_SIDE;
     /** 调试：最近一次的文本框（原图像素坐标 x0,y0,x1,y1）与 det 概率图统计。 */
     public List<int[]> lastBoxes = Collections.emptyList();
     public float lastProbMax, lastProbMean;
@@ -96,7 +102,7 @@ public final class PpOcrEngine implements OcrEngine {
         List<String> lines = new ArrayList<>();
         try {
             // --- det 输入尺寸：长边限 960，宽高各 round 到 32 的倍数 ---
-            float scale = DET_LIMIT_SIDE / (float) Math.max(srcW, srcH);
+            float scale = detLimitSide / (float) Math.max(srcW, srcH);
             if (scale > 1f) {
                 scale = 1f;
             }
@@ -124,7 +130,7 @@ public final class PpOcrEngine implements OcrEngine {
             for (int[] b : boxes) {
                 long r0 = System.nanoTime();
                 float[] recIn = buildRecInput(src, b);
-                int recW = (b[2] > b[0]) ? recWidthFor(b[3] - b[1], b[2] - b[0]) : 4;
+                int recW = (b[2] > b[0]) ? recWidthFor(b[3] - b[1], b[2] - b[0], recMaxW) : 4;
                 float[] recOut = runRec(recIn, recW);
                 long r1 = System.nanoTime();
                 recT += (r1 - r0) / 1_000_000L;
@@ -279,13 +285,13 @@ public final class PpOcrEngine implements OcrEngine {
 
     // ---- rec ----
 
-    private static int recWidthFor(int boxH, int boxW) {
+    private static int recWidthFor(int boxH, int boxW, int recMaxW) {
         int w = Math.round(REC_H * (boxW / (float) boxH));
         if (w < REC_MIN_W) {
             w = REC_MIN_W;
         }
-        if (w > REC_MAX_W) {
-            w = REC_MAX_W;
+        if (w > recMaxW) {
+            w = recMaxW;
         }
         w = Math.max(4, w & ~3); // rec 卷积按 4 下采样，宽度取 4 的倍数
         return w;
@@ -298,7 +304,7 @@ public final class PpOcrEngine implements OcrEngine {
         int y1 = Math.min(src.getHeight(), box[3]);
         int bw = Math.max(1, x1 - x0);
         int bh = Math.max(1, y1 - y0);
-        int recW = recWidthFor(bh, bw);
+        int recW = recWidthFor(bh, bw, recMaxW);
         Bitmap crop = Bitmap.createBitmap(src, x0, y0, bw, bh);
         Bitmap scaled = Bitmap.createScaledBitmap(crop, recW, REC_H, true);
         if (scaled != crop) {

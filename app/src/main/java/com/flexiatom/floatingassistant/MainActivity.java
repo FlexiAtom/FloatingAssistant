@@ -31,6 +31,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P1_MODE = "p1_mode";
     public static final String EXTRA_P1_DELAY_MS = "p1_delay_ms";
     public static final String EXTRA_P1_THREADS = "p1_threads";
+    public static final String EXTRA_P1_REC_MAX_W = "p1_rec_max_w";
+    public static final String EXTRA_P1_DET_LIMIT = "p1_det_limit";
 
     private TextView statusText;
 
@@ -96,9 +98,11 @@ public class MainActivity extends AppCompatActivity {
             mode = "both";
         }
         long delayMs = (long) intent.getIntExtra(EXTRA_P1_DELAY_MS, 6000);
-        int threads = intent.getIntExtra(EXTRA_P1_THREADS, 4);
+        int threads = intent.getIntExtra(EXTRA_P1_THREADS, 2);
+        int recMaxW = intent.getIntExtra(EXTRA_P1_REC_MAX_W, 0);
+        int detLimit = intent.getIntExtra(EXTRA_P1_DET_LIMIT, 0);
         final String m = mode;
-        new Thread(() -> P1Runner.run(this, m, delayMs, threads,
+        new Thread(() -> P1Runner.run(this, m, delayMs, threads, recMaxW, detLimit,
                 "ch_PP-OCRv4_det_infer.onnx", "ch_PP-OCRv4_rec_infer.onnx", "ppocr_keys_v1.txt"),
                 "p1-runner").start();
     }
