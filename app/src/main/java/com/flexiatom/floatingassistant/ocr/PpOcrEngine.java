@@ -29,7 +29,10 @@ import ai.onnxruntime.OrtSession;
  */
 public final class PpOcrEngine implements OcrEngine {
 
-    private static final int DET_LIMIT_SIDE = 960;
+    // C 实测（真实渲染的 15px 密集页，Redmi 13R）：960→640 检测召回不变（均 22 行），
+    // det_infer 289→124ms（省 ~165ms）；512 起掉行（21 行）且小字拉丁/数字开始劣化。
+    // 真实内容比合成 18px 卡略苛刻（卡：512 安全；实屏：640 才是地板）→ 取 640。
+    private static final int DET_LIMIT_SIDE = 640;
     private static final float DET_BIN_TH = 0.3f;
     private static final int DET_MIN_AREA = 30;
     private static final int REC_H = 48;

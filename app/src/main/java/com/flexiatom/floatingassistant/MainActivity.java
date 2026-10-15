@@ -35,6 +35,7 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P1_THREADS = "p1_threads";
     public static final String EXTRA_P1_REC_MAX_W = "p1_rec_max_w";
     public static final String EXTRA_P1_DET_LIMIT = "p1_det_limit";
+    public static final String EXTRA_P1_DENSE = "p1_dense";
 
     private TextView statusText;
 
@@ -121,10 +122,60 @@ public class MainActivity extends AppCompatActivity {
         int threads = intent.getIntExtra(EXTRA_P1_THREADS, 2);
         int recMaxW = intent.getIntExtra(EXTRA_P1_REC_MAX_W, 0);
         int detLimit = intent.getIntExtra(EXTRA_P1_DET_LIMIT, 0);
+        boolean dense = intent.getBooleanExtra(EXTRA_P1_DENSE, false);
+        if (dense) {
+            showDensePage();
+        }
         final String m = mode;
         new Thread(() -> P1Runner.run(this, m, delayMs, threads, recMaxW, detLimit,
                 "ch_PP-OCRv4_det_infer.onnx", "ch_PP-OCRv4_rec_infer.onnx", "ppocr_keys_v1.txt"),
                 "p1-runner").start();
+    }
+
+    // C 用：真实文本栈渲染的密集小字页（TextView 排版 + 自然折行 + 真实 AA），
+    // 供无障碍截屏走生产管线，检验 det 分辨率下调在真实内容上的召回。
+    private static final String DENSE_PAGE_TEXT =
+            "悬浮助手全屏翻译在 Redmi 13R 5G 上验证，SoC 为天玑 6100+（mt6835），"
+            + "运行 HyperOS 2.0.208.0.VGQCNXM，基于 Android 15，安全补丁级别 2026-03-01。"
+            + "本段用于测试中文小字识别：标点、数字与英文混排如 v0.5、§15/§16、GPLv3、"
+            + "1280×720、CPU 占用 86%，以及 URL https://example.com/path?a=1&b=2 的召回。"
+            + "识别管线为 PP-OCRv4 mobile：det 输出概率图经 DB 后处理得到四边形框，"
+            + "每个框从原图裁剪后送 rec 模型，CTC 解码映射到 6623 字典。"
+            + "常见误识包括把“己”读成“已”、把“未”读成“末”，以及把全角括号（）读成半角()。"
+            + "第二段落测试更长的连续正文：当文字尺寸接近 15 像素、行距紧凑时，"
+            + "检测模型在长边 960、736、640、512 四档下的召回率会如何变化，"
+            + "是本实验要回答的问题。若 640 档仍能稳定框出每一行，则可将默认上限下调，"
+            + "预计节省约 160 毫秒的检测推理时间。"
+            + "Mixed content test: The quick brown fox jumps over the lazy dog 0123456789. "
+            + "数字串 3.14159、电话 138-0013-8000、日期 2026/10/15、百分比 45.6% 也应被完整识别。"
+            + "第三段继续填充以覆盖整屏：无障碍服务通过 SurfaceControl 截取当前屏幕，"
+            + "悬浮球位于左上角可能遮挡少量文字，属已知干扰。"
+            + "第四段补充更多行：端侧翻译要求在一次点击内完成检测、识别与替换，"
+            + "延迟预算约为一到两秒，因此每一步的耗时都必须可测量、可归因。"
+            + "天玑 6100+ 有八个核心，其中两个大核容量 1024、六个小核容量 356，"
+            + "推理线程数取 2 通常优于 4，因为超过大核数会引入调度与内存带宽争用。"
+            + "识别模型 rec 的输入高度固定为 48，宽度按框的宽高比缩放并夹在 16 到 640 之间，"
+            + "过长的行会被截断，因此 recMaxW 从 320 上调到 640 修复了长行丢字。"
+            + "DB 后处理把概率统计与八邻域连通分量融合进单次扫描，去掉了单独的布尔二值化数组，"
+            + "在热循环里后处理只占个位数毫秒，冷启动 JIT 才会虚高到数百毫秒。"
+            + "第五段测试符号与混排：±×÷≈≠≤≥、希腊字母 αβγΔΩ、货币 ￥$€£、"
+            + "以及带空格的英文短语 Hello World 与 Full-Width 全角ＡＢＣ１２３。"
+            + "以上文本到此结束，用于逐字核对不同检测分辨率下的召回与准确率。";
+
+    private void showDensePage() {
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().hide();
+        }
+        android.widget.ScrollView sv = new android.widget.ScrollView(this);
+        sv.setBackgroundColor(android.graphics.Color.WHITE);
+        TextView tv = new TextView(this);
+        tv.setTextColor(android.graphics.Color.BLACK);
+        tv.setTextSize(android.util.TypedValue.COMPLEX_UNIT_PX, 15f);
+        tv.setLineSpacing(0f, 1.25f);
+        tv.setPadding(20, 130, 20, 40);
+        tv.setText(DENSE_PAGE_TEXT);
+        sv.addView(tv);
+        setContentView(sv);
     }
 
     @Override
