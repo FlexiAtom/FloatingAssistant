@@ -1,0 +1,13 @@
+--- a/ggml/include/ggml.h
++++ b/ggml/include/ggml.h
+@@ -429,8 +429,8 @@
+         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
+         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
+         GGML_TYPE_Q1_0    = 41,
+-        GGML_TYPE_Q2_0    = 42,
+-        GGML_TYPE_STQ1_0  = 43,
++        GGML_TYPE_STQ1_0  = 42, // [特化重编号] 匹配 AngelSlim 出厂 STQ 文件（其量化张量 raw type=42）；本构建不使用 Q2_0
++        GGML_TYPE_Q2_0    = 43, // 让位 STQ=42；本文件无 Q2_0 张量，且所有 traits 按符号定位，故安全
+         GGML_TYPE_COUNT   = 44,
+     };
+ 
