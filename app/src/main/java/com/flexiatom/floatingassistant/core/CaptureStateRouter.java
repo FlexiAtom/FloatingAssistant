@@ -230,7 +230,11 @@ public final class CaptureStateRouter {
         }
     }
 
-    /** 按行边界把行聚成 ≤maxChars 的段；单行超上限自成一段（OCR 行通常很短，罕见）。 */
+    /**
+     * 按行边界把行聚成 ≤maxChars 的段；**超长单行再按 maxChars 硬切**（优先空格断点），
+     * 保证任何一段都 ≤ 上限——避免整段超模型输入窗被静默截断丢内容（§M2「分片不丢段」）。
+     * 空行丢弃（无内容），非空行内容全部保留且顺序不变。
+     */
     private static List<String> segmentLines(List<String> lines, int maxChars) {
         List<String> segs = new ArrayList<>();
         StringBuilder cur = new StringBuilder();
@@ -239,6 +243,19 @@ public final class CaptureStateRouter {
             if (t.isEmpty()) {
                 continue;
             }
+            // 超长单行：先把在途段落盘，再把硬切出的每片各自单独成段（一片已达上限，无法再并）。
+            while (t.length() > maxChars) {
+                if (cur.length() > 0) {
+                    segs.add(cur.toString());
+                    cur.setLength(0);
+                }
+                int cut = splitPoint(t, maxChars);
+                segs.add(t.substring(0, cut));
+                // 若断在空格处，跳过该分隔空格；硬切（无空格）则原样续。
+                t = (cut < t.length() && t.charAt(cut) == ' ')
+                        ? t.substring(cut + 1).trim() : t.substring(cut);
+            }
+            // t 现 ≤ maxChars，按原行边界贪心聚段。
             if (cur.length() > 0 && cur.length() + 1 + t.length() > maxChars) {
                 segs.add(cur.toString());
                 cur.setLength(0);
@@ -252,6 +269,12 @@ public final class CaptureStateRouter {
             segs.add(cur.toString());
         }
         return segs;
+    }
+
+    /** 断点：优先取 ≤maxChars 内最后一个空格（少切单词），否则在 maxChars 处硬切。 */
+    private static int splitPoint(String s, int maxChars) {
+        int sp = s.lastIndexOf(' ', maxChars);
+        return sp > 0 ? sp : maxChars;
     }
 
     /** 深度优先遍历活动窗口节点树，返回首个非空文本；受限节点预算防卡。 */
