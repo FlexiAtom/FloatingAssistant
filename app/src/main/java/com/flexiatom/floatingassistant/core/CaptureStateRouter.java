@@ -39,6 +39,16 @@ public final class CaptureStateRouter {
      */
     private static final int SEG_MAX_CHARS = 48;
 
+    /** 原位贴图分组键（OverlayManager 一次性批量移除用，§5.2-6）。 */
+    private static final String GROUP_MT = "mt_overlay";
+    /** 逐块贴图的间隔，形成"依次贴上"观感（§5.2-2）。仅在工作线程 sleep，不占主线程。 */
+    private static final long PLACE_INTERVAL_MS = 40;
+    /**
+     * 原位贴图软过期兜底（§5.2-5）：本切片取保守 30s，避免测试期译文瞬隐；
+     * 主失效仍以 M3-C 的"页面变化自动清除"为准，此为无事件页面的安全网。
+     */
+    private static final long INPLACE_TTL_MS = 30_000L;
+
     private final SphereAccessibilityService service;
     private final OverlayManager overlayManager;
     private final Supplier<OcrEngine> engineFactory;
@@ -108,6 +118,148 @@ public final class CaptureStateRouter {
             }
         });
         return true;
+    }
+
+    /**
+     * 提交一次**原位贴图**采集（M3 演示入口，独立于默认整页路径以保回归基线）；
+     * 复用同一 busy/协作取消：已在途则请求取消，不再静默丢弃。
+     */
+    public void runOnceInPlace() {
+        if (!busy.compareAndSet(false, true)) {
+            cancelRequested = true;
+            overlayManager.showTextOverlay(RESULT_KEY, "上一次仍在处理中，正在取消…\n再点一次开始新采集");
+            return;
+        }
+        cancelRequested = false;
+        worker.execute(() -> {
+            try {
+                overlayManager.showTextOverlay(RESULT_KEY, "识别中…");
+                routeOnceInPlace();
+            } finally {
+                busy.set(false);
+            }
+        });
+    }
+
+    /** 原位贴图版采集：OCR 收框+文本 → 整页路由选引擎 → 逐框译文按像素矩形原位贴。 */
+    private void routeOnceInPlace() {
+        ScreenCapturer capturer = service.capturer();
+        Bitmap bmp = null;
+        ScreenCapturer.CaptureException capErr = null;
+        try {
+            bmp = capturer.capture();
+        } catch (ScreenCapturer.CaptureException e) {
+            capErr = e;
+        }
+
+        if (bmp != null) {
+            final int w = bmp.getWidth();
+            final int h = bmp.getHeight();
+            final List<int[]> boxes = new ArrayList<>();
+            final List<String> texts = new ArrayList<>();
+            OcrEngine.LineSink sink = new OcrEngine.LineSink() {
+                @Override
+                public void onBoxes(int total) {
+                    overlayManager.showTextOverlay(RESULT_KEY, "A 可截图 " + w + "×" + h
+                            + " · 检测 " + total + " 框，识别中…");
+                }
+
+                @Override
+                public void onLine(int index, int total, int[] box, String text) {
+                    String t = text == null ? "" : text.trim();
+                    if (box != null && !t.isEmpty()) {
+                        boxes.add(box);
+                        texts.add(t);
+                    }
+                }
+
+                @Override
+                public void onDone() {
+                }
+            };
+            engine().recognizeStream(bmp, sink);
+            bmp.recycle();
+            if (boxes.isEmpty()) {
+                overlayManager.showTextOverlay(RESULT_KEY, "A 可截图 " + w + "×" + h + " · 未识到文本");
+                return;
+            }
+            // 阅读顺序：y 主序、x 次序（det 已大致有序，再显式排一次稳态）
+            Integer[] order = new Integer[boxes.size()];
+            for (int i = 0; i < order.length; i++) {
+                order[i] = i;
+            }
+            java.util.Arrays.sort(order, (a, b) -> {
+                int[] ba = boxes.get(a);
+                int[] bb = boxes.get(b);
+                return ba[1] != bb[1] ? Integer.compare(ba[1], bb[1]) : Integer.compare(ba[0], bb[0]);
+            });
+            String pageText = String.join("\n", texts);
+            runInPlace(mtHub.engineFor(pageText), boxes, texts, order, w, h);
+            return;
+        }
+
+        String treeText = firstTextNodeText();
+        if (treeText != null && !treeText.isBlank()) {
+            String text = "B 树有文本 · " + clip(treeText);
+            Log.i(TAG, "ROUTE=B(inplace) outcome=" + capErr.outcome + " text=" + text);
+            overlayManager.showTextOverlay(RESULT_KEY, text);
+        } else {
+            String text = "C 此页面不支持贴图 · 截图失败(" + capErr.outcome + ") 且树无可读文本";
+            Log.i(TAG, "ROUTE=C(inplace) " + text);
+            overlayManager.showTextOverlay(RESULT_KEY, text);
+        }
+    }
+
+    /**
+     * 逐框译文原位贴图（§5.2-1/2/3）。每块独立 translate（短框恰是轻量模型强项）；
+     * 空输出/未就绪的块跳过（保留原文可见，下层仍可读）。段间响应 cancelRequested。
+     * 先清旧组再贴新，逐块 40ms 间隔形成"依次贴上"观感。
+     */
+    private void runInPlace(MtEngine m, List<int[]> boxes, List<String> texts,
+                            Integer[] order, int w, int h) {
+        try {
+            if (!m.isReady()) {
+                Log.i(TAG, "MT off (engine not ready) → inplace skip");
+                overlayManager.showTextOverlay(RESULT_KEY, "A 可截图 " + w + "×" + h + "（MT 未就绪）");
+                return;
+            }
+            overlayManager.removeGroup(GROUP_MT); // 清上一轮
+            long t = System.nanoTime();
+            int n = order.length;
+            int placed = 0;
+            for (int oi = 0; oi < n; oi++) {
+                if (cancelRequested) {
+                    overlayManager.showTextOverlay(RESULT_KEY,
+                            "已取消（贴到 " + placed + "/" + n + "）");
+                    Log.i(TAG, "INPLACE cancelled at " + placed + "/" + n);
+                    return;
+                }
+                int idx = order[oi];
+                int[] b = boxes.get(idx);
+                String src = texts.get(idx);
+                String tr = m.translate(src);
+                if (tr != null && !tr.isBlank()) {
+                    overlayManager.showBoxedText(GROUP_MT, "mt_" + idx,
+                            b[0], b[1], b[2] - b[0], b[3] - b[1], tr.trim());
+                    overlayManager.scheduleGroupExpiry(GROUP_MT, INPLACE_TTL_MS);
+                    placed++;
+                    try {
+                        Thread.sleep(PLACE_INTERVAL_MS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+                overlayManager.showTextOverlay(RESULT_KEY, "贴图 " + (oi + 1) + "/" + n + " …");
+            }
+            overlayManager.removeOverlay(RESULT_KEY); // 撤临时进度条
+            long ms = (System.nanoTime() - t) / 1_000_000L;
+            Log.i(TAG, "INPLACE done placed=" + placed + "/" + n
+                    + " ms=" + ms + " srcChars=" + String.join("", texts).length());
+        } catch (Throwable err) {
+            Log.e(TAG, "INPLACE failed (OCR overlay untouched): " + err.getClass().getSimpleName()
+                    + ": " + err.getMessage());
+        }
     }
 
     private void routeOnce() {

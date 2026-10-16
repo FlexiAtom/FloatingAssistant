@@ -14,7 +14,9 @@ import android.widget.TextView;
 import android.view.WindowManager;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 悬浮窗唯一出口（提案 §4.1 约定）。内部维护 Map&lt;String,View&gt;，
@@ -31,6 +33,10 @@ public class OverlayManager {
     private final WindowManager windowManager;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Map<String, View> views = new HashMap<>();
+    /** 分组注册表：group → 该组所有 key，供 removeGroup 一次性批量移除（§5.2-6）。 */
+    private final Map<String, Set<String>> groups = new HashMap<>();
+    /** 每组待触发的软过期移除任务，重排期时先撤旧的（§5.2-5）。 */
+    private final Map<String, Runnable> expiry = new HashMap<>();
 
     private Runnable onSphereTap;
 
@@ -106,6 +112,7 @@ public class OverlayManager {
     public void removeOverlay(String key) {
         mainHandler.post(() -> {
             View v = views.remove(key);
+            ungroup(key);
             if (v != null) {
                 windowManager.removeViewImmediate(v);
             }
@@ -129,15 +136,123 @@ public class OverlayManager {
             }
         }
         views.clear();
+        groups.clear();
+        for (Runnable r : expiry.values()) {
+            mainHandler.removeCallbacks(r);
+        }
+        expiry.clear();
     }
 
     private void addView(String key, View view, WindowManager.LayoutParams lp) {
+        addView(null, key, view, lp);
+    }
+
+    /** group 非空则把 key 登记进该组（供 removeGroup 批量移除）。 */
+    private void addView(String group, String key, View view, WindowManager.LayoutParams lp) {
         View old = views.remove(key);
         if (old != null) {
             windowManager.removeViewImmediate(old);
+            ungroup(key);
         }
         windowManager.addView(view, lp);
         views.put(key, view);
+        if (group != null) {
+            groups.computeIfAbsent(group, g -> new HashSet<>()).add(key);
+        }
+    }
+
+    private void ungroup(String key) {
+        for (Set<String> ks : groups.values()) {
+            ks.remove(key);
+        }
+    }
+
+    /**
+     * 原位贴图（§5.2-1）：在屏幕像素矩形 (x,y,w,h) 放一段文本，归入 group。
+     * 展示型穿透（不触摸、不聚焦），字号随框自适应缩放到填满，深色半透底。
+     * 同一 key 重复调用即原位更新。坐标须为屏幕物理像素（截屏 720×1600 与 overlay 同系）。
+     */
+    public void showBoxedText(String group, String key, int x, int y, int w, int h, String text) {
+        mainHandler.post(() -> applyBoxedText(group, key, x, y, w, h, text));
+    }
+
+    private void applyBoxedText(String group, String key, int x, int y, int w, int h, String text) {
+        View existing = views.get(key);
+        if (existing instanceof TextView tv) {
+            tv.setText(text);
+            return;
+        }
+        TextView tv = new TextView(context);
+        tv.setText(text);
+        tv.setTextColor(Color.WHITE);
+        tv.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        tv.setPadding(dp(3), 0, dp(3), 0);
+        // 字号在 [6,18]sp 间二分自适应到填满该框（minSdk30 支持 auto-size）
+        tv.setAutoSizeTextTypeUniformWithConfiguration(
+                6, 18, 1, TypedValue.COMPLEX_UNIT_SP);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(Color.parseColor("#E61C1B1F")); // MD3 反色表面 ~90% 不透明，盖住原文
+        bg.setCornerRadius(dp(4));
+        tv.setBackground(bg);
+        int cw = Math.max(1, w);
+        int ch = Math.max(1, h);
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                cw, ch,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        lp.gravity = Gravity.TOP | Gravity.START; // 绝对定位
+        lp.x = Math.max(0, x);
+        lp.y = Math.max(0, y);
+        addView(group, key, tv, lp);
+    }
+
+    /** 批量移除一组贴图（§5.2-6），一次性 removeViewImmediate，避免逐个抖动。 */
+    public void removeGroup(String group) {
+        mainHandler.post(() -> doRemoveGroup(group));
+    }
+
+    private void doRemoveGroup(String group) {
+        cancelExpiry(group);
+        Set<String> keys = groups.remove(group);
+        if (keys == null) {
+            return;
+        }
+        for (String k : keys) {
+            View v = views.remove(k);
+            if (v != null) {
+                try {
+                    windowManager.removeViewImmediate(v);
+                } catch (Exception ignored) {
+                    // 已失效
+                }
+            }
+        }
+    }
+
+    /**
+     * 无事件软过期兜底（§5.2-5）：group 在 delayMs 后自动整体移除。每次调用重排期（撤旧计时）。
+     * 用于游戏/视频等不派发无障碍事件的页面，防译文长期错位。delayMs&lt;=0 视为常驻（取消计时）。
+     */
+    public void scheduleGroupExpiry(String group, long delayMs) {
+        mainHandler.post(() -> {
+            cancelExpiry(group);
+            if (delayMs <= 0) {
+                return;
+            }
+            Runnable r = () -> doRemoveGroup(group);
+            expiry.put(group, r);
+            mainHandler.postDelayed(r, delayMs);
+        });
+    }
+
+    private void cancelExpiry(String group) {
+        Runnable r = expiry.remove(group);
+        if (r != null) {
+            mainHandler.removeCallbacks(r);
+        }
     }
 
     private int dp(int value) {

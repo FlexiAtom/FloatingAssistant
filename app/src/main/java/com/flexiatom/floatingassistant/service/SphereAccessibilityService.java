@@ -47,6 +47,14 @@ public class SphereAccessibilityService extends AccessibilityService {
         triggerRun();
     }
 
+    /** 触发一次**原位贴图**采集（M3 演示入口，独立于默认整页路径）。 */
+    public void runOnceNowInPlace() {
+        CaptureStateRouter r = router;
+        if (r != null) {
+            r.runOnceInPlace();
+        }
+    }
+
     /** 采集触发统一入口：先记住"这次翻的是哪个 App"，供切走即卸载判定。 */
     private void triggerRun() {
         CaptureStateRouter r = router;

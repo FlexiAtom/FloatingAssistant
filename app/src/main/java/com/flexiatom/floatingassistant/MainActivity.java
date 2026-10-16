@@ -42,6 +42,7 @@ public class MainActivity extends AppCompatActivity {
     /** P3 端到端演示：铺密集正文页 → 程序触发 router 一次 → 覆盖层逐框流式显示真 OCR。 */
     public static final String EXTRA_P3_DEMO = "p3_demo";
     public static final String EXTRA_P3_DEMO_DELAY_MS = "p3_demo_delay_ms";
+    public static final String EXTRA_P3_INPLACE = "p3_inplace";
 
     private TextView statusText;
 
@@ -64,6 +65,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunOrtNnapi(getIntent());
         maybeRunP1(getIntent());
         maybeRunP3Demo(getIntent());
+        maybeRunP3InPlace(getIntent());
     }
 
     @Override
@@ -75,6 +77,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunOrtNnapi(intent);
         maybeRunP1(intent);
         maybeRunP3Demo(intent);
+        maybeRunP3InPlace(intent);
     }
 
     private void maybeRunP0(Intent intent) {
@@ -168,6 +171,28 @@ public class MainActivity extends AppCompatActivity {
             }
             svc.runOnceNow(); // 走生产路径：capture → 懒建 PpOcrEngine → 流式覆盖层
         }, "p3-demo").start();
+    }
+
+    private void maybeRunP3InPlace(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_P3_INPLACE, false)) {
+            return;
+        }
+        showDensePage(); // 已知排版的密集页：原位贴图坐标可核对（验位用）
+        long delayMs = (long) intent.getIntExtra(EXTRA_P3_DEMO_DELAY_MS, 3000);
+        new Thread(() -> {
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            SphereAccessibilityService svc = SphereAccessibilityService.getInstance();
+            if (svc == null) {
+                android.util.Log.e("P3INPLACE", "no accessibility service connected");
+                return;
+            }
+            svc.runOnceNowInPlace(); // M3：capture → OCR 收框 → 逐框译文按矩形原位贴
+        }, "p3-inplace").start();
     }
 
     // C 用：真实文本栈渲染的密集小字页（TextView 排版 + 自然折行 + 真实 AA），
