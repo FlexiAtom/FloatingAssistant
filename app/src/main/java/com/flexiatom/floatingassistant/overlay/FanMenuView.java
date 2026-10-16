@@ -39,7 +39,8 @@ public final class FanMenuView extends View {
     private static final float GROWTH_STEP_DP = 4f;  // 自适应加宽的迭代步长
     private static final float CLOSING_GAP_DP = 28f; // 最外环之外的「关闭环带」宽度（点此区=关闭；须足够厚才点得到）
     private static final float LABEL_PAD_DP = 10f;   // 标签四周留白（参与 fit 判据，与 drawLabel 一致）
-    private static final int LABEL_TEXT_SP = 12;     // 标签统一固定字号（不再动态缩字；放不下只靠自适应加宽圆）
+    private static final int LABEL_TEXT_SP = 9;      // 标签统一固定字号（不再动态缩字；放不下只靠自适应加宽圆）
+    private static final int FULL_RING_COUNT = 2;    // 仅最外两圈显示完整标签；更内的轨迹环缩为「首字+省略号」
 
     /** 一条菜单项（视图层不依赖 Tool，解耦）：文字 + 是否容器（容器带向右小箭头提示可展开）。 */
     public static final class Entry {
@@ -77,9 +78,20 @@ public final class FanMenuView extends View {
         void onOutside();
     }
 
-    /** 每格显示文本（容器带「 ▸」），与 {@link #drawLabel} 一致，供 fit 判据复用。 */
-    private static String displayText(Entry en) {
+    /** 该环是否「完整显示标签」：仅最外 {@link #FULL_RING_COUNT} 圈完整，更内的轨迹环缩为首字+省略号。 */
+    private static boolean isFullRing(int ring, int d) {
+        return ring >= d - FULL_RING_COUNT;
+    }
+
+    /**
+     * 一条菜单项的显示文本：完整环显示全 {@code label}（容器带「 ▸」）；非完整环（更内的轨迹环）
+     * 只显示**首字 + 「…」**、无箭头。{@link #fitOuterPx}/{@link #allFit} 与 {@link #drawLabel} 共用此判据。
+     */
+    private static String displayText(Entry en, boolean full) {
         String t = en.label == null ? "" : en.label;
+        if (!full) {
+            return t.isEmpty() ? "…" : t.substring(0, 1) + "…";
+        }
         return en.container ? t + " ▸" : t;
     }
 
@@ -117,13 +129,14 @@ public final class FanMenuView extends View {
             if (size <= 0) {
                 continue;
             }
+            boolean full = isFullRing(ring, d);
             float sector = SWEEP_DEG / size;
             float ri = innerPx + ring * th;
             float midR = ri + th / 2f;
             float chord = 2f * midR * (float) Math.sin(Math.toRadians(sector / 2f));
             float maxW = Math.min(chord, th) - padPx;
             for (int k = 0; k < size; k++) {
-                if (p.measureText(displayText(page.entries.get(k))) > maxW) {
+                if (p.measureText(displayText(page.entries.get(k), full)) > maxW) {
                     return false;
                 }
             }
@@ -336,12 +349,13 @@ public final class FanMenuView extends View {
             float ro = innerR + (ring + 1) * th;
             float midR = (ri + ro) / 2f;
             float sector = SWEEP_DEG / size;
+            boolean full = isFullRing(ring, d);
             for (int k = 0; k < size; k++) {
                 Entry en = page.entries.get(k);
                 double phiC = Math.toRadians((k + 0.5f) * sector);
                 float lx = (float) (cx + midR * Math.sin(phiC));
                 float ly = (float) (cy - midR * Math.cos(phiC));
-                drawLabel(canvas, en, lx, ly, midR, ro - ri, sector, ring == activeDepth && k == activeIndex);
+                drawLabel(canvas, en, lx, ly, midR, ro - ri, sector, full, ring == activeDepth && k == activeIndex);
             }
         }
     }
@@ -360,8 +374,8 @@ public final class FanMenuView extends View {
 
     /** 把标签单行居中画进楔形：固定字号（不缩字）；仅当达圆上限仍放不下时按可用宽截断加省略号兜底。 */
     private void drawLabel(Canvas canvas, Entry en, float lx, float ly, float midR, float radial,
-                           float sector, boolean active) {
-        String text = displayText(en);
+                           float sector, boolean full, boolean active) {
+        String text = displayText(en, full);
         if (text.isEmpty()) {
             return;
         }
