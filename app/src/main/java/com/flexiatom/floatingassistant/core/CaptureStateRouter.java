@@ -231,8 +231,8 @@ public final class CaptureStateRouter {
                 int[] bb = boxes.get(b);
                 return ba[1] != bb[1] ? Integer.compare(ba[1], bb[1]) : Integer.compare(ba[0], bb[0]);
             });
-            // 预检测矩形互相覆盖（批处理，先于翻译）：把互相重叠的框聚成簇。runInPlace 对多框簇按
-            // 译文长度加权、依原文顺序把簇并集区域切成互不重叠的横条分配给各框（而非丢弃），避免译文互相遮盖。
+            // 预检测矩形互相覆盖（批处理，先于翻译）：把互相重叠的框聚成簇。密集小字页 OCR 框互相覆盖，聚成多框簇；
+            // runInPlace 对多框簇做段落合并——整簇占一块并集区、字号整体缩到放得下，避免逐框切横带导致的"带高<一行字"溢出压邻行。
             List<List<Integer>> clusters = clusterBoxes(boxes, order, OVERLAP_MERGE_RATIO);
             String pageText = String.join("\n", texts);
             runInPlace(mtHub.engineFor(pageText), boxes, texts, bgColors, clusters, w, h);
@@ -252,12 +252,14 @@ public final class CaptureStateRouter {
     }
 
     /**
-     * 逐簇译文原位贴图（§5.2-1/2/3 + 覆盖簇加权分配）。每簇先逐框 translate（短框恰是轻量模型强项），
-     * 空输出的框跳过（保留原文可见）。单框簇贴回原框；**多框（互相覆盖）簇**：把簇并集矩形按各框
-     * **译文长度加权**、依**原文阅读顺序**切成互不重叠的横条，逐框分配一条——译文长的多占、位置靠上的在上，
-     * 既不互相遮盖又尽量贴合原位置。**落位前再经 {@link #resolveDisjoint} 兜底网**：把每块对它之前已贴的
-     * 全部译文做差取最大余块，保证任意两块译文**两两不重叠**（补聚类阈值 0.15 漏掉的亚阈值重叠与并集越界）。
-     * 簇间/框间响应 cancelRequested；先清旧组再贴，逐块 40ms 形成"依次贴上"观感。
+     * 逐簇译文原位贴图（§5.2-1/2/3 + 密集页段落合并）。每簇先逐框 translate（短框恰是轻量模型强项），
+     * 空输出的框跳过（保留原文可见）。单框簇（原文行互不重叠，如小说大字）贴回原框；**多框（互相覆盖）簇**
+     * = 密集小字：把这些框的译文**并成一段、整簇占一块并集矩形区**，由 {@code showBoxedText} 的 autoSize 把
+     * 字号**整体缩到放得下**——单块自洽故不再互相叠加。**（旧法）按译文权重把并集切成逐框横带已废弃**：密集页
+     * 会出现"带高 < 一行字"，连最小 6sp 都放不下 → 译文被裁且半行压半行（用户 2026-10-17 报告的"两块译文叠
+     * 在一起"）。**落位前经 {@link #resolveDisjoint} 兜底网**：把每块对它之前已贴的译文做差取最大余块，保证
+     * 任意两块译文**两两不重叠**（补聚类阈值 0.15 漏掉的亚阈值重叠与并集越界）。簇间/框间响应 cancelRequested；
+     * 先清旧组再贴，逐块 40ms 形成"依次贴上"观感。
      */
     private void runInPlace(MtEngine m, List<int[]> boxes, List<String> texts,
                             List<Integer> bgColors, List<List<Integer>> clusters, int w, int h) {
@@ -284,10 +286,8 @@ public final class CaptureStateRouter {
                 if (cs > 1) {
                     clustered++;
                 }
-                // 1) 先译完全簇（拿到译文长度才能加权分配）；逐框响应取消。
+                // 1) 先译完全簇（逐框/逐行短段译，避开长输入坍缩）；逐框响应取消。
                 String[] trs = new String[cs];
-                int[] weights = new int[cs];
-                int totalW = 0;
                 for (int j = 0; j < cs; j++) {
                     if (cancelRequested) {
                         overlayManager.showTextOverlay(RESULT_KEY,
@@ -298,41 +298,45 @@ public final class CaptureStateRouter {
                     int idx = cluster.get(j);
                     String tr = m.translate(texts.get(idx));
                     trs[j] = (tr == null || tr.isBlank()) ? null : tr.trim();
-                    weights[j] = trs[j] == null ? 0 : Math.max(1, trs[j].length());
-                    totalW += weights[j];
                     done++;
                     overlayManager.showTextOverlay(RESULT_KEY, "贴图 " + done + "/" + total + " …");
                 }
-                // 2) 多框簇求并集矩形，供加权切条。
-                int[] union = cs > 1 ? clusterUnion(boxes, cluster) : null;
-                // 3) 逐框贴：单框用原框，多框按译文权重分配横条。
-                for (int j = 0; j < cs; j++) {
-                    if (trs[j] == null) {
-                        continue; // 空输出：保留原文可见
+                // 2) 收非空译文（阅读序）；全空则跳过、保留原文可见。
+                List<String> parts = new ArrayList<>();
+                for (String tr : trs) {
+                    if (tr != null) {
+                        parts.add(tr);
                     }
-                    int idx = cluster.get(j);
-                    int[] rect = (cs == 1 || totalW <= 0) ? boxes.get(idx)
-                            : allocateBand(union, weights, j, totalW);
-                    // 兜底网：把该矩形对已贴译文做差，取最大余块——聚类阈值(0.15)漏掉的亚阈值重叠、
-                    // 以及并集横条越界压到别簇时，也能保证落位两两不重叠（覆盖不变量）。全被占则跳过、留原文可见。
-                    rect = resolveDisjoint(rect, committed);
-                    if (rect == null) {
-                        skippedCovered++;
-                        continue;
-                    }
-                    int bg = bgColors.get(idx);
-                    overlayManager.showBoxedText(GROUP_MT, "mt_" + idx,
-                            rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1],
-                            trs[j], bg, contrastText(bg));
-                    overlayManager.scheduleGroupExpiry(GROUP_MT, INPLACE_TTL_MS);
-                    committed.add(rect);
-                    placed++;
-                    try {
-                        Thread.sleep(PLACE_INTERVAL_MS);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    }
+                }
+                if (parts.isEmpty()) {
+                    continue;
+                }
+                // 3) 落位：
+                //    - 单框簇（原文行互不重叠，如小说大字）→ 贴回原框，沿用原行为（回归基线）。
+                //    - 多框簇（框互相覆盖 = 密集小字）→ 段落合并：整簇占一块并集区、所有译文并成一段、
+                //      字号由 autoSize 整体缩到放得下。**不再逐框切横带**——横带会出现"带高<一行字"，
+                //      连 6sp 都放不下 → 译文被裁且半行压半行（即"两块译文叠在一起"，用户 2026-10-17 裁定的修复方向）。
+                int anchorIdx = cluster.get(0);
+                int[] rect = (cs == 1) ? boxes.get(anchorIdx) : clusterUnion(boxes, cluster);
+                String joined = (cs == 1) ? parts.get(0) : String.join("\n", parts);
+                // 兜底网：把该矩形对已贴译文做差，取最大余块，保证簇间落位两两不重叠。全被占则跳过、留原文可见。
+                rect = resolveDisjoint(rect, committed);
+                if (rect == null) {
+                    skippedCovered++;
+                    continue;
+                }
+                int bg = bgColors.get(anchorIdx);
+                overlayManager.showBoxedText(GROUP_MT, "mt_" + anchorIdx,
+                        rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1],
+                        joined, bg, contrastText(bg));
+                overlayManager.scheduleGroupExpiry(GROUP_MT, INPLACE_TTL_MS);
+                committed.add(rect);
+                placed += parts.size();
+                try {
+                    Thread.sleep(PLACE_INTERVAL_MS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
                 }
             }
             overlayManager.removeOverlay(RESULT_KEY); // 撤临时进度条
@@ -689,32 +693,10 @@ public final class CaptureStateRouter {
     }
 
     /**
-     * 加权分配第 k 条横带：把并集矩形的纵向跨度 [y0,y1] 按各框**译文长度权重**切成连续不重叠的带，
-     * 依传入的 weights 顺序（= 原文阅读序）自上而下分配，故译文长的占更高一条、原文靠上的在上。
-     * 末条补足到 y1，消除取整缝隙。返回 [x0, bandTop, x1, bandBot]（横向取并集全宽）。
-     */
-    private static int[] allocateBand(int[] union, int[] weights, int k, int totalW) {
-        int top = union[1];
-        int bot = union[3];
-        int spanH = Math.max(1, bot - top);
-        int acc = 0;
-        for (int j = 0; j < k; j++) {
-            acc += weights[j];
-        }
-        int y0 = top + (int) Math.round((double) spanH * acc / totalW);
-        int y1 = (k == weights.length - 1) ? bot
-                : top + (int) Math.round((double) spanH * (acc + weights[k]) / totalW);
-        if (y1 <= y0) {
-            y1 = Math.min(bot, y0 + 1);
-        }
-        return new int[]{union[0], y0, union[2], y1};
-    }
-
-    /**
      * 覆盖不变量的兜底网：把待贴矩形 {@code r} 对**已贴译文** {@code committed} 逐一做差，取面积最大的余块返回，
      * 保证它与所有已贴矩形不重叠；若被完全占满则返回 {@code null}（调用方跳过、保留原文可见）。
-     * 按调用方的阅读序贪心执行——先贴者占位、后贴者让位。聚类阈值(0.15)漏掉的亚阈值重叠、以及并集横条
-     * 越界压到别簇时，这一步都能把重叠消成不重叠（压力测试 /tmp/OverlapStress 复现并验证）。
+     * 按调用方的阅读序贪心执行——先贴者占位、后贴者让位。聚类阈值(0.15)漏掉的亚阈值重叠、以及并集区越界
+     * 压到别簇时，这一步都能把重叠消成不重叠（压力测试 /tmp/OverlapStress 复现并验证）。
      */
     private static int[] resolveDisjoint(int[] r, List<int[]> committed) {
         List<int[]> pieces = new ArrayList<>();
