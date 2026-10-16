@@ -24,22 +24,21 @@ import java.util.List;
  * 落最外环之外或左半 = 关闭整个菜单。可点按即选，也可按住拖动实时高亮、松手提交。
  *
  * <p>本视图放在一个**矩形** overlay 窗里，球心对齐到窗左边缘中点（cx=0, cy=高/2）；左边缘时左半出屏不接收触摸，只留右半环带。
- * 外沿半径与**每环宽度均按内容自适应**（{@link #fitRingWidths}）：每环**只量自己页内最长的标签**加宽（与他环无关），
- * 固定字号 {@code LABEL_TEXT_SP}；总外沿在 {@code OUTER_BASE_DP}～{@code OUTER_MAX_DP} 之间，触顶时退化为均分
- * 并由标签省略号兜底；窗尺寸随总外沿联动。最外环外留 {@code CLOSING_GAP_DP}「关闭环带」（点此区=关闭）。
- * 深度=1 时单环铺满基准带宽，与旧单页扇形逐像素一致（回归基线）。
+ * **每环宽度按内容独立解算**（{@link #fitRingWidths}）：第 k 环只量**自己页内最长的标签**在固定字号
+ * {@code LABEL_TEXT_SP} 下所需宽度，与他环无关、也不凑任何统一尺寸；总外沿仅受上限 {@code OUTER_MAX_DP} 约束，
+ * 触顶时退化为均分并由标签省略号兜底；窗尺寸随总外沿联动。最外环外留 {@code CLOSING_GAP_DP}「关闭环带」（点此区=关闭）。
+ * 故菜单整体尺寸随内容深浅与文字长短变化（不再有固定基准外沿）。
  */
 public final class FanMenuView extends View {
 
     private static final float SWEEP_DEG = 180f;
 
-    // 几何常量（dp）。外沿半径按内容自适应（见 fitOuterPx）：基准起步、放不下则加宽、封顶为止。
+    // 几何常量（dp）。每环宽度按**该环自己页内最长标签**逐环解算（见 fitRingWidths）；总外沿只受上限约束，无基准保底。
     private static final float INNER_DP = 30f;       // 最内枢纽（= 球心返回/关闭区）半径，覆盖 48dp 球
-    private static final float OUTER_BASE_DP = 150f; // 外沿半径基准（下限）；内容挤时向上加宽
     private static final float OUTER_MAX_DP = 240f;  // 外沿半径上限（防超大窗）
-    private static final float GROWTH_STEP_DP = 4f;  // 自适应加宽的迭代步长
+    private static final float GROWTH_STEP_DP = 2f;  // 逐环加宽的迭代步长（越小越贴合文字）
     private static final float CLOSING_GAP_DP = 28f; // 最外环之外的「关闭环带」宽度（点此区=关闭；须足够厚才点得到）
-    private static final float LABEL_PAD_DP = 10f;   // 标签四周留白（参与 fit 判据，与 drawLabel 一致）
+    private static final float LABEL_PAD_DP = 4f;    // 标签到环边的留白（参与 fit 判据，与 drawLabel 一致）
     private static final int LABEL_TEXT_SP = 9;      // 标签统一固定字号（不再动态缩字；放不下只靠自适应加宽圆）
     private static final int FULL_RING_COUNT = 2;    // 仅最外两圈显示完整标签；更内的轨迹环缩为「首字+省略号」
 
@@ -102,16 +101,15 @@ public final class FanMenuView extends View {
      */
     private static float fitOuterPx(Context context, List<Page> stack) {
         float innerPx = dp(context, INNER_DP);
-        float basePx = dp(context, OUTER_BASE_DP);
         float maxPx = dp(context, OUTER_MAX_DP);
         float stepPx = dp(context, GROWTH_STEP_DP);
         float padPx = dp(context, LABEL_PAD_DP);
         if (stack == null || stack.isEmpty()) {
-            return basePx;
+            return innerPx;
         }
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         p.setTextSize(sp(context, LABEL_TEXT_SP));
-        float[] widths = fitRingWidths(stack, innerPx, basePx, maxPx, stepPx, padPx, p);
+        float[] widths = fitRingWidths(stack, innerPx, maxPx, stepPx, padPx, p);
         float total = 0f;
         for (float w : widths) {
             total += w;
@@ -120,12 +118,13 @@ public final class FanMenuView extends View {
     }
 
     /**
-     * 逐环求宽度：每环**只按自己页内最长的标签**加宽，与他环无关；先宽的环先定。
+     * 逐环求宽度：每环**只按自己页内最长的标签**取宽，与他环无关，也不凑任何统一尺寸；
+     * 从步长起逐环生长到放得下（内环先定稿：加宽只外推更外环的内边界，不会破坏已满足的环）。
      * 总带宽封顶 {@code maxPx - innerPx}：若按各自需求排不下，剩余空间均分给尚未放得下的环（退化），
-     * 极端时各环均分（= 旧行为），由 drawLabel 的省略号兜底。
+     * 极端时各环均分，由 drawLabel 的省略号兜底。
      * 判据与 {@link #drawLabel} 一致：可用宽 = min(弦长, 本环宽) - pad，弦长 = 2·midR·sin(扇区/2)。
      */
-    private static float[] fitRingWidths(List<Page> stack, float innerPx, float basePx, float maxPx,
+    private static float[] fitRingWidths(List<Page> stack, float innerPx, float maxPx,
                                          float stepPx, float padPx, Paint p) {
         int d = stack.size();
         float[] w = new float[d];
@@ -170,14 +169,6 @@ public final class FanMenuView extends View {
             }
             float total = sum;
             if (allFit) {
-                // 总带宽不足基准时把余量摊给各环，保持浅内容的旧视觉（外沿=基准）
-                float extra = Math.max(0f, basePx - total);
-                if (extra > 0f) {
-                    float share = extra / d;
-                    for (int k = 0; k < d; k++) {
-                        w[k] += share;
-                    }
-                }
                 return w;
             }
             boolean grew = false;
@@ -223,7 +214,7 @@ public final class FanMenuView extends View {
         }
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         p.setTextSize(sp(context, LABEL_TEXT_SP));
-        float[] w = fitRingWidths(stack, dp(context, INNER_DP), dp(context, OUTER_BASE_DP),
+        float[] w = fitRingWidths(stack, dp(context, INNER_DP),
                 dp(context, OUTER_MAX_DP), dp(context, GROWTH_STEP_DP), dp(context, LABEL_PAD_DP), p);
         float total = 0f;
         for (float x : w) {
