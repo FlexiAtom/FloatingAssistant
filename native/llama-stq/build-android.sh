@@ -23,8 +23,10 @@ fi
 echo "[2/5] 构建时校验：枚举值必须 STQ1_0=42 / Q2_0=43 / COUNT=44"
 "$HERE/verify-stq.sh" source "$LLAMA_SRC/ggml/include/ggml.h"
 
-echo "[3/5] 配置 + 交叉编译（关键：armv8.2-a 单独不隐含 FEAT_DOTPROD，必须显式 +dotprod+i8mm+fp16；
-#   否则运行时 STQ 落标量 generic，真机 decode 掉到 ~1.3 t/s。天玑6100 A76/A55 支持 dotprod/i8mm/fp16，不含 SVE/SME）"
+echo "[3/5] 配置 + 交叉编译（关键：armv8.2-a 单独不隐含 FEAT_DOTPROD，必须显式 +dotprod+fp16；
+#   否则运行时 STQ 落标量 generic，真机 decode 掉到 ~1.3 t/s。天玑6100 A76/A55 支持 dotprod/fp16，不含 SVE/SME。
+#   注意：不能加 +i8mm——那是 ARMv8.6 特性，A55/A76 没有（/proc/cpuinfo 无 i8mm 位）。加了它 Q4_K_M 的
+#   ggml_gemm_q4_K_8x8_q8_K 会编出 i8mm 指令、真机执行即 SIGILL(ILL_ILLOPC)。STQ1_0 只走 dotprod 故此前未触雷。）"
 cmake -G Ninja -B "$BUILD" -S "$LLAMA_SRC" \
   -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a \
@@ -32,7 +34,7 @@ cmake -G Ninja -B "$BUILD" -S "$LLAMA_SRC" \
   -DANDROID_STL=c++_static \
   -DCMAKE_BUILD_TYPE=Release \
   -DGGML_NATIVE=OFF \
-  -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+i8mm+fp16 \
+  -DGGML_CPU_ARM_ARCH=armv8.2-a+dotprod+fp16 \
   -DGGML_OPENMP=OFF \
   -DLLAMA_CURL=OFF \
   -DBUILD_SHARED_LIBS=ON \
