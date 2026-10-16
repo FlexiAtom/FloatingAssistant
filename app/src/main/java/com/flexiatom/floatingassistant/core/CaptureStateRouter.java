@@ -9,7 +9,9 @@ import com.flexiatom.floatingassistant.overlay.OverlayManager;
 import com.flexiatom.floatingassistant.service.SphereAccessibilityService;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -29,6 +31,12 @@ public final class CaptureStateRouter {
     private static final String TAG = "CaptureRouter";
     private static final String RESULT_KEY = "capture_result";
     private static final int TREE_NODE_BUDGET = 800;
+    /**
+     * 分段翻译的单段字符上限。1.25-bit 模型在整屏长输入上实测坍缩（空输出/乱码/复读），
+     * 故按行边界把 OCR 文本切成 ≤此值的短段逐段翻译再拼回。48 字 ≈ 40 内容 token + 模板，
+     * 落在模型稳定区内；Q4_K_M 能力更强但仍沿用同一分段口径。
+     */
+    private static final int SEG_MAX_CHARS = 48;
 
     private final SphereAccessibilityService service;
     private final OverlayManager overlayManager;
@@ -92,6 +100,7 @@ public final class CaptureStateRouter {
             final int w = bmp.getWidth();
             final int h = bmp.getHeight();
             final StringBuilder acc = new StringBuilder();
+            final List<String> lines = new ArrayList<>();
             final int[] boxCount = {0};
             // 逐框流式：首行 ~0.2s 即到、逐行补全（B3）；overlay 同 key 原位更新，非阻塞主线程。
             OcrEngine.LineSink sink = new OcrEngine.LineSink() {
@@ -108,6 +117,7 @@ public final class CaptureStateRouter {
                         acc.append('\n');
                     }
                     acc.append(text.trim());
+                    lines.add(text.trim());
                     overlayManager.showTextOverlay(RESULT_KEY,
                             "识别中 " + (index + 1) + "/" + total + "\n" + acc);
                 }
@@ -122,9 +132,9 @@ public final class CaptureStateRouter {
             };
             engine().recognizeStream(bmp, sink);
             bmp.recycle();
-            // 整屏 OCR 完成后一次性翻（非逐行，避免每行 23s prefill）。acc 在 onDone 后已满。
-            if (acc.length() > 0) {
-                runTranslateOnce(acc.toString(), w, h);
+            // 分段翻译：整屏一次性喂会超模型长输入能力悬崖（实测坍缩），故按行切成小段逐段翻。
+            if (!lines.isEmpty()) {
+                runTranslateSegmented(lines, w, h);
             }
             return;
         }
@@ -142,32 +152,75 @@ public final class CaptureStateRouter {
     }
 
     /**
-     * 整屏 MT：原文→译文双语叠加。全程 try/catch(Throwable)，**绝不让 MT 失败波及 OCR 覆盖层**。
-     * 未就绪 → 记 "MT off" 直接返回（OCR 原文留在屏上不动）；翻译 null/blank → 保留 OCR 原文不覆盖。
+     * 分段 MT：把 OCR 行按 {@link #SEG_MAX_CHARS} 边界聚成小段，逐段翻译再拼双语。
+     * 全程 try/catch(Throwable)，**绝不让 MT 失败波及 OCR 覆盖层**。未就绪 → 记 "MT off" 直接返回。
+     * 逐段增量刷新覆盖层（显示进度 + 已译部分），避免整页等待像卡死；某段空输出则跳过、不影响其余段。
      */
-    private void runTranslateOnce(String orig, int w, int h) {
+    private void runTranslateSegmented(List<String> lines, int w, int h) {
         try {
             MtEngine m = mt();
             if (!m.isReady()) {
-                Log.i(TAG, "MT off (engine not ready) chars=" + orig.length());
+                Log.i(TAG, "MT off (engine not ready)");
                 return;
             }
-            overlayManager.showTextOverlay(RESULT_KEY, "翻译中…（首次加载约26s）\n" + orig);
+            List<String> segs = segmentLines(lines, SEG_MAX_CHARS);
             long t = System.nanoTime();
-            String trans = m.translate(orig);
+            StringBuilder transAll = new StringBuilder();
+            int okSegs = 0;
+            for (int i = 0; i < segs.size(); i++) {
+                String seg = segs.get(i);
+                String tr = m.translate(seg);
+                if (tr != null && !tr.isBlank()) {
+                    if (transAll.length() > 0) {
+                        transAll.append('\n');
+                    }
+                    transAll.append(tr.trim());
+                    okSegs++;
+                }
+                overlayManager.showTextOverlay(RESULT_KEY,
+                        "翻译中 " + (i + 1) + "/" + segs.size() + "\n\n原文：\n" + seg
+                                + "\n\n译文：\n" + transAll);
+            }
             long transMs = (System.nanoTime() - t) / 1_000_000L;
-            if (trans == null || trans.isBlank()) {
-                Log.i(TAG, "MT empty transMs=" + transMs + " srcChars=" + orig.length() + " → 保留原文");
-                overlayManager.showTextOverlay(RESULT_KEY, "A 可截图 " + w + "×" + h + "（MT 无输出）\n" + orig);
+            String orig = String.join("\n", lines);
+            if (transAll.length() == 0) {
+                Log.i(TAG, "MT empty transMs=" + transMs + " segs=" + segs.size() + " → 保留原文");
+                overlayManager.showTextOverlay(RESULT_KEY,
+                        "A 可截图 " + w + "×" + h + "（MT 无输出）\n" + orig);
                 return;
             }
-            overlayManager.showTextOverlay(RESULT_KEY, "原文：\n" + orig + "\n\n译文：\n" + trans);
-            Log.i(TAG, "MT done transMs=" + transMs + " srcChars=" + orig.length()
-                    + " outChars=" + trans.length());
+            overlayManager.showTextOverlay(RESULT_KEY, "原文：\n" + orig + "\n\n译文：\n" + transAll);
+            Log.i(TAG, "MT done transMs=" + transMs + " segs=" + segs.size() + " okSegs=" + okSegs
+                    + " srcChars=" + orig.length() + " outChars=" + transAll.length());
+            Log.i(TAG, "译文: " + transAll);
         } catch (Throwable err) {
             Log.e(TAG, "MT failed (OCR overlay untouched): " + err.getClass().getSimpleName()
                     + ": " + err.getMessage());
         }
+    }
+
+    /** 按行边界把行聚成 ≤maxChars 的段；单行超上限自成一段（OCR 行通常很短，罕见）。 */
+    private static List<String> segmentLines(List<String> lines, int maxChars) {
+        List<String> segs = new ArrayList<>();
+        StringBuilder cur = new StringBuilder();
+        for (String ln : lines) {
+            String t = ln.trim();
+            if (t.isEmpty()) {
+                continue;
+            }
+            if (cur.length() > 0 && cur.length() + 1 + t.length() > maxChars) {
+                segs.add(cur.toString());
+                cur.setLength(0);
+            }
+            if (cur.length() > 0) {
+                cur.append('\n');
+            }
+            cur.append(t);
+        }
+        if (cur.length() > 0) {
+            segs.add(cur.toString());
+        }
+        return segs;
     }
 
     /** 深度优先遍历活动窗口节点树，返回首个非空文本；受限节点预算防卡。 */
