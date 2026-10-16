@@ -28,17 +28,22 @@
 | 文件 | 大小 | sha256 | 来源 |
 |---|---|---|---|
 | `Hy-MT2-1.8B-1.25Bit.gguf` | 461,860,800 B | `cc497fe8f033b52b3b8b00a7669e9661435432f9d4cd43f7ed24400c01507a93` | AngelSlim/Hy-MT2-1.8B-1.25bit-GGUF（hunyuan-dense，量化张量 raw type=42=STQ1_0） |
+| `Hy-MT2-1.8B-Q4_K_M.gguf` | 1,133,080,448 B | `dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699` | 同模型 Q4_K_M 量化（原生 GGML_TYPE_Q4_K，不依赖 STQ 特化）；对照测用，不入库 |
 
-设备路径：`/sdcard/Android/data/com.flexiatom.floatingassistant/files/Hy-MT2-1.8B-1.25Bit.gguf`。
+设备路径：`/sdcard/Android/data/com.flexiatom.floatingassistant/files/Hy-MT2-1.8B-1.25Bit.gguf`（工厂按此名加载；Q4 对照时把 Q4 文件改名占此槽、1.25-bit 备份为 `.bak`）。
+
+**密集页对照实测（P3 demo，870 字技术正文，22 OCR 框，分段 SEG_MAX_CHARS=48 → 20 段）**：
+- 1.25-bit：整屏及细粒度分段均坍缩（空输出 `gen=0` / 乱码 `A A A` / 复读 `gen=256`），okSegs 远低于 segs。
+- Q4_K_M：`segs=20 okSegs=20 outChars=3184 transMs≈103221`（含 6.5s 冷加载，纯译 ~4.85s/段），英文连贯可读、个别字残留（如"布"未译、"热循环"译成 thermal cycle）。**结论：Q4 决定性改善密集页翻译**。代价：模型 2.45× 体积、冷加载 ~4×、单段延迟上升。
 
 ## 原生库 .so（不入库，由 build-android.sh 重建，见 §3.1b 构建时校验）
 源 = llama.cpp PR #22836 head `1e411d8f…` + `native/llama-stq/stq-renumber.patch`（STQ1_0↔Q2_0：42↔43），
-NDK r29、`armv8.2-a+dotprod+i8mm+fp16`、`c++_static`。sha256（重建后应逐字节一致，否则 verify 或本表报警）：
+NDK r29、`armv8.2-a+dotprod+fp16`（**不含 i8mm**——天玑6100 无 ARMv8.6 i8mm，加了会让 Q4_K_M 的 gemm 编出非法指令、真机 SIGILL）、`c++_static`。sha256（重建后应逐字节一致，否则 verify 或本表报警）：
 
 | .so | sha256 |
 |---|---|
 | `libggml-base.so` | `0dcf96d2ec5d8bc1844d32c3dfd2b764f68b70df9d1dcdaba69688621e574814` |
-| `libggml-cpu.so` | `75d80b59b5af2ea13b6b50979ef16df4e8921dd5c565486e9378b0bcdc9b416d` |
+| `libggml-cpu.so` | `e7f13a7cecaa64a0abb8d1d4cf16ee8b9264da00bd2a5a332ca95943efcbe461` |
 | `libggml.so` | `66c4a7c0a1e05fee5fd5efcc4e1c3724e702dd06401c177b603384b3bdce6d91` |
 | `libllama.so` | `f0d11ae50befdf841d470a34c5dc35b36c1b4c8c025f32e90f69afd71266f432` |
 | `libmtjni.so` | `b993c444ced41f17481b445c82bb3591ed4bf2b98943dccd43e7eed41c55e46a` |
