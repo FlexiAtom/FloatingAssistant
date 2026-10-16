@@ -255,7 +255,9 @@ public final class CaptureStateRouter {
      * 逐簇译文原位贴图（§5.2-1/2/3 + 覆盖簇加权分配）。每簇先逐框 translate（短框恰是轻量模型强项），
      * 空输出的框跳过（保留原文可见）。单框簇贴回原框；**多框（互相覆盖）簇**：把簇并集矩形按各框
      * **译文长度加权**、依**原文阅读顺序**切成互不重叠的横条，逐框分配一条——译文长的多占、位置靠上的在上，
-     * 既不互相遮盖又尽量贴合原位置。簇间/框间响应 cancelRequested；先清旧组再贴，逐块 40ms 形成"依次贴上"观感。
+     * 既不互相遮盖又尽量贴合原位置。**落位前再经 {@link #resolveDisjoint} 兜底网**：把每块对它之前已贴的
+     * 全部译文做差取最大余块，保证任意两块译文**两两不重叠**（补聚类阈值 0.15 漏掉的亚阈值重叠与并集越界）。
+     * 簇间/框间响应 cancelRequested；先清旧组再贴，逐块 40ms 形成"依次贴上"观感。
      */
     private void runInPlace(MtEngine m, List<int[]> boxes, List<String> texts,
                             List<Integer> bgColors, List<List<Integer>> clusters, int w, int h) {
@@ -274,6 +276,9 @@ public final class CaptureStateRouter {
             int placed = 0;
             int clustered = 0;
             int done = 0;
+            int skippedCovered = 0;
+            /** 已贴译文矩形（阅读序累积）：每贴一块前把新矩形对它做差，保证落位两两不重叠（覆盖不变量的兜底网）。 */
+            List<int[]> committed = new ArrayList<>();
             for (List<Integer> cluster : clusters) {
                 int cs = cluster.size();
                 if (cs > 1) {
@@ -308,11 +313,19 @@ public final class CaptureStateRouter {
                     int idx = cluster.get(j);
                     int[] rect = (cs == 1 || totalW <= 0) ? boxes.get(idx)
                             : allocateBand(union, weights, j, totalW);
+                    // 兜底网：把该矩形对已贴译文做差，取最大余块——聚类阈值(0.15)漏掉的亚阈值重叠、
+                    // 以及并集横条越界压到别簇时，也能保证落位两两不重叠（覆盖不变量）。全被占则跳过、留原文可见。
+                    rect = resolveDisjoint(rect, committed);
+                    if (rect == null) {
+                        skippedCovered++;
+                        continue;
+                    }
                     int bg = bgColors.get(idx);
                     overlayManager.showBoxedText(GROUP_MT, "mt_" + idx,
                             rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1],
                             trs[j], bg, contrastText(bg));
                     overlayManager.scheduleGroupExpiry(GROUP_MT, INPLACE_TTL_MS);
+                    committed.add(rect);
                     placed++;
                     try {
                         Thread.sleep(PLACE_INTERVAL_MS);
@@ -325,7 +338,8 @@ public final class CaptureStateRouter {
             overlayManager.removeOverlay(RESULT_KEY); // 撤临时进度条
             long ms = (System.nanoTime() - t) / 1_000_000L;
             Log.i(TAG, "INPLACE done placed=" + placed + "/" + total + " clusters=" + clustered
-                    + " ms=" + ms + " srcChars=" + String.join("", texts).length());
+                    + " coveredSkip=" + skippedCovered + " ms=" + ms
+                    + " srcChars=" + String.join("", texts).length());
         } catch (Throwable err) {
             Log.e(TAG, "INPLACE failed (OCR overlay untouched): " + err.getClass().getSimpleName()
                     + ": " + err.getMessage());
@@ -694,6 +708,61 @@ public final class CaptureStateRouter {
             y1 = Math.min(bot, y0 + 1);
         }
         return new int[]{union[0], y0, union[2], y1};
+    }
+
+    /**
+     * 覆盖不变量的兜底网：把待贴矩形 {@code r} 对**已贴译文** {@code committed} 逐一做差，取面积最大的余块返回，
+     * 保证它与所有已贴矩形不重叠；若被完全占满则返回 {@code null}（调用方跳过、保留原文可见）。
+     * 按调用方的阅读序贪心执行——先贴者占位、后贴者让位。聚类阈值(0.15)漏掉的亚阈值重叠、以及并集横条
+     * 越界压到别簇时，这一步都能把重叠消成不重叠（压力测试 /tmp/OverlapStress 复现并验证）。
+     */
+    private static int[] resolveDisjoint(int[] r, List<int[]> committed) {
+        List<int[]> pieces = new ArrayList<>();
+        pieces.add(r);
+        for (int[] c : committed) {
+            List<int[]> next = new ArrayList<>();
+            for (int[] p : pieces) {
+                next.addAll(subtractRect(p, c));
+            }
+            pieces = next;
+        }
+        int[] best = null;
+        long bestArea = 0;
+        for (int[] p : pieces) {
+            if (p[2] <= p[0] || p[3] <= p[1]) {
+                continue; // 退化零面积片，丢弃
+            }
+            long area = (long) (p[2] - p[0]) * (p[3] - p[1]);
+            if (area > bestArea) {
+                bestArea = area;
+                best = p;
+            }
+        }
+        return best;
+    }
+
+    /** 矩形差 {@code p \ c}：不相交→[p]；否则返回 p 去掉交集后至多 4 条互不重叠的边带（上/下/左/右）。 */
+    private static List<int[]> subtractRect(int[] p, int[] c) {
+        List<int[]> out = new ArrayList<>();
+        int ix0 = Math.max(p[0], c[0]), iy0 = Math.max(p[1], c[1]);
+        int ix1 = Math.min(p[2], c[2]), iy1 = Math.min(p[3], c[3]);
+        if (ix0 >= ix1 || iy0 >= iy1) {
+            out.add(p); // 不相交，原样保留
+            return out;
+        }
+        if (p[1] < iy0) {
+            out.add(new int[]{p[0], p[1], p[2], iy0}); // 上
+        }
+        if (iy1 < p[3]) {
+            out.add(new int[]{p[0], iy1, p[2], p[3]}); // 下
+        }
+        if (p[0] < ix0) {
+            out.add(new int[]{p[0], iy0, ix0, iy1}); // 左（限中间带）
+        }
+        if (ix1 < p[2]) {
+            out.add(new int[]{ix1, iy0, p[2], iy1}); // 右（限中间带）
+        }
+        return out;
     }
 
     /** 深度优先遍历活动窗口节点树，返回首个非空文本；受限节点预算防卡。 */
