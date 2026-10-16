@@ -13,8 +13,10 @@ import android.widget.TextView;
 
 import android.view.WindowManager;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.IntConsumer;
@@ -49,6 +51,8 @@ public class OverlayManager {
     private final Map<String, Set<String>> groups = new HashMap<>();
     /** 每组待触发的软过期移除任务，重排期时先撤旧的（§5.2-5）。 */
     private final Map<String, Runnable> expiry = new HashMap<>();
+    /** 截屏期间临时 detach 的窗（key/View/params），供 {@link #showSelfAfterCapture()} 原样挂回。 */
+    private final List<Detached> detachedForCapture = new ArrayList<>();
 
     private Runnable onSphereTap;
 
@@ -190,6 +194,91 @@ public class OverlayManager {
         View v = views.remove(KEY_SPHERE);
         if (v != null) {
             windowManager.removeViewImmediate(v);
+        }
+    }
+
+    /**
+     * 截屏前临时摘除**本 app 拥有的全部悬浮窗**（悬浮球、扇形菜单及其子页、进度浮层、上一轮译文贴图），
+     * 使它们不被 {@code takeScreenshot} 拍进源图——否则自家 UI 会被 OCR 读成文字、或遮住真正的原文。
+     *
+     * <p>用 {@code removeViewImmediate} 真正 detach（而非 {@code setVisibility(INVISIBLE)}）：INVISIBLE 只停
+     * View 自绘，窗口 session/surface 仍在、SurfaceFlinger 继续合成那层，故实测截屏依旧拍进悬浮球（用户人工
+     * 复验"修复无效"）。detach 才把窗从 WindowManager 摘掉、消解对应 layer；调用方须在 {@code capture()} 前
+     * 留一段沉降延时，让拆除事务落到 SurfaceFlinger。与 {@link #showSelfAfterCapture()} 成对使用。
+     * 可从工作线程安全调用：内部投递主线程执行并等待落地。
+     */
+    public void hideSelfForCapture() {
+        setSelfDetached(true);
+    }
+
+    /** 恢复 {@link #hideSelfForCapture()} 摘除的悬浮窗（截屏拿到帧后立即调用），按原 LayoutParams 重新挂回。 */
+    public void showSelfAfterCapture() {
+        setSelfDetached(false);
+    }
+
+    private void setSelfDetached(boolean detach) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            applyDetach(detach);
+            return;
+        }
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        mainHandler.post(() -> {
+            applyDetach(detach);
+            latch.countDown();
+        });
+        try {
+            latch.await(1, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * 主线程执行：detach=true 把每个已挂窗 {@code removeViewImmediate} 摘掉、连同其 {@link WindowManager.LayoutParams}
+     * 记入 {@link #detachedForCapture}（并从 {@code views} 移除，避免恢复前的窗口二次重排错乱）；
+     * detach=false 按记录的 key/params 原样 {@code addView} 挂回并重登记进 {@code views}。
+     */
+    private void applyDetach(boolean detach) {
+        if (detach) {
+            detachedForCapture.clear();
+            for (Map.Entry<String, View> e : new ArrayList<>(views.entrySet())) {
+                View v = e.getValue();
+                if (!(v.getLayoutParams() instanceof WindowManager.LayoutParams lp)) {
+                    continue;
+                }
+                try {
+                    windowManager.removeViewImmediate(v);
+                    detachedForCapture.add(new Detached(e.getKey(), v, lp));
+                } catch (Exception ignored) {
+                    // 已失效：不记入，恢复时自然跳过
+                }
+            }
+            for (Detached d : detachedForCapture) {
+                views.remove(d.key);
+            }
+        } else {
+            for (Detached d : detachedForCapture) {
+                try {
+                    windowManager.addView(d.view, d.lp);
+                    views.put(d.key, d.view);
+                } catch (Exception ignored) {
+                    // 挂回失败（窗已随进程失效）：忽略
+                }
+            }
+            detachedForCapture.clear();
+        }
+    }
+
+    /** 截屏期间临时摘除的单个窗：记住 key、View 与其原始参数，供恢复原样重挂。 */
+    private static final class Detached {
+        final String key;
+        final View view;
+        final WindowManager.LayoutParams lp;
+
+        Detached(String key, View view, WindowManager.LayoutParams lp) {
+            this.key = key;
+            this.view = view;
+            this.lp = lp;
         }
     }
 

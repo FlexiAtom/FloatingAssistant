@@ -52,6 +52,13 @@ public final class CaptureStateRouter {
     /** 采样失败（框越界/空）时的兜底底：深灰，配 contrastText 出白字，不崩不透明缺失。 */
     private static final int DEFAULT_BOX_BG = 0xFF202020;
 
+    /**
+     * 摘除自家悬浮窗后、真正 takeScreenshot 前的沉降等待：removeViewImmediate 的 SurfaceFlinger 拆层事务是
+     * 异步提交的，需给它时间落到显示管线，否则截到的那一帧仍可能残留悬浮球。2.0 屏 60Hz 一帧 ~16ms，
+     * 120ms 覆盖 ~7 帧，足够拆层完成；这段时间只在截屏前发生，代价可忽略。
+     */
+    private static final long DETACH_SETTLE_MS = 120L;
+
     /** 两框聚为同簇的重叠阈值：交集面积 / 较小框面积 > 此值即视为"互相覆盖"，进同一簇做加权分配。 */
     private static final double OVERLAP_MERGE_RATIO = 0.15;
 
@@ -85,6 +92,26 @@ public final class CaptureStateRouter {
             ocrEngine = engineFactory.get();
         }
         return ocrEngine;
+    }
+
+    /**
+     * 截屏时临时摘除本 app 的全部悬浮窗（悬浮球/扇形菜单及子页/进度浮层/上一轮译文），拿到帧后立即恢复——
+     * 否则自家 UI 会被拍进源图：既被 OCR 误读成文字，又遮住真正的原文。
+     * 用 detach（removeViewImmediate）而非 INVISIBLE：后者不消解 surface layer，实测仍被拍进。摘除事务落到
+     * SurfaceFlinger 是异步的，故在 capture() 前留 {@link #DETACH_SETTLE_MS} 沉降延时，确保那一帧已无自家窗。
+     */
+    private Bitmap captureExcludingSelf(ScreenCapturer capturer) throws ScreenCapturer.CaptureException {
+        overlayManager.hideSelfForCapture();
+        try {
+            try {
+                Thread.sleep(DETACH_SETTLE_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return capturer.capture();
+        } finally {
+            overlayManager.showSelfAfterCapture();
+        }
     }
 
     /** 提交一次采集-判定-展示；已有进行中的运行则请求取消，不再静默丢弃。 */
@@ -153,7 +180,7 @@ public final class CaptureStateRouter {
         Bitmap bmp = null;
         ScreenCapturer.CaptureException capErr = null;
         try {
-            bmp = capturer.capture();
+            bmp = captureExcludingSelf(capturer);
         } catch (ScreenCapturer.CaptureException e) {
             capErr = e;
         }
@@ -310,7 +337,7 @@ public final class CaptureStateRouter {
         Bitmap bmp = null;
         ScreenCapturer.CaptureException capErr = null;
         try {
-            bmp = capturer.capture();
+            bmp = captureExcludingSelf(capturer);
         } catch (ScreenCapturer.CaptureException e) {
             capErr = e;
         }
@@ -426,45 +453,91 @@ public final class CaptureStateRouter {
     }
 
     /**
-     * 按行边界把行聚成 ≤maxChars 的段；**超长单行再按 maxChars 硬切**（优先空格断点），
-     * 保证任何一段都 ≤ 上限——避免整段超模型输入窗被静默截断丢内容（§M2「分片不丢段」）。
-     * 空行丢弃（无内容），非空行内容全部保留且顺序不变。
+     * 把 OCR 行按**标点**切成尽量贴合句读的小段（用户 2026-10-17 指示"根据标点符号短句"）：
+     * 先按句末标点（。！？；!?; 换行）断句，一句一段；单句仍超 {@code maxChars} 再按逗号级标点
+     * （，、：,:. 且其后为空白，护住小数/千分位/URL）聚合成 ≤maxChars 的片；无标点可断的超长片按空格/字符硬切兜底。
+     * 相比旧的"固定 48 字硬聚"，段长由句读决定、普遍更短，落在 1.25-bit 模型稳定区且译文更顺。
+     * 空行/空句丢弃；非空内容全部保留且顺序不变。
      */
     private static List<String> segmentLines(List<String> lines, int maxChars) {
         List<String> segs = new ArrayList<>();
-        StringBuilder cur = new StringBuilder();
         for (String ln : lines) {
-            String t = ln.trim();
+            String t = ln == null ? "" : ln.trim();
             if (t.isEmpty()) {
                 continue;
             }
-            // 超长单行：先把在途段落盘，再把硬切出的每片各自单独成段（一片已达上限，无法再并）。
-            while (t.length() > maxChars) {
-                if (cur.length() > 0) {
-                    segs.add(cur.toString());
-                    cur.setLength(0);
+            for (String sent : splitAfter(t, SENTENCE_BREAK)) {
+                String s = sent.trim();
+                if (s.isEmpty()) {
+                    continue;
                 }
-                int cut = splitPoint(t, maxChars);
-                segs.add(t.substring(0, cut));
-                // 若断在空格处，跳过该分隔空格；硬切（无空格）则原样续。
-                t = (cut < t.length() && t.charAt(cut) == ' ')
-                        ? t.substring(cut + 1).trim() : t.substring(cut);
+                if (s.length() <= maxChars) {
+                    segs.add(s);
+                } else {
+                    packClauses(s, maxChars, segs); // 长句：再按逗号级标点拆到 ≤maxChars
+                }
             }
-            // t 现 ≤ maxChars，按原行边界贪心聚段。
-            if (cur.length() > 0 && cur.length() + 1 + t.length() > maxChars) {
-                segs.add(cur.toString());
-                cur.setLength(0);
-            }
-            if (cur.length() > 0) {
-                cur.append('\n');
-            }
-            cur.append(t);
-        }
-        if (cur.length() > 0) {
-            segs.add(cur.toString());
         }
         return segs;
     }
+
+    /** 长句兜底：按逗号级标点切片后贪心聚到 ≤maxChars；仍无标点可断的超长单片再按空格/字符硬切。 */
+    private static void packClauses(String s, int maxChars, List<String> out) {
+        StringBuilder cur = new StringBuilder();
+        for (String clause : splitAfter(s, CLAUSE_BREAK)) {
+            String c = clause;
+            while (c.length() > maxChars) {
+                if (cur.length() > 0) {
+                    out.add(cur.toString().trim());
+                    cur.setLength(0);
+                }
+                int cut = splitPoint(c, maxChars);
+                out.add(c.substring(0, cut).trim());
+                c = (cut < c.length() && c.charAt(cut) == ' ')
+                        ? c.substring(cut + 1).trim() : c.substring(cut);
+            }
+            if (cur.length() > 0 && cur.length() + c.length() > maxChars) {
+                out.add(cur.toString().trim());
+                cur.setLength(0);
+            }
+            cur.append(c);
+        }
+        if (cur.length() > 0) {
+            out.add(cur.toString().trim());
+        }
+    }
+
+    /** 在断点字符**之后**切开（标点归入前一片）；{@code isBreak.test(当前字符, 后一字符)} 决定该处是否断。 */
+    private static List<String> splitAfter(String s, java.util.function.BiPredicate<Character, Character> isBreak) {
+        List<String> out = new ArrayList<>();
+        int start = 0;
+        int n = s.length();
+        for (int i = 0; i < n; i++) {
+            char ch = s.charAt(i);
+            char next = (i + 1 < n) ? s.charAt(i + 1) : '\0';
+            if (isBreak.test(ch, next)) {
+                out.add(s.substring(start, i + 1));
+                start = i + 1;
+            }
+        }
+        if (start < n) {
+            out.add(s.substring(start));
+        }
+        return out;
+    }
+
+    /** 句末标点（强断点）：全角句读总断；半角 {@code ! ? ;} 仅在其后为空白/行尾时断（护缩写）。 */
+    private static final java.util.function.BiPredicate<Character, Character> SENTENCE_BREAK = (ch, next) ->
+            ch == '。' || ch == '！' || ch == '？' || ch == '；' || ch == '\n'
+                    || ((ch == '!' || ch == '?' || ch == ';') && (next == '\0' || Character.isWhitespace(next)));
+
+    /**
+     * 逗号级标点（弱断点，仅用于拆超长句）：全角总断；半角 {@code , : .} 仅其后为空白/行尾时断
+     * ——护住 {@code 3.14159}、{@code 1,000}、{@code example.com} 这类数字/URL 不被切坏。
+     */
+    private static final java.util.function.BiPredicate<Character, Character> CLAUSE_BREAK = (ch, next) ->
+            ch == '，' || ch == '、' || ch == '：'
+                    || ((ch == ',' || ch == ':' || ch == '.') && (next == '\0' || Character.isWhitespace(next)));
 
     /** 断点：优先取 ≤maxChars 内最后一个空格（少切单词），否则在 maxChars 处硬切。 */
     private static int splitPoint(String s, int maxChars) {
