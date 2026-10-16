@@ -201,9 +201,6 @@ public class MainActivity extends AppCompatActivity {
             + "以上文本到此结束，用于逐字核对不同检测分辨率下的召回与准确率。";
 
     private void showDensePage() {
-        if (getSupportActionBar() != null) {
-            getSupportActionBar().hide();
-        }
         android.widget.ScrollView sv = new android.widget.ScrollView(this);
         sv.setBackgroundColor(android.graphics.Color.WHITE);
         TextView tv = new TextView(this);
@@ -219,9 +216,6 @@ public class MainActivity extends AppCompatActivity {
     /** P0 负样本页：加 FLAG_SECURE，复现受保护画面（银行/支付），供截图三态分类验证。 */
     private void showSecurePage() {
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
-        if (getSupportActionBar() != null) {
-            getSupportActionBar().hide();
-        }
         TextView tv = new TextView(this);
         tv.setText("FLAG_SECURE 负样本正文区。若截图返回 BLACK 或 SECURED，则证明受保护画面被三态判定拦截，"
                 + "上层应提示\"此页面不支持\"。此行在白底上本应清晰可读——若截图却读到它，说明 SECURED 分类未生效。");
