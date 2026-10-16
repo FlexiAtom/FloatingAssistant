@@ -91,6 +91,25 @@ public final class CaptureStateRouter {
         });
     }
 
+    /**
+     * 前台 App 切走时释放常驻模型内存（提案 §5.5 修订：前台切走即卸载）。
+     * 空闲 → 投递到工作线程 close 引擎并返回 true；翻译进行中 → 不打断、返回 false
+     * （调用方保留状态，下次顶层变化再试；进行中的长翻译可被悬浮球取消）。
+     * {@link MtModelHub#close()} 必须在本类单工作线程上跑，故经 worker 投递。
+     */
+    public boolean unloadIfIdle() {
+        if (busy.get()) {
+            return false;
+        }
+        worker.execute(() -> {
+            if (!busy.get()) {
+                mtHub.close();
+                Log.i(TAG, "engine unloaded (foreground left)");
+            }
+        });
+        return true;
+    }
+
     private void routeOnce() {
         ScreenCapturer capturer = service.capturer();
         Bitmap bmp = null;

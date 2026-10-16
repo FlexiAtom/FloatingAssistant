@@ -20,6 +20,11 @@ public class SphereAccessibilityService extends AccessibilityService {
     private ScreenCapturer screenCapturer;
     private CaptureStateRouter router;
 
+    /** 最近一次窗口状态变化看到的顶层外部 App 包名（忽略自身覆盖层）。用于"切走即卸载"判定。 */
+    private volatile String lastTopPkg;
+    /** 本次采集/翻译针对的 App 包名；顶层变为别的 App 且空闲时 → 释放常驻模型。 */
+    private volatile String translatedPkg;
+
     public static boolean isConnected() {
         return connected;
     }
@@ -39,8 +44,14 @@ public class SphereAccessibilityService extends AccessibilityService {
 
     /** 以程序方式触发一次采集-OCR-覆盖层（等同点悬浮球）；服务未就绪则忽略。 */
     public void runOnceNow() {
+        triggerRun();
+    }
+
+    /** 采集触发统一入口：先记住"这次翻的是哪个 App"，供切走即卸载判定。 */
+    private void triggerRun() {
         CaptureStateRouter r = router;
         if (r != null) {
+            translatedPkg = lastTopPkg;
             r.runOnce();
         }
     }
@@ -62,13 +73,33 @@ public class SphereAccessibilityService extends AccessibilityService {
             router = new CaptureStateRouter(this, overlayManager,
                     () -> PpOcrEngineFactory.create(this), mtHub);
         }
-        overlayManager.setOnSphereTap(() -> router.runOnce());
+        overlayManager.setOnSphereTap(this::triggerRun);
         overlayManager.showSphere();
     }
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // 事件分发在后续里程碑接入 ToolRegistry
+        int type = event.getEventType();
+        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                && type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            return;
+        }
+        CharSequence p = event.getPackageName();
+        String pkg = (p == null) ? null : p.toString();
+        // 忽略自身（悬浮球/覆盖层/Toast 也报本包名，否则每次弹层都会误卸载）与空包名
+        if (pkg == null || pkg.isEmpty() || pkg.equals(getPackageName())) {
+            return;
+        }
+        lastTopPkg = pkg;
+        // 前台切走即卸载：翻译过的 App 不再是顶层 → 空闲时释放常驻模型内存（§5.5 修订）。
+        // 翻译进行中不打断（返回 false，保留 translatedPkg，下次顶层变化再试；长翻译可被悬浮球取消）。
+        String t = translatedPkg;
+        if (t != null && !t.equals(pkg)) {
+            CaptureStateRouter r = router;
+            if (r != null && r.unloadIfIdle()) {
+                translatedPkg = null;
+            }
+        }
     }
 
     @Override
