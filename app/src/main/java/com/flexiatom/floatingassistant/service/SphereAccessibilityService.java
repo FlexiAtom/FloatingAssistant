@@ -4,9 +4,11 @@ import android.accessibilityservice.AccessibilityService;
 import android.view.accessibility.AccessibilityEvent;
 
 import com.flexiatom.floatingassistant.capture.ScreenCapturer;
+import com.flexiatom.floatingassistant.core.BlacklistMatcher;
 import com.flexiatom.floatingassistant.core.CaptureStateRouter;
+import com.flexiatom.floatingassistant.core.SettingsStore;
 import com.flexiatom.floatingassistant.ocr.PpOcrEngineFactory;
-import com.flexiatom.floatingassistant.mt.MtEngineFactory;
+import com.flexiatom.floatingassistant.mt.MtModelHub;
 import com.flexiatom.floatingassistant.overlay.OverlayManager;
 
 public class SphereAccessibilityService extends AccessibilityService {
@@ -55,9 +57,10 @@ public class SphereAccessibilityService extends AccessibilityService {
             overlayManager.removeAllImmediate();
         }
         if (router == null) {
+            SettingsStore settings = new SettingsStore(this);
+            MtModelHub mtHub = new MtModelHub(this, settings, new BlacklistMatcher(settings));
             router = new CaptureStateRouter(this, overlayManager,
-                    () -> PpOcrEngineFactory.create(this),
-                    () -> MtEngineFactory.create(this));
+                    () -> PpOcrEngineFactory.create(this), mtHub);
         }
         overlayManager.setOnSphereTap(() -> router.runOnce());
         overlayManager.showSphere();

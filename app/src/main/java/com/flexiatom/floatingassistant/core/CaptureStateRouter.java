@@ -5,6 +5,7 @@ import android.util.Log;
 import android.view.accessibility.AccessibilityNodeInfo;
 
 import com.flexiatom.floatingassistant.capture.ScreenCapturer;
+import com.flexiatom.floatingassistant.mt.MtModelHub;
 import com.flexiatom.floatingassistant.overlay.OverlayManager;
 import com.flexiatom.floatingassistant.service.SphereAccessibilityService;
 
@@ -41,20 +42,19 @@ public final class CaptureStateRouter {
     private final SphereAccessibilityService service;
     private final OverlayManager overlayManager;
     private final Supplier<OcrEngine> engineFactory;
-    private final Supplier<MtEngine> mtFactory;
+    /** 分场景模型中枢：整页级路由、单引擎驻留、换面即 close 旧 create 新。 */
+    private final MtModelHub mtHub;
     /** 懒建：模型加载 ~0.5s，放到工作线程首用时再做，别卡服务主线程。单工作线程串行，故无竞态。 */
     private OcrEngine ocrEngine;
-    /** 懒建 MT：首屏加载 ~26s（STQ 1.25-bit），同样放工作线程；缺模型/加载失败 → 降级只显 OCR 原文。 */
-    private MtEngine mtEngine;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final AtomicBoolean busy = new AtomicBoolean(false);
 
     public CaptureStateRouter(SphereAccessibilityService service, OverlayManager overlayManager,
-                              Supplier<OcrEngine> engineFactory, Supplier<MtEngine> mtFactory) {
+                              Supplier<OcrEngine> engineFactory, MtModelHub mtHub) {
         this.service = service;
         this.overlayManager = overlayManager;
         this.engineFactory = engineFactory;
-        this.mtFactory = mtFactory;
+        this.mtHub = mtHub;
     }
 
     private OcrEngine engine() {
@@ -62,13 +62,6 @@ public final class CaptureStateRouter {
             ocrEngine = engineFactory.get();
         }
         return ocrEngine;
-    }
-
-    private MtEngine mt() {
-        if (mtEngine == null) {
-            mtEngine = mtFactory.get();
-        }
-        return mtEngine;
     }
 
     /** 提交一次采集-判定-展示；已有进行中的运行则忽略（配合截图节流，避免叠加）。 */
@@ -133,8 +126,10 @@ public final class CaptureStateRouter {
             engine().recognizeStream(bmp, sink);
             bmp.recycle();
             // 分段翻译：整屏一次性喂会超模型长输入能力悬崖（实测坍缩），故按行切成小段逐段翻。
+            // 整页级路由：拿整页文本让中枢决定用轻量还是升 Q4，一页只用一个引擎。
             if (!lines.isEmpty()) {
-                runTranslateSegmented(lines, w, h);
+                String pageText = String.join("\n", lines);
+                runTranslateSegmented(mtHub.engineFor(pageText), pageText, lines, w, h);
             }
             return;
         }
@@ -153,12 +148,12 @@ public final class CaptureStateRouter {
 
     /**
      * 分段 MT：把 OCR 行按 {@link #SEG_MAX_CHARS} 边界聚成小段，逐段翻译再拼双语。
-     * 全程 try/catch(Throwable)，**绝不让 MT 失败波及 OCR 覆盖层**。未就绪 → 记 "MT off" 直接返回。
+     * 引擎由中枢按整页路由预先选定（一页一引擎）。全程 try/catch(Throwable)，
+     * **绝不让 MT 失败波及 OCR 覆盖层**。未就绪 → 记 "MT off" 直接返回。
      * 逐段增量刷新覆盖层（显示进度 + 已译部分），避免整页等待像卡死；某段空输出则跳过、不影响其余段。
      */
-    private void runTranslateSegmented(List<String> lines, int w, int h) {
+    private void runTranslateSegmented(MtEngine m, String orig, List<String> lines, int w, int h) {
         try {
-            MtEngine m = mt();
             if (!m.isReady()) {
                 Log.i(TAG, "MT off (engine not ready)");
                 return;
@@ -182,7 +177,6 @@ public final class CaptureStateRouter {
                                 + "\n\n译文：\n" + transAll);
             }
             long transMs = (System.nanoTime() - t) / 1_000_000L;
-            String orig = String.join("\n", lines);
             if (transAll.length() == 0) {
                 Log.i(TAG, "MT empty transMs=" + transMs + " segs=" + segs.size() + " → 保留原文");
                 overlayManager.showTextOverlay(RESULT_KEY,
@@ -264,9 +258,7 @@ public final class CaptureStateRouter {
         if (ocrEngine != null) {
             ocrEngine.close();
         }
-        if (mtEngine != null) {
-            mtEngine.close();
-        }
+        mtHub.close();
     }
 
     private static String clip(String s) {

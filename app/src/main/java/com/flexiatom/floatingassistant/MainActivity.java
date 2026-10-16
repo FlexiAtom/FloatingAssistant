@@ -55,6 +55,10 @@ public class MainActivity extends AppCompatActivity {
         enableBtn.setOnClickListener(v -> startActivity(
                 new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
 
+        Button settingsBtn = findViewById(R.id.main_open_settings);
+        settingsBtn.setOnClickListener(v -> startActivity(new Intent(this,
+                com.flexiatom.floatingassistant.settings.SettingsActivity.class)));
+
         maybeRunP0(getIntent());
         maybeRunOrtProbe(getIntent());
         maybeRunOrtNnapi(getIntent());

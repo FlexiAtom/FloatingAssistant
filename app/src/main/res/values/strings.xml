@@ -8,4 +8,27 @@
     <string name="main_status_connected">已连接</string>
     <string name="main_status_disconnected">未连接</string>
     <string name="main_disclaimer_hint">本软件按「现状」提供，不担保（GPLv3 §15/§16）。仅在 Redmi 13R 5G / HyperOS 2.0.208 / Android 15 / 安全补丁 2026-03-01 上验证过。</string>
+    <string name="main_open_settings">翻译设置</string>
+
+    <string name="settings_title">翻译设置</string>
+    <string name="settings_model_title">模型选择</string>
+    <string name="settings_mode_auto">自动（按黑名单，默认轻量）</string>
+    <string name="settings_mode_light">强制轻量（1.25-bit）</string>
+    <string name="settings_mode_heavy">强制 Q4</string>
+    <string name="settings_blacklist_title">黑名单（命中则整页升 Q4）</string>
+    <string name="settings_blacklist_hint">仅在「自动」模式生效。关键词按字面匹配，正则按 Java 正则；均忽略大小写。整页 OCR 文本命中任一规则即升级到 Q4。</string>
+    <string name="settings_new_pattern_hint">输入关键词或正则</string>
+    <string name="settings_entry_keyword">关键词</string>
+    <string name="settings_entry_regex">正则</string>
+    <string name="settings_add_entry">添加</string>
+    <string name="settings_delete_entry">删除</string>
+    <string name="settings_entry_regex_prefix">[正则]</string>
+    <string name="settings_entry_keyword_prefix">[关键词]</string>
+    <string name="settings_test_title">试匹配</string>
+    <string name="settings_test_input_hint">粘贴一段文本，看当前黑名单是否命中</string>
+    <string name="settings_test_btn">测试</string>
+    <string name="settings_test_hit">命中 → 该页会升级到 Q4</string>
+    <string name="settings_test_miss">未命中 → 走轻量模型</string>
+    <string name="settings_test_empty">黑名单为空 → 全部走轻量</string>
+    <string name="settings_bad_regex">（含无效正则，已跳过）</string>
 </resources>
