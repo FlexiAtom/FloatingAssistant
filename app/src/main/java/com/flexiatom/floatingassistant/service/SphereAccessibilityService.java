@@ -99,6 +99,11 @@ public class SphereAccessibilityService extends AccessibilityService {
             return;
         }
         lastTopPkg = pkg;
+        // 页面变化自动清除（§5.2-4）：外部 App 窗口状态变化（导航/换页）→ 上一轮原位贴图已错位，整组移除。
+        // 只认 WINDOW_STATE_CHANGED（内容级 CONTENT_CHANGED 太噪：光标闪/列表动画会误清，留给软过期兜底）。
+        if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && overlayManager != null) {
+            overlayManager.removeGroup(OverlayManager.GROUP_MT);
+        }
         // 前台切走即卸载：翻译过的 App 不再是顶层 → 空闲时释放常驻模型内存（§5.5 修订）。
         // 翻译进行中不打断（返回 false，保留 translatedPkg，下次顶层变化再试；长翻译可被悬浮球取消）。
         String t = translatedPkg;

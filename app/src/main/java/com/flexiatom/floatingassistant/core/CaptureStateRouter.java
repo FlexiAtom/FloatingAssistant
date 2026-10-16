@@ -39,8 +39,8 @@ public final class CaptureStateRouter {
      */
     private static final int SEG_MAX_CHARS = 48;
 
-    /** 原位贴图分组键（OverlayManager 一次性批量移除用，§5.2-6）。 */
-    private static final String GROUP_MT = "mt_overlay";
+    /** 原位贴图分组键（与 OverlayManager 共享，页面变化/软过期按此批量移除，§5.2-6）。 */
+    private static final String GROUP_MT = OverlayManager.GROUP_MT;
     /** 逐块贴图的间隔，形成"依次贴上"观感（§5.2-2）。仅在工作线程 sleep，不占主线程。 */
     private static final long PLACE_INTERVAL_MS = 40;
     /**
@@ -48,6 +48,12 @@ public final class CaptureStateRouter {
      * 主失效仍以 M3-C 的"页面变化自动清除"为准，此为无事件页面的安全网。
      */
     private static final long INPLACE_TTL_MS = 30_000L;
+
+    /** 采样失败（框越界/空）时的兜底底：深灰，配 contrastText 出白字，不崩不透明缺失。 */
+    private static final int DEFAULT_BOX_BG = 0xFF202020;
+
+    /** 两框聚为同簇的重叠阈值：交集面积 / 较小框面积 > 此值即视为"互相覆盖"，进同一簇做加权分配。 */
+    private static final double OVERLAP_MERGE_RATIO = 0.15;
 
     private final SphereAccessibilityService service;
     private final OverlayManager overlayManager;
@@ -178,6 +184,11 @@ public final class CaptureStateRouter {
                 }
             };
             engine().recognizeStream(bmp, sink);
+            // 采样必须在 recycle 前：趁位图还活着，逐框取页面自己的底色（众数色，稀有极值自然落选）。
+            final List<Integer> bgColors = new ArrayList<>(boxes.size());
+            for (int i = 0; i < boxes.size(); i++) {
+                bgColors.add(sampleBoxBackground(bmp, boxes.get(i), w, h));
+            }
             bmp.recycle();
             if (boxes.isEmpty()) {
                 overlayManager.showTextOverlay(RESULT_KEY, "A 可截图 " + w + "×" + h + " · 未识到文本");
@@ -193,8 +204,11 @@ public final class CaptureStateRouter {
                 int[] bb = boxes.get(b);
                 return ba[1] != bb[1] ? Integer.compare(ba[1], bb[1]) : Integer.compare(ba[0], bb[0]);
             });
+            // 预检测矩形互相覆盖（批处理，先于翻译）：把互相重叠的框聚成簇。runInPlace 对多框簇按
+            // 译文长度加权、依原文顺序把簇并集区域切成互不重叠的横条分配给各框（而非丢弃），避免译文互相遮盖。
+            List<List<Integer>> clusters = clusterBoxes(boxes, order, OVERLAP_MERGE_RATIO);
             String pageText = String.join("\n", texts);
-            runInPlace(mtHub.engineFor(pageText), boxes, texts, order, w, h);
+            runInPlace(mtHub.engineFor(pageText), boxes, texts, bgColors, clusters, w, h);
             return;
         }
 
@@ -211,12 +225,13 @@ public final class CaptureStateRouter {
     }
 
     /**
-     * 逐框译文原位贴图（§5.2-1/2/3）。每块独立 translate（短框恰是轻量模型强项）；
-     * 空输出/未就绪的块跳过（保留原文可见，下层仍可读）。段间响应 cancelRequested。
-     * 先清旧组再贴新，逐块 40ms 间隔形成"依次贴上"观感。
+     * 逐簇译文原位贴图（§5.2-1/2/3 + 覆盖簇加权分配）。每簇先逐框 translate（短框恰是轻量模型强项），
+     * 空输出的框跳过（保留原文可见）。单框簇贴回原框；**多框（互相覆盖）簇**：把簇并集矩形按各框
+     * **译文长度加权**、依**原文阅读顺序**切成互不重叠的横条，逐框分配一条——译文长的多占、位置靠上的在上，
+     * 既不互相遮盖又尽量贴合原位置。簇间/框间响应 cancelRequested；先清旧组再贴，逐块 40ms 形成"依次贴上"观感。
      */
     private void runInPlace(MtEngine m, List<int[]> boxes, List<String> texts,
-                            Integer[] order, int w, int h) {
+                            List<Integer> bgColors, List<List<Integer>> clusters, int w, int h) {
         try {
             if (!m.isReady()) {
                 Log.i(TAG, "MT off (engine not ready) → inplace skip");
@@ -225,22 +240,51 @@ public final class CaptureStateRouter {
             }
             overlayManager.removeGroup(GROUP_MT); // 清上一轮
             long t = System.nanoTime();
-            int n = order.length;
+            int total = 0;
+            for (List<Integer> c : clusters) {
+                total += c.size();
+            }
             int placed = 0;
-            for (int oi = 0; oi < n; oi++) {
-                if (cancelRequested) {
-                    overlayManager.showTextOverlay(RESULT_KEY,
-                            "已取消（贴到 " + placed + "/" + n + "）");
-                    Log.i(TAG, "INPLACE cancelled at " + placed + "/" + n);
-                    return;
+            int clustered = 0;
+            int done = 0;
+            for (List<Integer> cluster : clusters) {
+                int cs = cluster.size();
+                if (cs > 1) {
+                    clustered++;
                 }
-                int idx = order[oi];
-                int[] b = boxes.get(idx);
-                String src = texts.get(idx);
-                String tr = m.translate(src);
-                if (tr != null && !tr.isBlank()) {
+                // 1) 先译完全簇（拿到译文长度才能加权分配）；逐框响应取消。
+                String[] trs = new String[cs];
+                int[] weights = new int[cs];
+                int totalW = 0;
+                for (int j = 0; j < cs; j++) {
+                    if (cancelRequested) {
+                        overlayManager.showTextOverlay(RESULT_KEY,
+                                "已取消（贴到 " + placed + "/" + total + "）");
+                        Log.i(TAG, "INPLACE cancelled at placed=" + placed + "/" + total);
+                        return;
+                    }
+                    int idx = cluster.get(j);
+                    String tr = m.translate(texts.get(idx));
+                    trs[j] = (tr == null || tr.isBlank()) ? null : tr.trim();
+                    weights[j] = trs[j] == null ? 0 : Math.max(1, trs[j].length());
+                    totalW += weights[j];
+                    done++;
+                    overlayManager.showTextOverlay(RESULT_KEY, "贴图 " + done + "/" + total + " …");
+                }
+                // 2) 多框簇求并集矩形，供加权切条。
+                int[] union = cs > 1 ? clusterUnion(boxes, cluster) : null;
+                // 3) 逐框贴：单框用原框，多框按译文权重分配横条。
+                for (int j = 0; j < cs; j++) {
+                    if (trs[j] == null) {
+                        continue; // 空输出：保留原文可见
+                    }
+                    int idx = cluster.get(j);
+                    int[] rect = (cs == 1 || totalW <= 0) ? boxes.get(idx)
+                            : allocateBand(union, weights, j, totalW);
+                    int bg = bgColors.get(idx);
                     overlayManager.showBoxedText(GROUP_MT, "mt_" + idx,
-                            b[0], b[1], b[2] - b[0], b[3] - b[1], tr.trim());
+                            rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1],
+                            trs[j], bg, contrastText(bg));
                     overlayManager.scheduleGroupExpiry(GROUP_MT, INPLACE_TTL_MS);
                     placed++;
                     try {
@@ -250,11 +294,10 @@ public final class CaptureStateRouter {
                         break;
                     }
                 }
-                overlayManager.showTextOverlay(RESULT_KEY, "贴图 " + (oi + 1) + "/" + n + " …");
             }
             overlayManager.removeOverlay(RESULT_KEY); // 撤临时进度条
             long ms = (System.nanoTime() - t) / 1_000_000L;
-            Log.i(TAG, "INPLACE done placed=" + placed + "/" + n
+            Log.i(TAG, "INPLACE done placed=" + placed + "/" + total + " clusters=" + clustered
                     + " ms=" + ms + " srcChars=" + String.join("", texts).length());
         } catch (Throwable err) {
             Log.e(TAG, "INPLACE failed (OCR overlay untouched): " + err.getClass().getSimpleName()
@@ -427,6 +470,157 @@ public final class CaptureStateRouter {
     private static int splitPoint(String s, int maxChars) {
         int sp = s.lastIndexOf(' ', maxChars);
         return sp > 0 ? sp : maxChars;
+    }
+
+    /**
+     * 从截屏位图里采一本框的**页面底色**：把框内像素按每通道 4bit 量化分桶（16³=4096 桶），
+     * 取像素最多的众数桶（页面底色占面积主体，字/描边/高光等稀有"极值"色自然落选），返回该桶均值，
+     * 强制全不透明（盖住原文）。框越界/空则回退 {@link #DEFAULT_BOX_BG}。纯读像素，不写状态。
+     */
+    private static int sampleBoxBackground(Bitmap bmp, int[] box, int pw, int ph) {
+        int x0 = Math.max(0, Math.min(box[0], pw - 1));
+        int y0 = Math.max(0, Math.min(box[1], ph - 1));
+        int x1 = Math.max(x0 + 1, Math.min(box[2], pw));
+        int y1 = Math.max(y0 + 1, Math.min(box[3], ph));
+        int bw = x1 - x0;
+        int bh = y1 - y0;
+        if (bw <= 0 || bh <= 0 || bw * bh <= 0) {
+            return DEFAULT_BOX_BG;
+        }
+        int[] px;
+        try {
+            px = new int[bw * bh];
+            bmp.getPixels(px, 0, bw, x0, y0, bw, bh);
+        } catch (RuntimeException e) {
+            Log.w(TAG, "sampleBoxBackground getPixels failed: " + e.getMessage());
+            return DEFAULT_BOX_BG;
+        }
+        int[] cnt = new int[4096];
+        int[] sumR = new int[4096];
+        int[] sumG = new int[4096];
+        int[] sumB = new int[4096];
+        int bestKey = -1;
+        int bestCnt = 0;
+        for (int p : px) {
+            int r = (p >> 16) & 0xFF;
+            int g = (p >> 8) & 0xFF;
+            int b = p & 0xFF;
+            int key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+            int c = ++cnt[key];
+            sumR[key] += r;
+            sumG[key] += g;
+            sumB[key] += b;
+            if (c > bestCnt) {
+                bestCnt = c;
+                bestKey = key;
+            }
+        }
+        if (bestKey < 0 || bestCnt <= 0) {
+            return DEFAULT_BOX_BG;
+        }
+        int ar = sumR[bestKey] / bestCnt;
+        int ag = sumG[bestKey] / bestCnt;
+        int ab = sumB[bestKey] / bestCnt;
+        return 0xFF000000 | (ar << 16) | (ag << 8) | ab;
+    }
+
+    /** 依底色亮度定前景字色：亮底（Rec.601 亮度≥140）用近黑，暗底用白，保证译文可读。 */
+    private static int contrastText(int bg) {
+        int r = (bg >> 16) & 0xFF;
+        int g = (bg >> 8) & 0xFF;
+        int b = bg & 0xFF;
+        int lum = (int) (0.299 * r + 0.587 * g + 0.114 * b);
+        return lum >= 140 ? 0xFF101010 : 0xFFFFFFFF;
+    }
+
+    /** 两像素矩形重叠程度 = 交集面积 / 较小框面积（[0,1]）；不相交为 0。用 long 防大框面积溢出。 */
+    private static double overlapRatio(int[] a, int[] b) {
+        int iw = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
+        int ih = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+        if (iw <= 0 || ih <= 0) {
+            return 0.0;
+        }
+        long inter = (long) iw * ih;
+        long areaA = (long) (a[2] - a[0]) * (a[3] - a[1]);
+        long areaB = (long) (b[2] - b[0]) * (b[3] - b[1]);
+        long minArea = Math.min(areaA, areaB);
+        return minArea <= 0 ? 0.0 : (double) inter / minArea;
+    }
+
+    /**
+     * 把互相覆盖的框聚成簇（批处理，先于翻译）：并查集，重叠比 &gt; thr 的两框合并。返回按**原文阅读顺序**
+     * 排列的簇列表，每簇是**框原始下标**列表（亦按阅读序）。单框簇=不重叠的普通框，多框簇=会互相遮盖的一组。
+     */
+    private static List<List<Integer>> clusterBoxes(List<int[]> boxes, Integer[] order, double thr) {
+        int n = boxes.size();
+        int[] parent = new int[n];
+        for (int i = 0; i < n; i++) {
+            parent[i] = i;
+        }
+        for (int a = 0; a < n; a++) {
+            for (int b = a + 1; b < n; b++) {
+                if (overlapRatio(boxes.get(a), boxes.get(b)) > thr) {
+                    ufUnion(parent, a, b);
+                }
+            }
+        }
+        // 按 order（阅读序）逐个归位到其根簇：LinkedHashMap 保序 → 簇序与簇内成员序皆为阅读序。
+        java.util.LinkedHashMap<Integer, List<Integer>> byRoot = new java.util.LinkedHashMap<>();
+        for (int idx : order) {
+            byRoot.computeIfAbsent(ufFind(parent, idx), r -> new ArrayList<>()).add(idx);
+        }
+        return new ArrayList<>(byRoot.values());
+    }
+
+    private static int ufFind(int[] p, int x) {
+        while (p[x] != x) {
+            p[x] = p[p[x]];
+            x = p[x];
+        }
+        return x;
+    }
+
+    private static void ufUnion(int[] p, int a, int b) {
+        int ra = ufFind(p, a);
+        int rb = ufFind(p, b);
+        if (ra != rb) {
+            p[ra] = rb;
+        }
+    }
+
+    /** 簇内所有框的并集外接矩形 [x0,y0,x1,y1]。 */
+    private static int[] clusterUnion(List<int[]> boxes, List<Integer> cluster) {
+        int x0 = Integer.MAX_VALUE, y0 = Integer.MAX_VALUE, x1 = Integer.MIN_VALUE, y1 = Integer.MIN_VALUE;
+        for (int idx : cluster) {
+            int[] b = boxes.get(idx);
+            x0 = Math.min(x0, b[0]);
+            y0 = Math.min(y0, b[1]);
+            x1 = Math.max(x1, b[2]);
+            y1 = Math.max(y1, b[3]);
+        }
+        return new int[]{x0, y0, x1, y1};
+    }
+
+    /**
+     * 加权分配第 k 条横带：把并集矩形的纵向跨度 [y0,y1] 按各框**译文长度权重**切成连续不重叠的带，
+     * 依传入的 weights 顺序（= 原文阅读序）自上而下分配，故译文长的占更高一条、原文靠上的在上。
+     * 末条补足到 y1，消除取整缝隙。返回 [x0, bandTop, x1, bandBot]（横向取并集全宽）。
+     */
+    private static int[] allocateBand(int[] union, int[] weights, int k, int totalW) {
+        int top = union[1];
+        int bot = union[3];
+        int spanH = Math.max(1, bot - top);
+        int acc = 0;
+        for (int j = 0; j < k; j++) {
+            acc += weights[j];
+        }
+        int y0 = top + (int) Math.round((double) spanH * acc / totalW);
+        int y1 = (k == weights.length - 1) ? bot
+                : top + (int) Math.round((double) spanH * (acc + weights[k]) / totalW);
+        if (y1 <= y0) {
+            y1 = Math.min(bot, y0 + 1);
+        }
+        return new int[]{union[0], y0, union[2], y1};
     }
 
     /** 深度优先遍历活动窗口节点树，返回首个非空文本；受限节点预算防卡。 */

@@ -29,6 +29,9 @@ public class OverlayManager {
 
     private static final String KEY_SPHERE = "sphere";
 
+    /** 原位贴图分组名：路由贴入、页面变化/软过期移除，统一走这一组（§5.2-4/5/6）。 */
+    public static final String GROUP_MT = "mt_overlay";
+
     private final Context context;
     private final WindowManager windowManager;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -169,31 +172,34 @@ public class OverlayManager {
 
     /**
      * 原位贴图（§5.2-1）：在屏幕像素矩形 (x,y,w,h) 放一段文本，归入 group。
-     * 展示型穿透（不触摸、不聚焦），字号随框自适应缩放到填满，深色半透底。
-     * 同一 key 重复调用即原位更新。坐标须为屏幕物理像素（截屏 720×1600 与 overlay 同系）。
+     * 展示型穿透（不触摸、不聚焦），字号随框自适应缩放到填满。
+     * <p>底色用**从原文矩形采样**的 bgColor（全不透明，遮住原文），字色用与之对比的 textColor，
+     * 使译文像就地覆写在页面自己的底色上（而非浮一块深色板）。直角无圆角，四角不漏原文。
+     * 同一 key 重复调用即原位更新（含底色/字色）。坐标须为屏幕物理像素（截屏 720×1600 与 overlay 同系）。
      */
-    public void showBoxedText(String group, String key, int x, int y, int w, int h, String text) {
-        mainHandler.post(() -> applyBoxedText(group, key, x, y, w, h, text));
+    public void showBoxedText(String group, String key, int x, int y, int w, int h, String text,
+                              int bgColor, int textColor) {
+        mainHandler.post(() -> applyBoxedText(group, key, x, y, w, h, text, bgColor, textColor));
     }
 
-    private void applyBoxedText(String group, String key, int x, int y, int w, int h, String text) {
+    private void applyBoxedText(String group, String key, int x, int y, int w, int h, String text,
+                                int bgColor, int textColor) {
         View existing = views.get(key);
         if (existing instanceof TextView tv) {
             tv.setText(text);
+            tv.setTextColor(textColor);
+            tv.setBackground(boxBackground(bgColor));
             return;
         }
         TextView tv = new TextView(context);
         tv.setText(text);
-        tv.setTextColor(Color.WHITE);
+        tv.setTextColor(textColor);
         tv.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         tv.setPadding(dp(3), 0, dp(3), 0);
         // 字号在 [6,18]sp 间二分自适应到填满该框（minSdk30 支持 auto-size）
         tv.setAutoSizeTextTypeUniformWithConfiguration(
                 6, 18, 1, TypedValue.COMPLEX_UNIT_SP);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.parseColor("#E61C1B1F")); // MD3 反色表面 ~90% 不透明，盖住原文
-        bg.setCornerRadius(dp(4));
-        tv.setBackground(bg);
+        tv.setBackground(boxBackground(bgColor));
         int cw = Math.max(1, w);
         int ch = Math.max(1, h);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
@@ -258,5 +264,13 @@ public class OverlayManager {
     private int dp(int value) {
         return (int) TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP, value, context.getResources().getDisplayMetrics());
+    }
+
+    /** 原位贴图的底：全不透明实心直角块，铺满并遮住原文矩形（不留圆角缝隙漏原文）。 */
+    private GradientDrawable boxBackground(int color) {
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(color | 0xFF000000); // 强制全不透明
+        bg.setCornerRadius(0);
+        return bg;
     }
 }
