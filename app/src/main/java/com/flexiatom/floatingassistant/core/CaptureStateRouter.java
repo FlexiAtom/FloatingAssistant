@@ -48,6 +48,13 @@ public final class CaptureStateRouter {
     private OcrEngine ocrEngine;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final AtomicBoolean busy = new AtomicBoolean(false);
+    /**
+     * 协作式取消：Q4 整页翻译在基准机上实测可达 68–252s，期间 busy 一直为真，
+     * 悬浮球再点会被 runOnce 直接丢弃、覆盖层停留在上一次结果（看起来像"显示旧结果"）。
+     * 置此标志后，翻译在**段间边界**尽快中断并释放 busy，让下一次点击能立即开始新采集。
+     * 由主线程（点击回调）写、工作线程读，故 volatile。
+     */
+    private volatile boolean cancelRequested;
 
     public CaptureStateRouter(SphereAccessibilityService service, OverlayManager overlayManager,
                               Supplier<OcrEngine> engineFactory, MtModelHub mtHub) {
@@ -64,11 +71,16 @@ public final class CaptureStateRouter {
         return ocrEngine;
     }
 
-    /** 提交一次采集-判定-展示；已有进行中的运行则忽略（配合截图节流，避免叠加）。 */
+    /** 提交一次采集-判定-展示；已有进行中的运行则请求取消，不再静默丢弃。 */
     public void runOnce() {
         if (!busy.compareAndSet(false, true)) {
+            // 上一次（多为 Q4 整页翻译，可达数分钟）仍在跑：置取消标志，
+            // 让在途翻译在段间边界尽快中断释放 busy；覆盖层即时反馈，避免"点了没反应/看着像旧结果"。
+            cancelRequested = true;
+            overlayManager.showTextOverlay(RESULT_KEY, "上一次仍在处理中，正在取消…\n待其停下后再点一次即可开始新采集");
             return;
         }
+        cancelRequested = false;
         worker.execute(() -> {
             try {
                 overlayManager.showTextOverlay(RESULT_KEY, "识别中…");
@@ -163,6 +175,12 @@ public final class CaptureStateRouter {
             StringBuilder transAll = new StringBuilder();
             int okSegs = 0;
             for (int i = 0; i < segs.size(); i++) {
+                if (cancelRequested) {
+                    overlayManager.showTextOverlay(RESULT_KEY,
+                            "已取消（译到 " + i + "/" + segs.size() + " 段）\n\n译文：\n" + transAll);
+                    Log.i(TAG, "MT cancelled at " + i + "/" + segs.size() + " outChars=" + transAll.length());
+                    return;
+                }
                 String seg = segs.get(i);
                 String tr = m.translate(seg);
                 if (tr != null && !tr.isBlank()) {
