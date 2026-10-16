@@ -57,6 +57,7 @@
 - **设置页**：`SettingsActivity` 完整渲染（模式单选/黑名单增删/关键词·正则切换/试匹配），`mt_settings.xml` 序列化往返正确（`kw:`/`re:` 前缀 + 版本自增）。
 - **P2-C 共存（用户基准机实测，M3 硬验收）**：FORCE_Q4 下遍历 QQ / PiliPala / 番茄小说 / B站 / LACPD高画质 / com.eltechs.ragh(RA2)，**前台 App 均未被杀**（1.25-bit 同样不杀）。旁证 logcat 见 `lowmemorykiller` 高频 `Kill … reason: cw` 清**缓存态后台**（settings/xmsf/miui.core，oom_score_adj 800–935），即 Q4 常驻压入内存后系统"杀后台、不杀前台"→ 默认 1.25-bit 共存立足点坐实。**Q4 整页延迟实测**：`transMs=68558`（14 段）/ `252079`（4.2 分钟，11 段），单段 ~20s；据此后续上 `availMem` 加载门槛 + 悬浮球"再点=取消在途翻译"（提交 9488abe）。
 - **取消在途翻译（真机坐实，提交 9488abe）**：FORCE_Q4 下密集页翻译进行中再点悬浮球 → `CaptureRouter: MT cancelled at 2/12 outChars=178`（另见 8/14·1/18·1/7·2/7，各保留已译部分），紧接新 `ROUTE=A` 采集正常起；未取消那次 `MT done transMs=51213 segs=14`。修掉"Q4 长翻译期间 busy 锁死、点击无反馈、覆盖层卡旧结果"。HEAVY 冷加载 `loadMs=7135` 与旧测一致。
+- **前台切走即卸载引擎（真机坐实，提交 10be166，§5.5 修订后保留的内存护栏）**：FORCE_Q4 下 QQ 聊天页翻完 `MT done transMs=26342 segs=5` 进入空闲 → 切到别的 App → `CaptureRouter: engine unloaded (foreground left)`；`dumpsys meminfo` Native Heap 由 HEAVY 驻留的 ~787 MB 回落至 **~4 MB（TOTAL PSS 157 MB）**，证 `mtHub.close()` 实释放 mmap/native。P2-C 已 falsify「Q4 杀前台」，故 M2 不做 availMem 硬拦（FORCE_HEAVY 豁免），仅保留此"切走即卸载"软护栏降低常驻内存。
 
 **已知限制**：`强制 Q4 + Q4 缺失` 组合下，`loadedKind` 记为降级后的 LIGHT，而每页 `want` 仍是 HEAVY → 每次采集重试 Q4、失败、重载 LIGHT（loadMs ~700 反复）。仅该罕见组合触发；Q4 在位或 AUTO/强制轻量模式不受影响。
 
