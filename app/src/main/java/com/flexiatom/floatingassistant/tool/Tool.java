@@ -2,18 +2,38 @@ package com.flexiatom.floatingassistant.tool;
 
 import com.flexiatom.floatingassistant.service.SphereAccessibilityService;
 
+import java.util.Collections;
+import java.util.List;
+
 /**
  * 悬浮球扇形菜单里的一个工具（提案 §10 M0：注册即出现在菜单）。
- * 注册顺序即扇形自上而下的排布顺序。选中后 {@link #run} 在服务上下文里执行。
+ * 注册顺序即扇形自上而下的排布顺序。
+ *
+ * <p>两态（由子类/构造决定，逐条目各定）：
+ * <ul>
+ *   <li><b>叶子（触发）</b>：{@link #children()} 为空 → 选中即 {@link #run} 执行动作，菜单收起。</li>
+ *   <li><b>容器（展开子页面）</b>：{@link #children()} 非空 → 选中不执行，而是在当前扇形外**再加画一圈同心环**展开这些子项（径向树，环数=深度）。</li>
+ * </ul>
+ * 容器实数据与同心环页面栈（push/pop + 枢纽=返回）为下一步；当前三工具全是叶子。
  */
 public interface Tool {
 
     /** 稳定标识（供日志/将来持久化排序用）。 */
     String id();
 
-    /** 菜单 chip 上显示的文字。 */
+    /** 扇形楔形格里显示的文字。 */
     String label();
 
-    /** 用户选中该工具时执行。 */
+    /** 用户选中该工具时执行（仅叶子态会被调用；容器态由菜单转向展开 children）。 */
     void run(SphereAccessibilityService svc);
+
+    /** 子工具（容器态非空）。默认空 = 叶子。 */
+    default List<Tool> children() {
+        return Collections.emptyList();
+    }
+
+    /** 是否为容器（选中后展开子页面而非触发动作）。 */
+    default boolean isContainer() {
+        return !children().isEmpty();
+    }
 }
