@@ -27,14 +27,36 @@
 ## 模型 GGUF（不入库，adb push 到 getExternalFilesDir）
 | 文件 | 大小 | sha256 | 来源 |
 |---|---|---|---|
-| `Hy-MT2-1.8B-1.25Bit.gguf` | 461,860,800 B | `cc497fe8f033b52b3b8b00a7669e9661435432f9d4cd43f7ed24400c01507a93` | AngelSlim/Hy-MT2-1.8B-1.25bit-GGUF（hunyuan-dense，量化张量 raw type=42=STQ1_0） |
-| `Hy-MT2-1.8B-Q4_K_M.gguf` | 1,133,080,448 B | `dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699` | 同模型 Q4_K_M 量化（原生 GGML_TYPE_Q4_K，不依赖 STQ 特化）；对照测用，不入库 |
+| `Hy-MT2-1.8B-1.25Bit.gguf` | 461,860,800 B | `cc497fe8f033b52b3b8b00a7669e9661435432f9d4cd43f7ed24400c01507a93` | AngelSlim/Hy-MT2-1.8B-1.25bit-GGUF（hunyuan-dense，量化张量 raw type=42=STQ1_0）；**LIGHT 槽常驻**（默认/日用/降级） |
+| `Hy-MT2-1.8B-Q4_K_M.gguf` | 1,133,080,448 B | `dc5f44fcf1fa496ee7ad725982c0c8c553a4de00259b53af84c4b89fb0c06699` | 同模型 Q4_K_M 量化（原生 GGML_TYPE_Q4_K，不依赖 STQ 特化）；**HEAVY 槽常驻**（黑名单命中或人工强制时升它） |
 
-设备路径：`/sdcard/Android/data/com.flexiatom.floatingassistant/files/Hy-MT2-1.8B-1.25Bit.gguf`（工厂按此名加载；Q4 对照时把 Q4 文件改名占此槽、1.25-bit 备份为 `.bak`）。
+设备路径（两文件各归各名、并存，工厂按 `MtModelKind` 取对应名）：
+`/sdcard/Android/data/com.flexiatom.floatingassistant/files/{Hy-MT2-1.8B-1.25Bit.gguf, Hy-MT2-1.8B-Q4_K_M.gguf}`。
+**两模型并存 ≈1.6GB 设备存储**（用户已知并接受）；任一时刻只 mmap 一个进内存（见下"单引擎驻留"）。
 
 **密集页对照实测（P3 demo，870 字技术正文，22 OCR 框，分段 SEG_MAX_CHARS=48 → 20 段）**：
 - 1.25-bit：整屏及细粒度分段均坍缩（空输出 `gen=0` / 乱码 `A A A` / 复读 `gen=256`），okSegs 远低于 segs。
 - Q4_K_M：`segs=20 okSegs=20 outChars=3184 transMs≈103221`（含 6.5s 冷加载，纯译 ~4.85s/段），英文连贯可读、个别字残留（如"布"未译、"热循环"译成 thermal cycle）。**结论：Q4 决定性改善密集页翻译**。代价：模型 2.45× 体积、冷加载 ~4×、单段延迟上升。
+
+## 分场景路由（`MtModelHub`：整页级 + 单引擎驻留，真机实测 2026-10-16）
+
+优先级：**人工模式（强制轻量/强制 Q4）> 自动（黑名单命中→HEAVY，否则→LIGHT）**。目标模型与当前驻留不同 → 先 `close()` 旧再懒建新，**刻意不双驻**（6GB 设备两模型同时在内存会挤掉前台应用）。
+
+真机 Redmi 13R 5G 采集实测（logcat + `dumpsys meminfo`）：
+
+| 场景 | 关键日志 | Native Heap |
+|---|---|---|
+| 强制轻量翻密集页 | `MtHub route=LIGHT matched=false mode=1 pageChars=817`；`CaptureRouter MT done segs=20 okSegs=14 outChars=989` | ~199MB（轻量在位） |
+| 切强制 Q4（换面升档） | `MtFactory HEAVY ready loadMs=6795`；`MtHub route=HEAVY matched=false mode=2` | **787MB**（Q4 在位） |
+| 切回强制轻量（换面降档） | `MtFactory LIGHT ready loadMs=1573`；`MtHub route=LIGHT matched=true mode=1` | **回落 250MB**（Q4 已释放） |
+
+- **单引擎驻留坐实**：RSS 走 199→787→250，换面时旧引擎 mmap 被释放（不是两模型叠加），配对 `loadMs`（HEAVY 6795 / LIGHT 1573）证明"先关后建"。
+- **人工优先于黑名单**：`route=LIGHT matched=true mode=1`——黑名单命中(matched=true)但强制轻量仍走 LIGHT。
+- **缺 Q4 降级**：把 Q4 改名 `.off` + 强制 Q4 → `MtFactory HEAVY model missing … → passthrough` → `LIGHT ready loadMs=730` → `MtHub 降级到另一槽: LIGHT` → `route=LIGHT mode=2`；OCR 覆盖层不受影响，仅回落轻量（会重现其密集页复读坍缩）。
+- **坏正则不崩**：黑名单含 `(` + 关键词时点设置页「测试」→ 正常返回「未命中 → 走轻量模型」，进程存活（`BlacklistMatcher` 跳过非法 Pattern）。
+- **设置页**：`SettingsActivity` 完整渲染（模式单选/黑名单增删/关键词·正则切换/试匹配），`mt_settings.xml` 序列化往返正确（`kw:`/`re:` 前缀 + 版本自增）。
+
+**已知限制**：`强制 Q4 + Q4 缺失` 组合下，`loadedKind` 记为降级后的 LIGHT，而每页 `want` 仍是 HEAVY → 每次采集重试 Q4、失败、重载 LIGHT（loadMs ~700 反复）。仅该罕见组合触发；Q4 在位或 AUTO/强制轻量模式不受影响。
 
 ## 原生库 .so（不入库，由 build-android.sh 重建，见 §3.1b 构建时校验）
 源 = llama.cpp PR #22836 head `1e411d8f…` + `native/llama-stq/stq-renumber.patch`（STQ1_0↔Q2_0：42↔43），
