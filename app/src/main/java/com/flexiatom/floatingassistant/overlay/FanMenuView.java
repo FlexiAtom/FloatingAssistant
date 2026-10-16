@@ -24,9 +24,10 @@ import java.util.List;
  * 落最外环之外或左半 = 关闭整个菜单。可点按即选，也可按住拖动实时高亮、松手提交。
  *
  * <p>本视图放在一个**矩形** overlay 窗里，球心对齐到窗左边缘中点（cx=0, cy=高/2）；左边缘时左半出屏不接收触摸，只留右半环带。
- * 外沿半径**按内容自适应**（{@link #fitOuterPx}）：基准 {@code OUTER_BASE_DP} 起步，某格固定字号
- * {@code LABEL_TEXT_SP} 标签放不下时逐步加宽（封顶 {@code OUTER_MAX_DP}），窗尺寸随之联动；最外环外留
- * {@code CLOSING_GAP_DP}「关闭环带」（点此区=关闭）。浅内容时外沿=基准，深度=1 与旧单页扇形逐像素一致（回归基线）。
+ * 外沿半径与**每环宽度均按内容自适应**（{@link #fitRingWidths}）：每环**只量自己页内最长的标签**加宽（与他环无关），
+ * 固定字号 {@code LABEL_TEXT_SP}；总外沿在 {@code OUTER_BASE_DP}～{@code OUTER_MAX_DP} 之间，触顶时退化为均分
+ * 并由标签省略号兜底；窗尺寸随总外沿联动。最外环外留 {@code CLOSING_GAP_DP}「关闭环带」（点此区=关闭）。
+ * 深度=1 时单环铺满基准带宽，与旧单页扇形逐像素一致（回归基线）。
  */
 public final class FanMenuView extends View {
 
@@ -85,7 +86,7 @@ public final class FanMenuView extends View {
 
     /**
      * 一条菜单项的显示文本：完整环显示全 {@code label}（容器带「 ▸」）；非完整环（更内的轨迹环）
-     * 只显示**首字 + 「…」**、无箭头。{@link #fitOuterPx}/{@link #allFit} 与 {@link #drawLabel} 共用此判据。
+     * 只显示**首字 + 「…」**、无箭头。{@link #fitRingWidths} 与 {@link #drawLabel} 共用此判据。
      */
     private static String displayText(Entry en, boolean full) {
         String t = en.label == null ? "" : en.label;
@@ -96,9 +97,8 @@ public final class FanMenuView extends View {
     }
 
     /**
-     * 按内容自适应求外沿半径(px)：从 {@code OUTER_BASE_DP} 起，逐格检查标签在固定字号 {@code LABEL_TEXT_SP}
-     * 下能否放得进「楔形可用宽 = min(弦长, 径向厚度) - LABEL_PAD」；放不下就 +步长加宽，
-     * 直到全部放得下或封顶 {@code OUTER_MAX_DP}。外沿增大⇒各环径向厚度与弦长同步增大⇒可用宽单调增，迭代必收敛。
+     * 按内容自适应求外沿半径(px) = 最内枢纽 + 各环自适应宽度之和（逐环解算见 {@link #fitRingWidths}，
+     * 封顶 {@code OUTER_MAX_DP}）。{@link #measureWidthPx} 与构造共用此解，保证窗尺寸与绘制边界一致。
      */
     private static float fitOuterPx(Context context, List<Page> stack) {
         float innerPx = dp(context, INNER_DP);
@@ -106,42 +106,135 @@ public final class FanMenuView extends View {
         float maxPx = dp(context, OUTER_MAX_DP);
         float stepPx = dp(context, GROWTH_STEP_DP);
         float padPx = dp(context, LABEL_PAD_DP);
-        int d = stack == null ? 0 : stack.size();
-        if (d <= 0) {
+        if (stack == null || stack.isEmpty()) {
             return basePx;
         }
         Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
         p.setTextSize(sp(context, LABEL_TEXT_SP));
-        for (float outer = basePx; ; outer += stepPx) {
-            float th = (outer - innerPx) / d;
-            if (allFit(stack, innerPx, th, p, padPx) || outer >= maxPx) {
-                return Math.min(outer, maxPx);
-            }
+        float[] widths = fitRingWidths(stack, innerPx, basePx, maxPx, stepPx, padPx, p);
+        float total = 0f;
+        for (float w : widths) {
+            total += w;
         }
+        return Math.min(innerPx + total, maxPx);
     }
 
-    /** 在给定径向厚度 th 下，所有环所有格的标签能否放得进最小字号宽度（可用宽 = min(弦长, th) - pad）。 */
-    private static boolean allFit(List<Page> stack, float innerPx, float th, Paint p, float padPx) {
+    /**
+     * 逐环求宽度：每环**只按自己页内最长的标签**加宽，与他环无关；先宽的环先定。
+     * 总带宽封顶 {@code maxPx - innerPx}：若按各自需求排不下，剩余空间均分给尚未放得下的环（退化），
+     * 极端时各环均分（= 旧行为），由 drawLabel 的省略号兜底。
+     * 判据与 {@link #drawLabel} 一致：可用宽 = min(弦长, 本环宽) - pad，弦长 = 2·midR·sin(扇区/2)。
+     */
+    private static float[] fitRingWidths(List<Page> stack, float innerPx, float basePx, float maxPx,
+                                         float stepPx, float padPx, Paint p) {
         int d = stack.size();
-        for (int ring = 0; ring < d; ring++) {
-            Page page = stack.get(ring);
-            int size = page.size();
-            if (size <= 0) {
-                continue;
+        float[] w = new float[d];
+        boolean[] settled = new boolean[d];
+        float budget = Math.max(0f, maxPx - innerPx);
+        for (int i = 0; i < d; i++) {
+            w[i] = stepPx;
+        }
+        final int maxIter = (int) Math.ceil(budget / stepPx) + d + 2;
+        for (int iter = 0; iter < maxIter; iter++) {
+            // 按当前累计边界测每环是否放得下
+            boolean[] fits = new boolean[d];
+            boolean allFit = true;
+            float sum = 0f;
+            for (int k = 0; k < d; k++) {
+                Page page = stack.get(k);
+                int size = page.size();
+                if (size <= 0) {
+                    fits[k] = true;
+                    settled[k] = true;
+                } else {
+                    float ri = innerPx + sum;
+                    float midR = ri + w[k] / 2f;
+                    float sector = SWEEP_DEG / size;
+                    float chord = 2f * midR * (float) Math.sin(Math.toRadians(sector / 2f));
+                    float maxW = Math.min(chord, w[k]) - padPx;
+                    boolean full = isFullRing(k, d);
+                    boolean ok = true;
+                    for (int i2 = 0; i2 < size; i2++) {
+                        if (p.measureText(displayText(page.entries.get(i2), full)) > maxW) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    fits[k] = ok;
+                    if (ok) {
+                        settled[k] = true;
+                    }
+                    allFit &= ok;
+                }
+                sum += w[k];
             }
-            boolean full = isFullRing(ring, d);
-            float sector = SWEEP_DEG / size;
-            float ri = innerPx + ring * th;
-            float midR = ri + th / 2f;
-            float chord = 2f * midR * (float) Math.sin(Math.toRadians(sector / 2f));
-            float maxW = Math.min(chord, th) - padPx;
-            for (int k = 0; k < size; k++) {
-                if (p.measureText(displayText(page.entries.get(k), full)) > maxW) {
-                    return false;
+            float total = sum;
+            if (allFit) {
+                // 总带宽不足基准时把余量摊给各环，保持浅内容的旧视觉（外沿=基准）
+                float extra = Math.max(0f, basePx - total);
+                if (extra > 0f) {
+                    float share = extra / d;
+                    for (int k = 0; k < d; k++) {
+                        w[k] += share;
+                    }
+                }
+                return w;
+            }
+            boolean grew = false;
+            for (int k = 0; k < d; k++) {
+                if (!fits[k] && total + stepPx <= budget + 1f) {
+                    w[k] += stepPx;
+                    total += stepPx;
+                    grew = true;
                 }
             }
+            if (!grew) {
+                // 触顶：已定宽的环保留其解，剩余带宽在其余环之间均分
+                float used = 0f;
+                int rest = 0;
+                for (int k = 0; k < d; k++) {
+                    if (settled[k]) {
+                        used += w[k];
+                    } else {
+                        rest++;
+                    }
+                }
+                float share = rest > 0 ? Math.max(stepPx, (budget - used) / rest) : 0f;
+                for (int k = 0; k < d; k++) {
+                    if (!settled[k]) {
+                        w[k] = share;
+                    }
+                }
+                return w;
+            }
         }
-        return true;
+        return w;
+    }
+
+    /**
+     * 供构造使用：按 content 解出每环宽度，并把它们**整体缩放**到恰好铺满 {@code [innerR, outerR]}
+     * （触顶时 {@link #fitOuterPx} 的钳位会砍掉超额部分，这里等比回缩保持边界一致）。
+     */
+    private static float[] solveRingWidths(Context context, List<Page> stack, float outerR) {
+        int d = stack.size();
+        float[] out = new float[d];
+        if (d == 0) {
+            return out;
+        }
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setTextSize(sp(context, LABEL_TEXT_SP));
+        float[] w = fitRingWidths(stack, dp(context, INNER_DP), dp(context, OUTER_BASE_DP),
+                dp(context, OUTER_MAX_DP), dp(context, GROWTH_STEP_DP), dp(context, LABEL_PAD_DP), p);
+        float total = 0f;
+        for (float x : w) {
+            total += x;
+        }
+        float avail = Math.max(0f, outerR - dp(context, INNER_DP));
+        float scale = total > 0f ? Math.min(1f, avail / total) : 0f;
+        for (int k = 0; k < d; k++) {
+            out[k] = w[k] * scale;
+        }
+        return out;
     }
 
     /**
@@ -167,6 +260,8 @@ public final class FanMenuView extends View {
 
     private final float innerR;
     private final float outerR;
+    /** 每环的径向宽度（由内容逐环解算，见 {@link #fitRingWidths}），环边界 = innerR + 前缀和。 */
+    private final float[] ringWidths;
 
     private final Paint wedgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint wedgeActivePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -190,6 +285,7 @@ public final class FanMenuView extends View {
 
         this.innerR = dp(INNER_DP);
         this.outerR = fitOuterPx(context, this.stack);
+        this.ringWidths = solveRingWidths(context, this.stack, this.outerR);
 
         wedgePaint.setStyle(Paint.Style.FILL);
         wedgePaint.setColor(Color.parseColor("#D96750A4")); // 实心楔形（MD3 主色，略透）
@@ -214,10 +310,19 @@ public final class FanMenuView extends View {
         cy = h / 2f;    // 上下居中
     }
 
-    /** 每环径向厚度 = (outerR-innerR)/环数。环数=0 时返回 0。 */
-    private float ringThickness() {
-        int d = stack.size();
-        return d <= 0 ? 0f : (outerR - innerR) / d;
+    /** 第 {@code k} 环的内边界（r 坐标）：innerR + 前 k 环宽度之和。d 很小（≤ 树深），直接累加。 */
+    private float ringInner(int k) {
+        float ri = innerR;
+        for (int i = 0; i < k && i < ringWidths.length; i++) {
+            ri += ringWidths[i];
+        }
+        return ri;
+    }
+
+    /** 第 {@code k} 环的外边界（r 坐标）。 */
+    private float ringOuter(int k) {
+        float ro = ringInner(k);
+        return ro + (k < ringWidths.length ? ringWidths[k] : 0f);
     }
 
     /** 触点命中结果：环内某格返回 {depth,index}；枢纽返回 {-1,-1}（hub）；环外返回 {-2,-2}（outside）。 */
@@ -233,10 +338,9 @@ public final class FanMenuView extends View {
             return new int[]{-2, -2}; // 左半
         }
         int d = stack.size();
-        float th = ringThickness();
         for (int ring = 0; ring < d; ring++) {
-            float ri = innerR + ring * th;
-            float ro = innerR + (ring + 1) * th;
+            float ri = ringInner(ring);
+            float ro = ringOuter(ring);
             boolean inBand = (ring == d - 1) ? (r >= ri && r <= ro) : (r >= ri && r < ro);
             if (!inBand) {
                 continue;
@@ -296,7 +400,6 @@ public final class FanMenuView extends View {
         if (d == 0) {
             return;
         }
-        float th = ringThickness();
 
         // 1) 每环的楔形分区填充（含高亮）
         for (int ring = 0; ring < d; ring++) {
@@ -305,8 +408,8 @@ public final class FanMenuView extends View {
             if (size <= 0) {
                 continue;
             }
-            float ri = innerR + ring * th;
-            float ro = innerR + (ring + 1) * th;
+            float ri = ringInner(ring);
+            float ro = ringOuter(ring);
             float sector = SWEEP_DEG / size;
             for (int k = 0; k < size; k++) {
                 drawWedge(canvas, ri, ro, k * sector, sector, ring == activeDepth && k == activeIndex);
@@ -316,7 +419,7 @@ public final class FanMenuView extends View {
         // 2) 同心圆轮廓：最内枢纽 + 每环外沿（深度=1 → 恰两圈，与旧单页一致）
         canvas.drawCircle(cx, cy, innerR, ringPaint);
         for (int ring = 0; ring < d; ring++) {
-            canvas.drawCircle(cx, cy, innerR + (ring + 1) * th, ringPaint);
+            canvas.drawCircle(cx, cy, ringOuter(ring), ringPaint);
         }
 
         // 3) 每环楔形之间的径向分割线
@@ -325,8 +428,8 @@ public final class FanMenuView extends View {
             if (size <= 0) {
                 continue;
             }
-            float ri = innerR + ring * th;
-            float ro = innerR + (ring + 1) * th;
+            float ri = ringInner(ring);
+            float ro = ringOuter(ring);
             float sector = SWEEP_DEG / size;
             for (int k = 0; k <= size; k++) {
                 double phiB = Math.toRadians(k * sector);
@@ -345,8 +448,8 @@ public final class FanMenuView extends View {
             if (size <= 0) {
                 continue;
             }
-            float ri = innerR + ring * th;
-            float ro = innerR + (ring + 1) * th;
+            float ri = ringInner(ring);
+            float ro = ringOuter(ring);
             float midR = (ri + ro) / 2f;
             float sector = SWEEP_DEG / size;
             boolean full = isFullRing(ring, d);
