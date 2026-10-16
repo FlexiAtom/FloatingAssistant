@@ -11,12 +11,15 @@ import com.flexiatom.floatingassistant.core.CaptureStateRouter;
 import com.flexiatom.floatingassistant.core.SettingsStore;
 import com.flexiatom.floatingassistant.ocr.PpOcrEngineFactory;
 import com.flexiatom.floatingassistant.mt.MtModelHub;
+import com.flexiatom.floatingassistant.overlay.FanMenuView;
 import com.flexiatom.floatingassistant.overlay.OverlayManager;
 import com.flexiatom.floatingassistant.settings.SettingsActivity;
+import com.flexiatom.floatingassistant.tool.ContainerTool;
 import com.flexiatom.floatingassistant.tool.SimpleTool;
 import com.flexiatom.floatingassistant.tool.Tool;
 import com.flexiatom.floatingassistant.tool.ToolRegistry;
 
+import java.util.ArrayList;
 import java.util.List;
 
 public class SphereAccessibilityService extends AccessibilityService {
@@ -27,8 +30,29 @@ public class SphereAccessibilityService extends AccessibilityService {
     private OverlayManager overlayManager;
     private ScreenCapturer screenCapturer;
     private CaptureStateRouter router;
-    /** 悬浮球扇形菜单的工具表（§10 M0）：注册顺序 = 扇形自上而下。 */
+    /** 悬浮球同心环菜单的工具表（§10 M0 + #68）：注册顺序 = 环自上而下。 */
     private ToolRegistry tools;
+    /** 模型档位/黑名单等设置的持久层（菜单叶子即时写 model_mode 用）。 */
+    private SettingsStore settings;
+    /** 当前展开的同心环页面栈：{@code menuStack.get(0)}=最内环=顶层工具；向外逐层为子页。主线程访问。 */
+    private final List<List<Tool>> menuStack = new ArrayList<>();
+    /** 同心环菜单的选择回调（叶子 run / 容器 push / 枢纽 pop / 环外关闭）。 */
+    private final FanMenuView.Listener menuListener = new FanMenuView.Listener() {
+        @Override
+        public void onEntry(int depth, int index) {
+            chooseTool(depth, index);
+        }
+
+        @Override
+        public void onHub() {
+            popOrCloseMenu();
+        }
+
+        @Override
+        public void onOutside() {
+            overlayManager.hideToolMenu();
+        }
+    };
 
     /** 最近一次窗口状态变化看到的顶层外部 App 包名（忽略自身覆盖层）。用于"切走即卸载"判定。 */
     private volatile String lastTopPkg;
@@ -85,50 +109,123 @@ public class SphereAccessibilityService extends AccessibilityService {
             // 重建时先清残留，避免双份悬浮球/幽灵窗（§4.1 约定 4）
             overlayManager.removeAllImmediate();
         }
+        if (settings == null) {
+            settings = new SettingsStore(this);
+        }
         if (router == null) {
-            SettingsStore settings = new SettingsStore(this);
             MtModelHub mtHub = new MtModelHub(this, settings, new BlacklistMatcher(settings));
             router = new CaptureStateRouter(this, overlayManager,
                     () -> PpOcrEngineFactory.create(this), mtHub);
         }
         buildTools();
-        // 点球 = 展开/收起扇形工具菜单（§10 M0），不再直接触发采集；采集改由菜单里选具体工具。
+        // 点球 = 展开/收起同心环工具菜单（§10 M0 + #68），不再直接触发采集；采集改由菜单里选具体工具。
         overlayManager.setOnSphereTap(this::toggleToolMenu);
         overlayManager.showSphere();
     }
 
-    /** 构建工具注册表（§10 M0）：注册顺序即扇形自上而下。全屏翻译接成首个真实工具。 */
+    /**
+     * 构建工具树（§10 M0 + #68 径向树）：注册顺序 = 最内环自上而下。
+     * 第1页 = [全屏翻译(叶子), 开发者选项(容器)]；
+     * 开发者选项 → [整页OCR(叶子), 模型档位(容器), 黑名单(叶子→悬浮窗)]；
+     * 模型档位 → [自动, 轻量, 重量](叶子→即时设 model_mode)。
+     */
     private void buildTools() {
         tools = new ToolRegistry();
-        tools.register(new SimpleTool("fullscreen_translate",
-                getString(R.string.tool_fullscreen_translate), svc -> runInPlaceTracked()));
-        tools.register(new SimpleTool("developer_options",
-                getString(R.string.tool_developer_options), svc -> openDeveloperSettings()));
-        tools.register(new SimpleTool("page_ocr",
-                getString(R.string.tool_page_ocr), svc -> triggerRun()));
+        Tool fullscreen = new SimpleTool("fullscreen_translate",
+                getString(R.string.tool_fullscreen_translate), svc -> runInPlaceTracked());
+        Tool pageOcr = new SimpleTool("page_ocr",
+                getString(R.string.tool_page_ocr), svc -> triggerRun());
+        Tool modelTier = new ContainerTool("model_tier",
+                getString(R.string.tool_model_tier), List.of(
+                        new SimpleTool("mode_auto", getString(R.string.tool_mode_auto),
+                                svc -> setModelMode(SettingsStore.MODE_AUTO)),
+                        new SimpleTool("mode_light", getString(R.string.tool_mode_light),
+                                svc -> setModelMode(SettingsStore.MODE_FORCE_LIGHT)),
+                        new SimpleTool("mode_heavy", getString(R.string.tool_mode_heavy),
+                                svc -> setModelMode(SettingsStore.MODE_FORCE_HEAVY))));
+        Tool blacklist = new SimpleTool("blacklist",
+                getString(R.string.tool_blacklist), svc -> openBlacklist());
+        Tool devOptions = new ContainerTool("developer_options",
+                getString(R.string.tool_developer_options), List.of(pageOcr, modelTier, blacklist));
+        tools.register(fullscreen);
+        tools.register(devOptions);
     }
 
-    /** 悬浮球点击：菜单已开则收，未开则按注册表标签弹出扇形菜单。 */
+    /** 悬浮球点击：菜单已开则收，未开则以顶层工具为最内环弹出同心环菜单。 */
     private void toggleToolMenu() {
         if (overlayManager.isToolMenuVisible()) {
             overlayManager.hideToolMenu();
             return;
         }
-        List<Tool> ts = tools.tools();
-        String[] labels = new String[ts.size()];
-        for (int i = 0; i < ts.size(); i++) {
-            labels[i] = ts.get(i).label();
-        }
-        overlayManager.showToolMenu(labels, this::runTool, overlayManager::hideToolMenu);
+        menuStack.clear();
+        menuStack.add(tools.tools());
+        overlayManager.showToolMenu(buildPages(), menuListener);
     }
 
-    /** 菜单选中第 index 个扇区：先收菜单，再派发对应工具。 */
-    private void runTool(int index) {
-        overlayManager.hideToolMenu();
-        List<Tool> ts = tools.tools();
-        if (index >= 0 && index < ts.size()) {
-            ts.get(index).run(this);
+    /**
+     * 选中第 {@code depth} 环第 {@code index} 格：叶子→收菜单并 run；容器→截断到该层再压入其子项、原地刷新。
+     * 回调在主线程（触摸事件）触发，menuStack 仅主线程访问，无并发。
+     */
+    private void chooseTool(int depth, int index) {
+        if (depth < 0 || depth >= menuStack.size()) {
+            return;
         }
+        List<Tool> page = menuStack.get(depth);
+        if (index < 0 || index >= page.size()) {
+            return;
+        }
+        Tool t = page.get(index);
+        if (t.isContainer()) {
+            while (menuStack.size() > depth + 1) {
+                menuStack.remove(menuStack.size() - 1);
+            }
+            menuStack.add(t.children());
+            overlayManager.updateToolMenu(buildPages());
+        } else {
+            overlayManager.hideToolMenu();
+            t.run(this);
+        }
+    }
+
+    /** 枢纽（球心）点击：非根层→pop 一层并刷新；根层→关闭整个菜单。 */
+    private void popOrCloseMenu() {
+        if (menuStack.size() > 1) {
+            menuStack.remove(menuStack.size() - 1);
+            overlayManager.updateToolMenu(buildPages());
+        } else {
+            overlayManager.hideToolMenu();
+        }
+    }
+
+    /** 把当前 menuStack（List&lt;List&lt;Tool&gt;&gt;）映射成视图层页面栈（解耦，视图不认识 Tool）。 */
+    private List<FanMenuView.Page> buildPages() {
+        List<FanMenuView.Page> pages = new ArrayList<>(menuStack.size());
+        for (List<Tool> page : menuStack) {
+            List<FanMenuView.Entry> entries = new ArrayList<>(page.size());
+            for (Tool t : page) {
+                entries.add(new FanMenuView.Entry(t.label(), t.isContainer()));
+            }
+            pages.add(new FanMenuView.Page(entries));
+        }
+        return pages;
+    }
+
+    /** 即时设模型档位并给浮层反馈；下一次采集 {@code MtModelHub.engineFor} 现读 mode 即生效。 */
+    private void setModelMode(int mode) {
+        settings.setMode(mode);
+        String name;
+        switch (mode) {
+            case SettingsStore.MODE_FORCE_LIGHT:
+                name = getString(R.string.tool_mode_light);
+                break;
+            case SettingsStore.MODE_FORCE_HEAVY:
+                name = getString(R.string.tool_mode_heavy);
+                break;
+            default:
+                name = getString(R.string.tool_mode_auto);
+        }
+        overlayManager.showTextOverlay("model_mode_feedback",
+                getString(R.string.tool_model_tier) + " = " + name);
     }
 
     /** 原位全屏翻译（带切走即卸载记账）：记住本次目标 App，再走 M3 原位路径。 */
@@ -140,8 +237,11 @@ public class SphereAccessibilityService extends AccessibilityService {
         }
     }
 
-    /** 开发者选项 = 打开翻译设置页（模型模式 + 黑名单）。无障碍服务可带 NEW_TASK 启 Activity。 */
-    private void openDeveloperSettings() {
+    /**
+     * 黑名单入口。#68-T8a 占位：暂跳 {@link SettingsActivity}（下一步 T8b 改为就地弹可获焦悬浮窗，
+     * 消除反馈#2「子页与顶层页平级」的独立 Activity）。
+     */
+    private void openBlacklist() {
         Intent i = new Intent(this, SettingsActivity.class);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         startActivity(i);

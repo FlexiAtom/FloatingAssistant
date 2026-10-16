@@ -13,6 +13,11 @@
     <string name="tool_fullscreen_translate">全屏翻译</string>
     <string name="tool_developer_options">开发者选项</string>
     <string name="tool_page_ocr">整页OCR</string>
+    <string name="tool_model_tier">模型档位</string>
+    <string name="tool_mode_auto">自动</string>
+    <string name="tool_mode_light">轻量</string>
+    <string name="tool_mode_heavy">重量</string>
+    <string name="tool_blacklist">黑名单</string>
 
     <string name="settings_title">翻译设置</string>
     <string name="settings_model_title">模型选择</string>

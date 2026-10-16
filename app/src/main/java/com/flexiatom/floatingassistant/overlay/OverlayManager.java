@@ -19,7 +19,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.IntConsumer;
 
 /**
  * 悬浮窗唯一出口（提案 §4.1 约定）。内部维护 Map&lt;String,View&gt;，
@@ -95,15 +94,14 @@ public class OverlayManager {
     }
 
     /**
-     * 弹出工具扇形菜单（§10 M0）：以悬浮球球心为原点向右展开半圆，触点按方位角落到某扇区即选中该工具。
+     * 弹出同心环工具菜单（§10 M0 + #68 径向树）：以悬浮球球心为原点向右展开半圆，页面栈由内向外画成同心环。
      * 窗从球心向右铺（{@link FanMenuView#menuWidthPx}），球心对齐窗左边缘中点，故无需负偏移。
      * 必须在主线程调用（球点击回调 / 服务事件均在主线程）。
      *
-     * @param labels    自上而下的工具名（顺序 = 注册顺序）
-     * @param onSelect  选中扇区索引回调
-     * @param onDismiss 点中心区/扇形外/取消时的关闭回调
+     * @param stack    页面栈（{@code stack.get(0)}=最内环=顶层工具；向外逐层子页）
+     * @param listener 选择/枢纽/环外回调（服务据此 run 叶子 / push 容器 / pop / 关闭）
      */
-    public void showToolMenu(String[] labels, IntConsumer onSelect, Runnable onDismiss) {
+    public void showToolMenu(List<FanMenuView.Page> stack, FanMenuView.Listener listener) {
         View old = views.remove(KEY_MENU);
         if (old != null) {
             try {
@@ -112,7 +110,7 @@ public class OverlayManager {
                 // 已失效
             }
         }
-        FanMenuView menu = new FanMenuView(context, labels, onSelect, onDismiss);
+        FanMenuView menu = new FanMenuView(context, stack, listener);
         int mw = FanMenuView.menuWidthPx(context);
         int mh = FanMenuView.menuHeightPx(context);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
@@ -127,6 +125,17 @@ public class OverlayManager {
         lp.x = sphereX + sphereSizePx / 2;
         lp.y = sphereY + sphereSizePx / 2 - mh / 2;
         addView(KEY_MENU, menu, lp);
+    }
+
+    /**
+     * 原地刷新菜单页面栈（push/pop 时调用，避免重建窗口抖动）：仅重设视图的栈并重绘，窗口几何不变。
+     * 菜单未开则忽略。必须在主线程调用。
+     */
+    public void updateToolMenu(List<FanMenuView.Page> stack) {
+        View v = views.get(KEY_MENU);
+        if (v instanceof FanMenuView menu) {
+            menu.setStack(stack);
+        }
     }
 
     /** 收起工具扇形菜单（不存在则忽略）。必须在主线程调用。 */
