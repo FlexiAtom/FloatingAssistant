@@ -95,8 +95,8 @@ public class OverlayManager {
 
     /**
      * 弹出同心环工具菜单（§10 M0 + #68 径向树）：以悬浮球球心为原点向右展开半圆，页面栈由内向外画成同心环。
-     * 窗从球心向右铺（{@link FanMenuView#menuWidthPx}），球心对齐窗左边缘中点，故无需负偏移。
-     * 必须在主线程调用（球点击回调 / 服务事件均在主线程）。
+     * 窗从球心向右铺（{@link FanMenuView#measureWidthPx}，外沿半径按当前页栈内容自适应），球心对齐窗左边缘中点，故无需负偏移。
+     * 必须在主线程调用（球点击回调 / 服务事件均在主线程）。push/pop 改变页栈后由服务重新调用本方法重建窗（尺寸随内容而变）。
      *
      * @param stack    页面栈（{@code stack.get(0)}=最内环=顶层工具；向外逐层子页）
      * @param listener 选择/枢纽/环外回调（服务据此 run 叶子 / push 容器 / pop / 关闭）
@@ -110,9 +110,9 @@ public class OverlayManager {
                 // 已失效
             }
         }
+        int mw = FanMenuView.measureWidthPx(context, stack);
+        int mh = 2 * mw;
         FanMenuView menu = new FanMenuView(context, stack, listener);
-        int mw = FanMenuView.menuWidthPx(context);
-        int mh = FanMenuView.menuHeightPx(context);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 mw, mh,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -125,17 +125,6 @@ public class OverlayManager {
         lp.x = sphereX + sphereSizePx / 2;
         lp.y = sphereY + sphereSizePx / 2 - mh / 2;
         addView(KEY_MENU, menu, lp);
-    }
-
-    /**
-     * 原地刷新菜单页面栈（push/pop 时调用，避免重建窗口抖动）：仅重设视图的栈并重绘，窗口几何不变。
-     * 菜单未开则忽略。必须在主线程调用。
-     */
-    public void updateToolMenu(List<FanMenuView.Page> stack) {
-        View v = views.get(KEY_MENU);
-        if (v instanceof FanMenuView menu) {
-            menu.setStack(stack);
-        }
     }
 
     /** 收起工具扇形菜单（不存在则忽略）。必须在主线程调用。 */

@@ -180,7 +180,8 @@ public class SphereAccessibilityService extends AccessibilityService {
                 menuStack.remove(menuStack.size() - 1);
             }
             menuStack.add(t.children());
-            overlayManager.updateToolMenu(buildPages());
+            // 重建窗：页栈变深/变挤时外沿半径按内容自适应，窗尺寸须随之重算（原地刷新改不了窗大小）
+            overlayManager.showToolMenu(buildPages(), menuListener);
         } else {
             overlayManager.hideToolMenu();
             t.run(this);
@@ -191,7 +192,7 @@ public class SphereAccessibilityService extends AccessibilityService {
     private void popOrCloseMenu() {
         if (menuStack.size() > 1) {
             menuStack.remove(menuStack.size() - 1);
-            overlayManager.updateToolMenu(buildPages());
+            overlayManager.showToolMenu(buildPages(), menuListener);
         } else {
             overlayManager.hideToolMenu();
         }

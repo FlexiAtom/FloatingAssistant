@@ -24,16 +24,22 @@ import java.util.List;
  * 落最外环之外或左半 = 关闭整个菜单。可点按即选，也可按住拖动实时高亮、松手提交。
  *
  * <p>本视图放在一个**矩形** overlay 窗里，球心对齐到窗左边缘中点（cx=0, cy=高/2）；左边缘时左半出屏不接收触摸，只留右半环带。
- * 几何外沿固定（{@link #OUTER_DP}），故**深度=1 时与旧单页扇形逐像素一致**（回归基线），加深只是把同一环带按页数均分。
+ * 外沿半径**按内容自适应**（{@link #fitOuterPx}）：基准 {@code OUTER_BASE_DP} 起步，某格固定字号
+ * {@code LABEL_TEXT_SP} 标签放不下时逐步加宽（封顶 {@code OUTER_MAX_DP}），窗尺寸随之联动；最外环外留
+ * {@code CLOSING_GAP_DP}「关闭环带」（点此区=关闭）。浅内容时外沿=基准，深度=1 与旧单页扇形逐像素一致（回归基线）。
  */
 public final class FanMenuView extends View {
 
     private static final float SWEEP_DEG = 180f;
 
-    // 几何常量（dp）——菜单窗尺寸须与之同步，故对外暴露 menuWidthPx/menuHeightPx。
-    private static final float INNER_DP = 30f;     // 最内枢纽（= 球心返回/关闭区）半径，覆盖 48dp 球
-    private static final float OUTER_DP = 150f;    // 最外环外沿半径（固定；深度增大只细分 [INNER,OUTER]）
-    private static final float OUTER_PAD_DP = 6f;  // 有效触摸外沿余量
+    // 几何常量（dp）。外沿半径按内容自适应（见 fitOuterPx）：基准起步、放不下则加宽、封顶为止。
+    private static final float INNER_DP = 30f;       // 最内枢纽（= 球心返回/关闭区）半径，覆盖 48dp 球
+    private static final float OUTER_BASE_DP = 150f; // 外沿半径基准（下限）；内容挤时向上加宽
+    private static final float OUTER_MAX_DP = 240f;  // 外沿半径上限（防超大窗）
+    private static final float GROWTH_STEP_DP = 4f;  // 自适应加宽的迭代步长
+    private static final float CLOSING_GAP_DP = 28f; // 最外环之外的「关闭环带」宽度（点此区=关闭；须足够厚才点得到）
+    private static final float LABEL_PAD_DP = 10f;   // 标签四周留白（参与 fit 判据，与 drawLabel 一致）
+    private static final int LABEL_TEXT_SP = 12;     // 标签统一固定字号（不再动态缩字；放不下只靠自适应加宽圆）
 
     /** 一条菜单项（视图层不依赖 Tool，解耦）：文字 + 是否容器（容器带向右小箭头提示可展开）。 */
     public static final class Entry {
@@ -71,18 +77,76 @@ public final class FanMenuView extends View {
         void onOutside();
     }
 
-    /**
-     * 菜单窗宽度（px）= 外沿半径 + 余量：有效扇区全在球心右侧（φ∈[0,180] ⇒ dx≥0），
-     * 故窗只需从球心向右铺 outerR，球心对齐到窗**左边缘中点**（cx=0, cy=高/2），无需负偏移。
-     */
-    public static int menuWidthPx(Context context) {
-        return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP,
-                OUTER_DP + OUTER_PAD_DP, context.getResources().getDisplayMetrics());
+    /** 每格显示文本（容器带「 ▸」），与 {@link #drawLabel} 一致，供 fit 判据复用。 */
+    private static String displayText(Entry en) {
+        String t = en.label == null ? "" : en.label;
+        return en.container ? t + " ▸" : t;
     }
 
-    /** 菜单窗高度（px）= 2×外沿半径（上下各铺到最外环外沿）。 */
-    public static int menuHeightPx(Context context) {
-        return 2 * menuWidthPx(context);
+    /**
+     * 按内容自适应求外沿半径(px)：从 {@code OUTER_BASE_DP} 起，逐格检查标签在固定字号 {@code LABEL_TEXT_SP}
+     * 下能否放得进「楔形可用宽 = min(弦长, 径向厚度) - LABEL_PAD」；放不下就 +步长加宽，
+     * 直到全部放得下或封顶 {@code OUTER_MAX_DP}。外沿增大⇒各环径向厚度与弦长同步增大⇒可用宽单调增，迭代必收敛。
+     */
+    private static float fitOuterPx(Context context, List<Page> stack) {
+        float innerPx = dp(context, INNER_DP);
+        float basePx = dp(context, OUTER_BASE_DP);
+        float maxPx = dp(context, OUTER_MAX_DP);
+        float stepPx = dp(context, GROWTH_STEP_DP);
+        float padPx = dp(context, LABEL_PAD_DP);
+        int d = stack == null ? 0 : stack.size();
+        if (d <= 0) {
+            return basePx;
+        }
+        Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        p.setTextSize(sp(context, LABEL_TEXT_SP));
+        for (float outer = basePx; ; outer += stepPx) {
+            float th = (outer - innerPx) / d;
+            if (allFit(stack, innerPx, th, p, padPx) || outer >= maxPx) {
+                return Math.min(outer, maxPx);
+            }
+        }
+    }
+
+    /** 在给定径向厚度 th 下，所有环所有格的标签能否放得进最小字号宽度（可用宽 = min(弦长, th) - pad）。 */
+    private static boolean allFit(List<Page> stack, float innerPx, float th, Paint p, float padPx) {
+        int d = stack.size();
+        for (int ring = 0; ring < d; ring++) {
+            Page page = stack.get(ring);
+            int size = page.size();
+            if (size <= 0) {
+                continue;
+            }
+            float sector = SWEEP_DEG / size;
+            float ri = innerPx + ring * th;
+            float midR = ri + th / 2f;
+            float chord = 2f * midR * (float) Math.sin(Math.toRadians(sector / 2f));
+            float maxW = Math.min(chord, th) - padPx;
+            for (int k = 0; k < size; k++) {
+                if (p.measureText(displayText(page.entries.get(k))) > maxW) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    /**
+     * 菜单窗宽度(px) = 自适应外沿半径 + 环外关闭余量。有效扇区全在球心右侧（φ∈[0,180] ⇒ dx≥0），
+     * 故窗只需从球心向右铺；最外环外沿到窗边之间是 {@code CLOSING_GAP_DP}「关闭环带」（点此=关闭）。
+     */
+    public static int measureWidthPx(Context context, List<Page> stack) {
+        return (int) Math.ceil(fitOuterPx(context, stack) + dp(context, CLOSING_GAP_DP));
+    }
+
+    private static float dp(Context context, float value) {
+        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value,
+                context.getResources().getDisplayMetrics());
+    }
+
+    private static float sp(Context context, float value) {
+        return TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, value,
+                context.getResources().getDisplayMetrics());
     }
 
     private final Listener listener;
@@ -112,7 +176,7 @@ public final class FanMenuView extends View {
         this.stack = stack == null ? new ArrayList<>() : new ArrayList<>(stack);
 
         this.innerR = dp(INNER_DP);
-        this.outerR = dp(OUTER_DP);
+        this.outerR = fitOuterPx(context, this.stack);
 
         wedgePaint.setStyle(Paint.Style.FILL);
         wedgePaint.setColor(Color.parseColor("#D96750A4")); // 实心楔形（MD3 主色，略透）
@@ -128,14 +192,6 @@ public final class FanMenuView extends View {
         labelTextPaint.setColor(Color.WHITE);
         labelTextPaint.setTextAlign(Paint.Align.CENTER);
         labelTextActivePaint.set(labelTextPaint);
-    }
-
-    /** 原地替换页面栈并刷新（push/pop 时由服务调用，避免重建窗口抖动）。必须在主线程调用。 */
-    public void setStack(List<Page> stack) {
-        this.stack = stack == null ? new ArrayList<>() : new ArrayList<>(stack);
-        this.activeDepth = -1;
-        this.activeIndex = -1;
-        invalidate();
     }
 
     @Override
@@ -302,27 +358,32 @@ public final class FanMenuView extends View {
         canvas.drawPath(sectorPath, active ? wedgeActivePaint : wedgePaint);
     }
 
-    /** 把标签单行居中画进楔形，字号自动缩到放得进该格可用宽度（容器项尾部加「▸」提示可展开）。 */
+    /** 把标签单行居中画进楔形：固定字号（不缩字）；仅当达圆上限仍放不下时按可用宽截断加省略号兜底。 */
     private void drawLabel(Canvas canvas, Entry en, float lx, float ly, float midR, float radial,
                            float sector, boolean active) {
-        String text = en.label;
-        if (text == null || text.isEmpty()) {
+        String text = displayText(en);
+        if (text.isEmpty()) {
             return;
         }
-        if (en.container) {
-            text = text + " ▸";
-        }
         Paint p = active ? labelTextActivePaint : labelTextPaint;
-        // 可用宽 = 取「弦长（角宽）」与「径向厚度」中较小者，留边距
+        // 可用宽 = 取「弦长（角宽）」与「径向厚度」中较小者，留边距（与 fitOuterPx 判据逐字一致）
         float chord = 2f * midR * (float) Math.sin(Math.toRadians(sector / 2f));
-        float maxW = Math.min(chord, radial) - dp(10);
-        p.setTextSize(sp(14));
-        float wpx = p.measureText(text);
-        if (wpx > maxW && wpx > 0) {
-            p.setTextSize(p.getTextSize() * maxW / wpx);
+        float maxW = Math.min(chord, radial) - dp(LABEL_PAD_DP);
+        p.setTextSize(sp(LABEL_TEXT_SP));
+        if (p.measureText(text) > maxW && maxW > 0) {
+            text = ellipsize(p, text, maxW);
         }
         float baseline = ly - (p.ascent() + p.descent()) / 2f;
         canvas.drawText(text, lx, baseline, p);
+    }
+
+    /** 把 text 逐字截到 measureText <= maxW，末尾以「…」占位（圆封顶仍放不下时的兜底，正常路径不触发）。 */
+    private static String ellipsize(Paint p, String text, float maxW) {
+        int n = text.length();
+        while (n > 0 && p.measureText(text, 0, n) + p.measureText("…") > maxW) {
+            n--;
+        }
+        return n <= 0 ? "…" : text.substring(0, n) + "…";
     }
 
     private float dp(float value) {
