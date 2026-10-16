@@ -1,8 +1,10 @@
 package com.flexiatom.floatingassistant.service;
 
 import android.accessibilityservice.AccessibilityService;
+import android.content.Intent;
 import android.view.accessibility.AccessibilityEvent;
 
+import com.flexiatom.floatingassistant.R;
 import com.flexiatom.floatingassistant.capture.ScreenCapturer;
 import com.flexiatom.floatingassistant.core.BlacklistMatcher;
 import com.flexiatom.floatingassistant.core.CaptureStateRouter;
@@ -10,6 +12,12 @@ import com.flexiatom.floatingassistant.core.SettingsStore;
 import com.flexiatom.floatingassistant.ocr.PpOcrEngineFactory;
 import com.flexiatom.floatingassistant.mt.MtModelHub;
 import com.flexiatom.floatingassistant.overlay.OverlayManager;
+import com.flexiatom.floatingassistant.settings.SettingsActivity;
+import com.flexiatom.floatingassistant.tool.SimpleTool;
+import com.flexiatom.floatingassistant.tool.Tool;
+import com.flexiatom.floatingassistant.tool.ToolRegistry;
+
+import java.util.List;
 
 public class SphereAccessibilityService extends AccessibilityService {
 
@@ -19,6 +27,8 @@ public class SphereAccessibilityService extends AccessibilityService {
     private OverlayManager overlayManager;
     private ScreenCapturer screenCapturer;
     private CaptureStateRouter router;
+    /** 悬浮球扇形菜单的工具表（§10 M0）：注册顺序 = 扇形自上而下。 */
+    private ToolRegistry tools;
 
     /** 最近一次窗口状态变化看到的顶层外部 App 包名（忽略自身覆盖层）。用于"切走即卸载"判定。 */
     private volatile String lastTopPkg;
@@ -81,8 +91,60 @@ public class SphereAccessibilityService extends AccessibilityService {
             router = new CaptureStateRouter(this, overlayManager,
                     () -> PpOcrEngineFactory.create(this), mtHub);
         }
-        overlayManager.setOnSphereTap(this::triggerRun);
+        buildTools();
+        // 点球 = 展开/收起扇形工具菜单（§10 M0），不再直接触发采集；采集改由菜单里选具体工具。
+        overlayManager.setOnSphereTap(this::toggleToolMenu);
         overlayManager.showSphere();
+    }
+
+    /** 构建工具注册表（§10 M0）：注册顺序即扇形自上而下。全屏翻译接成首个真实工具。 */
+    private void buildTools() {
+        tools = new ToolRegistry();
+        tools.register(new SimpleTool("fullscreen_translate",
+                getString(R.string.tool_fullscreen_translate), svc -> runInPlaceTracked()));
+        tools.register(new SimpleTool("developer_options",
+                getString(R.string.tool_developer_options), svc -> openDeveloperSettings()));
+        tools.register(new SimpleTool("page_ocr",
+                getString(R.string.tool_page_ocr), svc -> triggerRun()));
+    }
+
+    /** 悬浮球点击：菜单已开则收，未开则按注册表标签弹出扇形菜单。 */
+    private void toggleToolMenu() {
+        if (overlayManager.isToolMenuVisible()) {
+            overlayManager.hideToolMenu();
+            return;
+        }
+        List<Tool> ts = tools.tools();
+        String[] labels = new String[ts.size()];
+        for (int i = 0; i < ts.size(); i++) {
+            labels[i] = ts.get(i).label();
+        }
+        overlayManager.showToolMenu(labels, this::runTool, overlayManager::hideToolMenu);
+    }
+
+    /** 菜单选中第 index 个扇区：先收菜单，再派发对应工具。 */
+    private void runTool(int index) {
+        overlayManager.hideToolMenu();
+        List<Tool> ts = tools.tools();
+        if (index >= 0 && index < ts.size()) {
+            ts.get(index).run(this);
+        }
+    }
+
+    /** 原位全屏翻译（带切走即卸载记账）：记住本次目标 App，再走 M3 原位路径。 */
+    private void runInPlaceTracked() {
+        CaptureStateRouter r = router;
+        if (r != null) {
+            translatedPkg = lastTopPkg;
+            r.runOnceInPlace();
+        }
+    }
+
+    /** 开发者选项 = 打开翻译设置页（模型模式 + 黑名单）。无障碍服务可带 NEW_TASK 启 Activity。 */
+    private void openDeveloperSettings() {
+        Intent i = new Intent(this, SettingsActivity.class);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(i);
     }
 
     @Override
@@ -103,6 +165,7 @@ public class SphereAccessibilityService extends AccessibilityService {
         // 只认 WINDOW_STATE_CHANGED（内容级 CONTENT_CHANGED 太噪：光标闪/列表动画会误清，留给软过期兜底）。
         if (type == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && overlayManager != null) {
             overlayManager.removeGroup(OverlayManager.GROUP_MT);
+            overlayManager.hideToolMenu(); // 导航/换页时扇形菜单不该悬着（§10 M0）
         }
         // 前台切走即卸载：翻译过的 App 不再是顶层 → 空闲时释放常驻模型内存（§5.5 修订）。
         // 翻译进行中不打断（返回 false，保留 translatedPkg，下次顶层变化再试；长翻译可被悬浮球取消）。

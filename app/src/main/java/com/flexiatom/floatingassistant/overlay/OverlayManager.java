@@ -17,6 +17,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.IntConsumer;
 
 /**
  * 悬浮窗唯一出口（提案 §4.1 约定）。内部维护 Map&lt;String,View&gt;，
@@ -31,6 +32,14 @@ public class OverlayManager {
 
     /** 原位贴图分组名：路由贴入、页面变化/软过期移除，统一走这一组（§5.2-4/5/6）。 */
     public static final String GROUP_MT = "mt_overlay";
+
+    /** 工具扇形菜单窗的 key（§10 M0）；登记进 views 供 removeAllImmediate 兜底清理。 */
+    private static final String KEY_MENU = "tool_menu";
+
+    /** 悬浮球屏幕几何（px），供扇形菜单锚定；将来球可拖曳时改这三个值即可让菜单跟随。 */
+    private int sphereX;
+    private int sphereY;
+    private int sphereSizePx;
 
     private final Context context;
     private final WindowManager windowManager;
@@ -72,9 +81,64 @@ public class OverlayManager {
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
-        lp.x = 0;
-        lp.y = 200;
+        // 左边缘、垂直居中：给向右展开的 180° 扇形菜单留出上下空间（球贴顶会使上方 chip 被裁）。
+        sphereSizePx = dp(48);
+        sphereX = 0;
+        sphereY = (context.getResources().getDisplayMetrics().heightPixels - sphereSizePx) / 2;
+        lp.x = sphereX;
+        lp.y = sphereY;
         addView(KEY_SPHERE, sphere, lp);
+    }
+
+    /**
+     * 弹出工具扇形菜单（§10 M0）：以悬浮球球心为原点向右展开半圆，触点按方位角落到某扇区即选中该工具。
+     * 窗从球心向右铺（{@link FanMenuView#menuWidthPx}），球心对齐窗左边缘中点，故无需负偏移。
+     * 必须在主线程调用（球点击回调 / 服务事件均在主线程）。
+     *
+     * @param labels    自上而下的工具名（顺序 = 注册顺序）
+     * @param onSelect  选中扇区索引回调
+     * @param onDismiss 点中心区/扇形外/取消时的关闭回调
+     */
+    public void showToolMenu(String[] labels, IntConsumer onSelect, Runnable onDismiss) {
+        View old = views.remove(KEY_MENU);
+        if (old != null) {
+            try {
+                windowManager.removeViewImmediate(old);
+            } catch (Exception ignored) {
+                // 已失效
+            }
+        }
+        FanMenuView menu = new FanMenuView(context, labels, onSelect, onDismiss);
+        int mw = FanMenuView.menuWidthPx(context);
+        int mh = FanMenuView.menuHeightPx(context);
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                mw, mh,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                // 可触摸（捕获点/拖手势），但不抢 IME 焦点
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        lp.gravity = Gravity.TOP | Gravity.START;
+        // 球心 = 窗左边缘中点
+        lp.x = sphereX + sphereSizePx / 2;
+        lp.y = sphereY + sphereSizePx / 2 - mh / 2;
+        addView(KEY_MENU, menu, lp);
+    }
+
+    /** 收起工具扇形菜单（不存在则忽略）。必须在主线程调用。 */
+    public void hideToolMenu() {
+        View v = views.remove(KEY_MENU);
+        if (v != null) {
+            try {
+                windowManager.removeViewImmediate(v);
+            } catch (Exception ignored) {
+                // 已失效
+            }
+        }
+    }
+
+    public boolean isToolMenuVisible() {
+        return views.containsKey(KEY_MENU);
     }
 
     /** 展示型文本浮层：不拦截下层触摸/焦点。同一 key 重复调用即原位更新内容。 */

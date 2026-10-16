@@ -10,6 +10,10 @@
     <string name="main_disclaimer_hint">本软件按「现状」提供，不担保（GPLv3 §15/§16）。仅在 Redmi 13R 5G / HyperOS 2.0.208 / Android 15 / 安全补丁 2026-03-01 上验证过。</string>
     <string name="main_open_settings">翻译设置</string>
 
+    <string name="tool_fullscreen_translate">全屏翻译</string>
+    <string name="tool_developer_options">开发者选项</string>
+    <string name="tool_page_ocr">整页OCR</string>
+
     <string name="settings_title">翻译设置</string>
     <string name="settings_model_title">模型选择</string>
     <string name="settings_mode_auto">自动（按黑名单，默认轻量）</string>
