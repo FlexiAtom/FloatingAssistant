@@ -55,6 +55,19 @@ public class MainActivity extends AppCompatActivity {
     /** 量测哪条框选产物：{@code ocr}（默认）或 {@code shot}（存相册）。 */
     public static final String EXTRA_P4_REGION_ACT = "p4_region_act";
 
+    /**
+     * 扇形几何量测入口（fan-menu-into-ball 的反证表用）：不经手势地把球摆到某处并弹出菜单，
+     * 让「扇形圆心＝球心」「贴边不被 WMS 钳」这两条不变量能在机器上量出来（触摸测试仍归人做）。
+     * 与 {@code p4_region} 同性质：演示/量测入口，不进正式交互。
+     */
+    public static final String EXTRA_P5_MENU = "p5_menu";
+    /** 球左上角（屏幕 px），"x,y"。 */
+    public static final String EXTRA_P5_BALL = "p5_ball";
+    /** 页栈下钻：逗号分隔的工具下标（如 "1"＝压入第 2 个工具的子页）。 */
+    public static final String EXTRA_P5_PATH = "p5_path";
+    /** 只收菜单不弹（配合截屏：量完把模态窗清掉，别留着挡下层）。 */
+    public static final String EXTRA_P5_MENU_HIDE = "p5_menu_hide";
+
     private TextView statusText;
 
     @Override
@@ -78,6 +91,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP3Demo(getIntent());
         maybeRunP3InPlace(getIntent());
         maybeRunP4Region(getIntent());
+        maybeRunP5Menu(getIntent());
     }
 
     @Override
@@ -91,6 +105,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP3Demo(intent);
         maybeRunP3InPlace(intent);
         maybeRunP4Region(intent);
+        maybeRunP5Menu(intent);
     }
 
     private void maybeRunP0(Intent intent) {
@@ -253,6 +268,84 @@ public class MainActivity extends AppCompatActivity {
                 svc.runOnceNowRegion(rect, report);
             }
         }, "p4-region").start();
+    }
+
+    /**
+     * 扇形几何量测入口（{@code fan-menu-into-ball}）。日志一条即结论：
+     * {@code concentric}＝扇形圆心与球心在窗内是否同一点（合窗后这应当是布局保证，恒真）；
+     * {@code shifted}＝请求的窗原点与 WMS 实际落位是否不同（旧两窗实现就是在这一步被钳回屏内，扇形随之离球）。
+     */
+    private void maybeRunP5Menu(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_P5_MENU, false)) {
+            return;
+        }
+        final SphereAccessibilityService svc = SphereAccessibilityService.getInstance();
+        if (svc == null) {
+            android.util.Log.e("P5MENU", "no accessibility service connected");
+            return;
+        }
+        if (intent.getBooleanExtra(EXTRA_P5_MENU_HIDE, false)) {
+            svc.hideMenuForTest();
+            android.util.Log.i("P5MENU", "hidden");
+            return;
+        }
+        final int[] ball = parsePair(intent.getStringExtra(EXTRA_P5_BALL), 0, 0);
+        final int[] path = parsePath(intent.getStringExtra(EXTRA_P5_PATH));
+        long delayMs = (long) intent.getIntExtra(EXTRA_P3_DEMO_DELAY_MS, 1500);
+        new Thread(() -> {
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            svc.probeMenuGeometryAt(ball, path, probe -> {
+                if (probe.length == 0) {
+                    android.util.Log.e("P5MENU", "no menu window (ball=" + ball[0] + "," + ball[1] + ")");
+                    return;
+                }
+                boolean concentric = probe[4] == probe[6] && probe[5] == probe[7];
+                boolean shifted = probe[0] != probe[2] || probe[1] != probe[3];
+                android.util.Log.i("P5MENU", "ball=" + ball[0] + "," + ball[1]
+                        + " reqWin=" + probe[0] + "," + probe[1]
+                        + " actualWin=" + probe[2] + "," + probe[3]
+                        + " fanC=" + probe[4] + "," + probe[5]
+                        + " ballC=" + probe[6] + "," + probe[7]
+                        + " win=" + probe[8] + "x" + probe[9]
+                        + " depth=" + (path.length + 1)
+                        + " concentric=" + concentric + " shifted=" + shifted);
+            });
+        }, "p5-menu").start();
+    }
+
+    private static int[] parsePair(String value, int fallbackX, int fallbackY) {
+        try {
+            if (value != null) {
+                String[] parts = value.split(",");
+                if (parts.length == 2) {
+                    return new int[] {Integer.parseInt(parts[0].trim()), Integer.parseInt(parts[1].trim())};
+                }
+            }
+        } catch (NumberFormatException ignored) {
+            // 落回默认位置
+        }
+        return new int[] {fallbackX, fallbackY};
+    }
+
+    private static int[] parsePath(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return new int[0];
+        }
+        String[] parts = value.split(",");
+        int[] out = new int[parts.length];
+        try {
+            for (int i = 0; i < parts.length; i++) {
+                out[i] = Integer.parseInt(parts[i].trim());
+            }
+        } catch (NumberFormatException e) {
+            return new int[0];
+        }
+        return out;
     }
 
     // C 用：真实文本栈渲染的密集小字页（TextView 排版 + 自然折行 + 真实 AA），

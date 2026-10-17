@@ -13,6 +13,7 @@ import android.view.View;
 import android.widget.TextView;
 
 import android.view.WindowManager;
+import android.widget.FrameLayout;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -35,9 +36,6 @@ public class OverlayManager {
     /** 原位贴图分组名：路由贴入、页面变化/软过期移除，统一走这一组（§5.2-4/5/6）。 */
     public static final String GROUP_MT = "mt_overlay";
 
-    /** 工具扇形菜单窗的 key（§10 M0）；登记进 views 供 removeAllImmediate 兜底清理。 */
-    private static final String KEY_MENU = "tool_menu";
-
     /** 就地编辑面板（黑名单，#68-T8b）的 key：全 app 至多一扇，且**不参与截屏摘窗**（见 {@link #applyDetach}）。 */
     private static final String KEY_PANEL = "edit_panel";
 
@@ -50,10 +48,28 @@ public class OverlayManager {
     /** 编辑面板默认距屏幕顶部的距离（dp）：顶部锚定让输入行避开软键盘。 */
     private static final int PANEL_TOP_DP = 32;
 
-    /** 悬浮球屏幕几何（px），供扇形菜单锚定；{@link SphereDrag} 拖曳时实时更新，菜单随之跟随。 */
+    /**
+     * 悬浮球**左上角**的屏幕几何（px）——「球在哪」的唯一真值。窗原点一律由它**推导**出来
+     * （收起时窗就是球那么大；展开时窗原点 = 球心 − 扇形在自己窗内的球心），所以拖动球必然带动扇形，
+     * 二者不可能各走各的（用户 2026-10-18：「展开的扇形应为悬浮球的一部分」）。
+     */
     private int sphereX;
     private int sphereY;
     private int sphereSizePx;
+
+    /** 球窗容器：球与展开的扇形**同属这一个窗**（旧实现是两个窗靠算术对齐，会被 WMS 钳位拆开）。 */
+    private FrameLayout sphereHost;
+    private View sphereBall;
+    private FrameLayout.LayoutParams ballLp;
+    private WindowManager.LayoutParams sphereWinLp;
+
+    /** 扇形菜单态：{@code menuView != null} 即展开；尺寸/朝向记下，供拖曳后换算窗原点与松手翻向。 */
+    private View menuView;
+    private List<FanMenuView.Page> menuStack;
+    private FanMenuView.Listener menuListener;
+    private int menuWidthPx;
+    private int menuHeightPx;
+    private boolean menuFacingLeft;
 
     /** 编辑面板窗参数（拖曳手柄改 x/y 后 {@code updateViewLayout} 用）；面板关闭即置空。 */
     private WindowManager.LayoutParams panelLp;
@@ -95,47 +111,129 @@ public class OverlayManager {
         if (views.containsKey(KEY_SPHERE)) {
             return;
         }
-        FloatingBallView sphere = new FloatingBallView(overlayContext);
-        sphere.setClickable(true);
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                // 交互型：可触摸，但不抢焦点（点击/拖曳由无障碍窗接收，下层仍可操作）
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.TOP | Gravity.START;
+        sphereSizePx = dp(48);
         // 初始停在左边缘、垂直居中：给向右展开的 180° 扇形菜单留出上下空间（球贴顶会使上方楔形被裁）。
         // 之后由用户拖到任意位置（{@link SphereDrag}），菜单纯几何跟随球心并按最近边缘决定开口朝向。
-        sphereSizePx = dp(48);
         sphereX = 0;
         sphereY = (context.getResources().getDisplayMetrics().heightPixels - sphereSizePx) / 2;
-        lp.x = sphereX;
-        lp.y = sphereY;
+
+        sphereHost = new FrameLayout(overlayContext);
+        FloatingBallView ball = new FloatingBallView(overlayContext);
+        ball.setClickable(true);
+        sphereBall = ball;
+        ballLp = new FrameLayout.LayoutParams(sphereSizePx, sphereSizePx);
+        sphereHost.addView(ball, ballLp);
+
+        sphereWinLp = new WindowManager.LayoutParams(
+                sphereSizePx, sphereSizePx,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                // 交互型：可触摸，但不抢焦点（点击/拖曳由无障碍窗接收，下层仍可操作）
+                // FLAG_LAYOUT_NO_LIMITS：展开的扇形**本就该**越出屏幕沿（它以球为圆心，球贴边时半边环在屏外）。
+                // 不带它时 WMS 把 frame 钳回屏内，而扇形按「球心贴窗边」画 ⇒ 钳一下就把扇形整体推离球心
+                // （用户 2026-10-18 报的「某些情况下扇形出现在不应该的位置」即此，数值上 lp.x 可到 −120px）。
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT);
+        sphereWinLp.gravity = Gravity.TOP | Gravity.START;
+        sphereWinLp.x = sphereX;
+        sphereWinLp.y = sphereY;
         // 触摸自处理：按下即消费，故不再挂 OnClickListener（否则拖曳与点击会双触发）
-        sphere.setOnTouchListener(new SphereDrag(sphere, lp));
-        addView(KEY_SPHERE, sphere, lp);
+        ball.setOnTouchListener(new SphereDrag());
+        addView(KEY_SPHERE, sphereHost, sphereWinLp);
     }
 
     /**
-     * 悬浮球拖曳（#68-T9）：位移超过 {@code touchSlop} 才认定为拖窗——期间逐帧 {@code updateViewLayout}
-     * 并把新位置同步进 {@link #sphereX}/{@link #sphereY}（扇形菜单锚点即读即跟随）；未超过则松手算点击。
+     * 把「球在哪」换算成「窗在哪/多大」并推给 WMS。这是合窗后**唯一**一处几何推导：
+     * 收起＝窗＝球；展开＝窗为扇形外接盒，球以 margin 落在扇形自己的圆心上。
+     * 因为两者在同一个 surface 内，同心由布局保证，不再有「两个窗各自被钳」的可能。
+     */
+    private void applySphereWindow() {
+        if (sphereHost == null || sphereWinLp == null) {
+            return;
+        }
+        int ballCx = sphereX + sphereSizePx / 2;
+        int ballCy = sphereY + sphereSizePx / 2;
+        if (menuView == null) {
+            sphereWinLp.width = sphereSizePx;
+            sphereWinLp.height = sphereSizePx;
+            sphereWinLp.x = sphereX;
+            sphereWinLp.y = sphereY;
+            setBallMargin(0, 0);
+        } else {
+            int fanCx = menuFacingLeft ? menuWidthPx : 0;
+            int fanCy = menuHeightPx / 2;
+            sphereWinLp.width = menuWidthPx;
+            sphereWinLp.height = menuHeightPx;
+            sphereWinLp.x = ballCx - fanCx;
+            sphereWinLp.y = ballCy - fanCy;
+            setBallMargin(fanCx - sphereSizePx / 2, fanCy - sphereSizePx / 2);
+        }
+        try {
+            windowManager.updateViewLayout(sphereHost, sphereWinLp);
+        } catch (Exception ignored) {
+            // 球窗已随服务失效：位置改动无意义，静默
+        }
+    }
+
+    private void setBallMargin(int left, int top) {
+        if (ballLp != null && (ballLp.leftMargin != left || ballLp.topMargin != top)) {
+            ballLp.leftMargin = left;
+            ballLp.topMargin = top;
+            sphereHost.requestLayout();
+        }
+    }
+
+    /**
+     * 把球摆到指定屏幕位置（等价一次拖曳的落点），窗原点随之换算。必须在主线程调用。
+     * <p>它存在的理由与 {@code p4_region} 同：合窗后的几何不变量（扇形圆心＝球心、越沿不被钳）
+     * 必须能在**不注入触摸**的前提下复现与量测——手点由人做，机器量由这条入口做。
+     */
+    public void moveSphereTo(int x, int y) {
+        DisplayMetrics dm = context.getResources().getDisplayMetrics();
+        sphereX = clamp(x, 0, dm.widthPixels - sphereSizePx);
+        sphereY = clamp(y, 0, dm.heightPixels - sphereSizePx);
+        applySphereWindow();
+    }
+
+    /** 量测用：球当前屏幕几何（左上角 + 直径，px）。 */
+    public int[] sphereRectForTest() {
+        return new int[]{sphereX, sphereY, sphereSizePx};
+    }
+
+    /**
+     * 扇形几何探针（{@code fan-menu-into-ball} 的反证表要用）。返回十个量：
+     * {@code [请求窗x, 请求窗y, 实际落位x, 实际落位y, 扇形圆心x, 扇形圆心y, 球心x, 球心y, 窗宽, 窗高]}，
+     * 坐标一律是**窗内** px（实际落位由 {@code getLocationOnScreen} 取，是 WMS 真给的位，
+     * 与「请求窗x」不等就说明被钳了——旧的两窗实现正是被这一钳把扇形推离球心的）。
+     * <p>{@link #sphereHost} 或扇形不在时返回长度 0，调用方按「没得量」处理。
+     */
+    public int[] menuProbeGeometry() {
+        if (sphereHost == null || menuView == null) {
+            return new int[0];
+        }
+        int[] loc = new int[2];
+        sphereHost.getLocationOnScreen(loc);
+        int fanCx = menuFacingLeft ? menuWidthPx : 0;
+        int fanCy = menuHeightPx / 2;
+        return new int[]{sphereWinLp.x, sphereWinLp.y, loc[0], loc[1],
+                fanCx, fanCy,
+                ballLp.leftMargin + sphereSizePx / 2, ballLp.topMargin + sphereSizePx / 2,
+                menuWidthPx, menuHeightPx};
+    }
+
+    /**
+     * 悬浮球拖曳（#68-T9）：位移超过 {@code touchSlop} 才认定为拖窗——期间逐帧改**球**的位置并重推窗原点
+     * （{@link #applySphereWindow}），故菜单展开着也跟着走；未超过则松手算点击。
+     * <p>拖过屏幕中线时开口朝向要翻面，那是**换扇形视图**而不是挪窗，只在松手时做一次（逐帧重建会闪）。
      * 位置只限在本进程本次服务生命周期内，不写 prefs（服务重连回默认左缘中点）。
      */
     private final class SphereDrag implements View.OnTouchListener {
-        private final View target;
-        private final WindowManager.LayoutParams lp;
         private float downRawX;
         private float downRawY;
-        private float startLpX;
-        private float startLpY;
+        private int startBallX;
+        private int startBallY;
         private boolean dragging;
-
-        SphereDrag(View target, WindowManager.LayoutParams lp) {
-            this.target = target;
-            this.lp = lp;
-        }
 
         @Override
         public boolean onTouch(View v, MotionEvent e) {
@@ -143,8 +241,8 @@ public class OverlayManager {
                 case MotionEvent.ACTION_DOWN:
                     downRawX = e.getRawX();
                     downRawY = e.getRawY();
-                    startLpX = lp.x;
-                    startLpY = lp.y;
+                    startBallX = sphereX;
+                    startBallY = sphereY;
                     dragging = false;
                     return true;
                 case MotionEvent.ACTION_MOVE: {
@@ -155,27 +253,28 @@ public class OverlayManager {
                     }
                     dragging = true;
                     DisplayMetrics dm = context.getResources().getDisplayMetrics();
-                    int nx = clamp(Math.round(startLpX + dx), 0, dm.widthPixels - sphereSizePx);
-                    int ny = clamp(Math.round(startLpY + dy), 0, dm.heightPixels - sphereSizePx);
-                    if (nx == lp.x && ny == lp.y) {
+                    // 钳的是**球**（球不许出屏），窗出不出屏由 applySphereWindow 决定
+                    int nx = clamp(Math.round(startBallX + dx), 0, dm.widthPixels - sphereSizePx);
+                    int ny = clamp(Math.round(startBallY + dy), 0, dm.heightPixels - sphereSizePx);
+                    if (nx == sphereX && ny == sphereY) {
                         return true;
                     }
-                    lp.x = nx;
-                    lp.y = ny;
                     sphereX = nx;
                     sphereY = ny;
-                    try {
-                        windowManager.updateViewLayout(target, lp);
-                    } catch (Exception ignored) {
-                        // 球窗已随服务失效：位置改动无意义，静默
-                    }
+                    applySphereWindow();
                     return true;
                 }
                 case MotionEvent.ACTION_UP:
-                    if (!dragging && onSphereTap != null) {
+                    if (dragging) {
+                        dragging = false;
+                        if (menuView != null) {
+                            refreshMenuFacing();
+                        }
+                        return true;
+                    }
+                    if (onSphereTap != null) {
                         onSphereTap.run();
                     }
-                    dragging = false;
                     return true;
                 case MotionEvent.ACTION_CANCEL:
                     dragging = false;
@@ -192,60 +291,69 @@ public class OverlayManager {
 
     /**
      * 弹出同心环工具菜单（§10 M0 + #68 径向树）：以悬浮球球心为原点向**最近边缘的对侧**展开半圆，
-     * 页面栈由内向外画成同心环。窗从球心向开口侧铺（{@link FanMenuView#measureWidthPx}，外沿半径按当前页栈
-     * 内容自适应），球心对齐窗**开口对侧**边缘（球在左半→窗左边、球在右半→窗右边）；球贴近屏幕上下沿时窗整体内收。
-     * 必须在主线程调用（球点击回调 / 服务事件均在主线程）。push/pop 改变页栈后由服务重新调用本方法重建窗（尺寸随内容而变）。
+     * 页面栈由内向外画成同心环。
+     *
+     * <p>**没有第二个窗**——扇形作为子视图挂进 {@link #sphereHost}，与球同一个 surface（用户 2026-10-18：
+     * 「展开的扇形应为悬浮球的一部分」）。于是「扇形圆心 = 球心」是同一窗内的布局约束：拖球扇形必跟着走，
+     * WMS 也无法把两者各自钳开；扇形该出屏的那半边就出屏（它本来就以球为圆心）。
+     * 必须在主线程调用（球点击回调 / 服务事件均在主线程）。push/pop 改变页栈后由服务重新调用本方法重建扇形。
      *
      * @param stack    页面栈（{@code stack.get(0)}=最内环=顶层工具；向外逐层子页）
      * @param listener 选择/枢纽/环外回调（服务据此 run 叶子 / push 容器 / pop / 关闭）
      */
     public void showToolMenu(List<FanMenuView.Page> stack, FanMenuView.Listener listener) {
-        View old = views.remove(KEY_MENU);
-        if (old != null) {
-            try {
-                windowManager.removeViewImmediate(old);
-            } catch (Exception ignored) {
-                // 已失效
-            }
+        if (sphereHost == null) {
+            return; // 没有球就没有扇形宿主
         }
-        int mw = FanMenuView.measureWidthPx(overlayContext, stack);
-        int mh = 2 * mw;
-        DisplayMetrics dm = context.getResources().getDisplayMetrics();
-        int ballCx = sphereX + sphereSizePx / 2;
-        int ballCy = sphereY + sphereSizePx / 2;
-        // 开口朝向最近边缘：球在屏幕右半边就向左展开（否则环带整条出屏）
-        boolean facingLeft = ballCx > dm.widthPixels / 2;
-        // 窗尽量把球心摆在自己竖直中线上；球贴近屏幕上下沿时窗整体内收，球心在窗内的 y 随之偏移
-        int winY = clamp(ballCy - mh / 2, 0, Math.max(0, dm.heightPixels - mh));
-        FanMenuView menu = new FanMenuView(overlayContext, stack, listener, facingLeft, ballCy - winY);
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                mw, mh,
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                // 可触摸（捕获点/拖手势），但不抢 IME 焦点
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.TOP | Gravity.START;
-        // 球心 = 窗（开口对侧）边缘中点
-        lp.x = facingLeft ? ballCx - mw : ballCx;
-        lp.y = winY;
-        addView(KEY_MENU, menu, lp);
+        menuStack = stack;
+        menuListener = listener;
+        menuWidthPx = FanMenuView.measureWidthPx(overlayContext, stack);
+        menuHeightPx = 2 * menuWidthPx;
+        menuFacingLeft = sphereX + sphereSizePx / 2
+                > context.getResources().getDisplayMetrics().widthPixels / 2;
+        attachMenuView();
     }
 
-    /** 收起工具扇形菜单（不存在则忽略）。必须在主线程调用。 */
-    public void hideToolMenu() {
-        View v = views.remove(KEY_MENU);
-        if (v != null) {
-            try {
-                windowManager.removeViewImmediate(v);
-            } catch (Exception ignored) {
-                // 已失效
-            }
+    /** 按当前 {@link #menuStack} 造/换扇形子视图，并把窗换算成扇形盒。视图画在球**之下**（index 0）。 */
+    private void attachMenuView() {
+        if (menuView != null) {
+            sphereHost.removeView(menuView);
+            menuView = null;
         }
+        if (menuStack == null) {
+            return;
+        }
+        FanMenuView fan = new FanMenuView(overlayContext, menuStack, menuListener,
+                menuFacingLeft, menuHeightPx / 2);
+        menuView = fan;
+        sphereHost.addView(fan, 0, new FrameLayout.LayoutParams(menuWidthPx, menuHeightPx));
+        applySphereWindow();
+    }
+
+    /** 拖过中线后开口朝向要翻面：只在松手时换一次视图，避免逐帧重建闪烁。 */
+    private void refreshMenuFacing() {
+        boolean facingLeft = sphereX + sphereSizePx / 2
+                > context.getResources().getDisplayMetrics().widthPixels / 2;
+        if (facingLeft != menuFacingLeft) {
+            menuFacingLeft = facingLeft;
+            attachMenuView();
+        }
+    }
+
+    /** 收起工具扇形（不存在则忽略）：摘掉子视图并把窗缩回球那么大。必须在主线程调用。 */
+    public void hideToolMenu() {
+        if (menuView == null) {
+            return;
+        }
+        sphereHost.removeView(menuView);
+        menuView = null;
+        menuStack = null;
+        menuListener = null;
+        applySphereWindow(); // 缩回 48dp：这一步不做，球窗会常驻吃掉整块矩形的触摸
     }
 
     public boolean isToolMenuVisible() {
-        return views.containsKey(KEY_MENU);
+        return menuView != null;
     }
 
     /**
@@ -539,6 +647,14 @@ public class OverlayManager {
         }
         views.clear();
         groups.clear();
+        // 球窗没了 ⇒ 它的容器/扇形引用一并作废，否则 hideToolMenu/applySphereWindow 会去动一个已 detach 的宿主
+        sphereHost = null;
+        sphereBall = null;
+        ballLp = null;
+        sphereWinLp = null;
+        menuView = null;
+        menuStack = null;
+        menuListener = null;
         for (Runnable r : expiry.values()) {
             mainHandler.removeCallbacks(r);
         }

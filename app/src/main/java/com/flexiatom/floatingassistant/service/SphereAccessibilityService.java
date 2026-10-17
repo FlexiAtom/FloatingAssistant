@@ -132,6 +132,39 @@ public class SphereAccessibilityService extends AccessibilityService {
         }
     }
 
+    /**
+     * 扇形几何量测入口（{@code fan-menu-into-ball}）：把球摆到 {@code ballTopLeft}，弹出根菜单并按
+     * {@code indexPath} 逐层压入子页，然后回调球与扇形的几何。**与点球的通路不同处仅在没经过手势**——
+     * 合窗后的不变量（扇形圆心＝球心、贴右沿不被 WMS 钳、拖球扇形同行）必须能在不注入触摸的前提下量出来，
+     * 手点仍归人。量测完由调用方自己 {@link #hideMenuForTest()} 收掉，免得留一扇模态窗挡住下层。
+     */
+    public void probeMenuGeometryAt(int[] ballTopLeft, int[] indexPath,
+                                    java.util.function.Consumer<int[]> onProbe) {
+        mainHandler.post(() -> {
+            overlayManager.moveSphereTo(ballTopLeft[0], ballTopLeft[1]);
+            menuStack.clear();
+            menuStack.add(tools.tools());
+            for (int index : indexPath) {
+                List<Tool> page = menuStack.get(menuStack.size() - 1);
+                if (index < 0 || index >= page.size() || !page.get(index).isContainer()) {
+                    break;
+                }
+                menuStack.add(page.get(index).children());
+            }
+            overlayManager.showToolMenu(buildPages(), menuListener);
+            if (onProbe != null) {
+                // 探针要读的是**布局之后**的落位（getLocationOnScreen 在 addView 当刻还是旧值），
+                // 故排到下一帧之后；400 ms 是「布局肯定走完」的保守值，不是产品逻辑。
+                mainHandler.postDelayed(() -> onProbe.accept(overlayManager.menuProbeGeometry()), 400);
+            }
+        });
+    }
+
+    /** 与 {@link #probeMenuGeometryAt} 配套：收扇形并把球窗缩回。 */
+    public void hideMenuForTest() {
+        mainHandler.post(overlayManager::hideToolMenu);
+    }
+
     /** 采集触发统一入口：先记住"这次翻的是哪个 App"，供切走即卸载判定。 */
     private void triggerRun() {
         CaptureStateRouter r = router;
