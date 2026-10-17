@@ -1,6 +1,7 @@
 package com.flexiatom.floatingassistant.core;
 
 import android.graphics.Bitmap;
+import android.os.SystemClock;
 import android.util.Log;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -31,6 +32,15 @@ public final class CaptureStateRouter {
 
     private static final String TAG = "CaptureRouter";
     private static final String RESULT_KEY = "capture_result";
+
+    /** 框选重试趟（第二趟）补真实页面上下文时的最小边（px）：小选区直接喂 det 会出 0 框。 */
+    private static final int MIN_CTX_PX = 320;
+    /** 抠图画布的灰边宽（px）：纯色、不含任何页面邻居，只给 det 留呼吸空间。 */
+    private static final int CUT_PAD_PX = 24;
+    /** 抠图放大目标字高（px），与 rec 输入高 REC_H 同值：小选区抬到这一高度 det 才肯出框。 */
+    private static final int CUT_TARGET_H = 48;
+    /** 抠图放大上限：字高再小也不无限放大（避免 1~2 px 噪点被撑成一屏）。 */
+    private static final float CUT_MAX_SCALE = 4.0f;
     private static final int TREE_NODE_BUDGET = 800;
     /**
      * 分段翻译的单段字符上限。1.25-bit 模型在整屏长输入上实测坍缩（空输出/乱码/复读），
@@ -108,7 +118,15 @@ public final class CaptureStateRouter {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-            return capturer.capture();
+            // 选区窗由服务侧在派发本次运行**之前**就已移除（框选松手即收），故此处无需特判：
+            // hideSelfForCapture 摘的是当时仍挂在 views 里的窗，那时已无遮罩层。
+            Bitmap bmp = capturer.capture();
+            RuntimeStats.of(service).capture(ScreenCapturer.Outcome.OK);
+            return bmp;
+        } catch (ScreenCapturer.CaptureException e) {
+            // 失败同样入统计：黑屏率/超时率是设备自调页与 M0/M1 收口的输入，只记成功等于没记。
+            RuntimeStats.of(service).capture(e.outcome);
+            throw e;
         } finally {
             overlayManager.showSelfAfterCapture();
         }
@@ -125,10 +143,14 @@ public final class CaptureStateRouter {
         }
         cancelRequested = false;
         worker.execute(() -> {
+            long t0 = SystemClock.elapsedRealtime();
+            boolean aState = false;
             try {
                 overlayManager.showTextOverlay(RESULT_KEY, "识别中…");
-                routeOnce();
+                aState = routeOnce();
             } finally {
+                RuntimeStats.of(service).run(RuntimeStats.RUN_PAGE,
+                        SystemClock.elapsedRealtime() - t0, aState);
                 busy.set(false);
             }
         });
@@ -165,17 +187,261 @@ public final class CaptureStateRouter {
         }
         cancelRequested = false;
         worker.execute(() -> {
+            long t0 = SystemClock.elapsedRealtime();
+            boolean aState = false;
             try {
                 overlayManager.showTextOverlay(RESULT_KEY, "识别中…");
-                routeOnceInPlace();
+                aState = routeOnceInPlace();
             } finally {
+                RuntimeStats.of(service).run(RuntimeStats.RUN_INPLACE,
+                        SystemClock.elapsedRealtime() - t0, aState);
                 busy.set(false);
             }
         });
     }
 
-    /** 原位贴图版采集：OCR 收框+文本 → 整页路由选引擎 → 逐框译文按像素矩形原位贴。 */
-    private void routeOnceInPlace() {
+    /**
+     * 框选闭环（§10 M1）：对**已选定的屏幕像素矩形**做一次 截图 → 裁剪 → OCR，把文本交回
+     * {@code onText}（在主线程回调，可直接落面板）。
+     *
+     * <p>复用同一 {@code busy}/协作取消与同一常驻 OCR 引擎：另起一个引擎虽省一次 det，但会顶破
+     * §5.5「单引擎驻留」的内存红线，故不这么做。
+     * <p>坐标口径：{@code takeScreenshot} 出图与 overlay 同为物理像素（M3 原位贴图实测不错位），
+     * 故选区矩形可直接当裁剪盒，不做密度换算。
+     */
+    public void runOnceRegion(int[] rect, java.util.function.Consumer<String> onText) {
+        if (!busy.compareAndSet(false, true)) {
+            cancelRequested = true;
+            overlayManager.showTextOverlay(RESULT_KEY, "上一次仍在处理中，正在取消…\n再点一次开始新采集");
+            return;
+        }
+        cancelRequested = false;
+        worker.execute(() -> {
+            long t0 = SystemClock.elapsedRealtime();
+            boolean ok = false;
+            try {
+                overlayManager.showTextOverlay(RESULT_KEY, "框选识别中…");
+                ok = routeOnceRegion(rect, onText);
+            } finally {
+                // 框选的结果落**面板**，不像整页/原位那样把文本留在状态条上，故状态条在此必须撤掉；
+                // 否则「框选识别中…」会一直悬在屏幕顶部（真机实测 2026-10-18 残留）。
+                overlayManager.removeOverlay(RESULT_KEY);
+                RuntimeStats.of(service).run(RuntimeStats.RUN_REGION,
+                        SystemClock.elapsedRealtime() - t0, ok);
+                busy.set(false);
+            }
+        });
+    }
+
+    /** 区域 OCR：截图失败沿用三态语义（给出类别文本），成功则只读选区内的行。 */
+    private boolean routeOnceRegion(int[] rect, java.util.function.Consumer<String> onText) {
+        Bitmap bmp;
+        try {
+            bmp = captureExcludingSelf(service.capturer());
+        } catch (ScreenCapturer.CaptureException e) {
+            Log.i(TAG, "REGION fail capture=" + e.outcome + " rect=" + rect[0] + "," + rect[1]
+                    + "," + rect[2] + "," + rect[3] + " (" + e.getMessage() + ")");
+            deliver(onText, "此页面不支持框选 · 截图失败(" + e.outcome + ")");
+            return false;
+        }
+        int sw = bmp.getWidth();
+        int sh = bmp.getHeight();
+        int selX0 = clamp(Math.min(rect[0], rect[2]), 0, sw);
+        int selY0 = clamp(Math.min(rect[1], rect[3]), 0, sh);
+        int selX1 = clamp(Math.max(rect[0], rect[2]), 0, sw);
+        int selY1 = clamp(Math.max(rect[1], rect[3]), 0, sh);
+        if (selX1 - selX0 < 8 || selY1 - selY0 < 8) {
+            bmp.recycle();
+            Log.i(TAG, "REGION fail tooSmall=" + (selX1 - selX0) + "x" + (selY1 - selY0));
+            deliver(onText, "选区太小（" + (selX1 - selX0) + "×" + (selY1 - selY0) + " px），未识别");
+            return false;
+        }
+        // 用户裁定（2026-10-18）：框选的语义是**抠图**——只有被圈住的那块像素该参与识别。
+        // 第一趟只送选区本体（灰边画布，零邻居），空了才走第二趟重试：补真实页面上下文
+        // 并按「框中心落在选区内」筛行。两趟都在 bmp 上做，bmp 由最外层 finally 统一回收。
+        try {
+            final int selW = selX1 - selX0, selH = selY1 - selY0;
+            StringBuilder a = new StringBuilder();
+            int[] aBoxes = {0};
+            Bitmap cut = cutCanvas(bmp, selX0, selY0, selW, selH);
+            try {
+                collectInto(cut, false, null, a, aBoxes);
+            } finally {
+                cut.recycle();
+            }
+            if (a.length() > 0) {
+                Log.i(TAG, "REGION done pass=A(cut) sel=" + selX0 + "," + selY0 + " " + selW
+                        + "x" + selH + " detBoxes=" + aBoxes[0] + " chars=" + a.length());
+                deliver(onText, a.toString());
+                return true;
+            }
+
+            int[] bBoxes = {0};
+            String b = regionWithContext(bmp, selX0, selY0, selX1, selY1, sw, sh, bBoxes);
+            if (b == null) {
+                Log.i(TAG, "REGION fail empty sel=" + selX0 + "," + selY0 + " " + selW + "x" + selH
+                        + " cutBoxes=" + aBoxes[0] + " ctxBoxes=" + bBoxes[0]);
+                deliver(onText, "选区 " + selW + "×" + selH + " 未识到文字");
+                return false;
+            }
+            Log.i(TAG, "REGION done pass=B(ctx) sel=" + selX0 + "," + selY0 + " " + selW + "x" + selH
+                    + " cutBoxes=" + aBoxes[0] + " ctxBoxes=" + bBoxes[0] + " chars=" + b.length());
+            deliver(onText, b);
+            return true;
+        } finally {
+            bmp.recycle();
+        }
+    }
+
+    /**
+     * 抠图画布：把选区**原样**（不缩放）居中贴进纯色灰边画布，短边不足时补到 {@link #MIN_CTX_PX}。
+     * 为什么不预先缩放（试过，2026-10-18 实测读出「的验测」这类乱码）：det 的下采样在 {@code run()}
+     * 内部完成并把框映回送检图坐标，rec 再从**送检图**裁字——若我先缩 0.4，rec 拿到的就只有 5 px
+     * 高的糊字了。保持原分辨率，rec 的取图尺度与整页路径完全一致，只少了页面邻居。
+     *
+     * <p>但**放大**小选区是安全且必要的：2~3 字的小框（实测 26×21）在灰底上 det 出 0 框，只能退回
+     * 补真实邻居的第二趟 → 邻居被并成一个宽框、中心恰落在选区内 → 漏进相邻字（用户反馈③）。
+     * 故这里把字高抬到 {@link #CUT_TARGET_H}（双线性）。不损 rec：整页路径的 buildRecInput 本就把
+     * 同一条 21 px 的字拉到这同一高度；只是让 det 更容易看到这块小字。上限 {@link #CUT_MAX_SCALE}。
+     */
+    private static Bitmap cutCanvas(Bitmap src, int x0, int y0, int w, int h) {
+        Bitmap raw = Bitmap.createBitmap(src, x0, y0, w, h);
+        float s = CUT_MAX_SCALE;
+        if (CUT_TARGET_H / (float) h < s) {
+            s = CUT_TARGET_H / (float) h;
+        }
+        if (s < 1f) {
+            s = 1f;
+        }
+        int pw = Math.max(1, Math.round(w * s));
+        int ph = Math.max(1, Math.round(h * s));
+        Bitmap piece = Bitmap.createScaledBitmap(raw, pw, ph, true);
+        if (piece != raw) {
+            raw.recycle();
+        }
+        int canvasW = Math.max(pw + 2 * CUT_PAD_PX, MIN_CTX_PX);
+        int canvasH = Math.max(ph + 2 * CUT_PAD_PX, MIN_CTX_PX);
+        Bitmap canvas = Bitmap.createBitmap(canvasW, canvasH, Bitmap.Config.ARGB_8888);
+        android.graphics.Canvas g = new android.graphics.Canvas(canvas);
+        g.drawColor(android.graphics.Color.rgb(114, 114, 114));
+        g.drawBitmap(piece, (canvasW - pw) / 2f, (canvasH - ph) / 2f, null);
+        if (piece != canvas) {
+            piece.recycle();
+        }
+        return canvas;
+    }
+
+    /**
+     * 第二趟重试：选区太小/单行时 det 常出 0 框（实测 140×54 选区，2026-10-18），故向四周补出
+     * <b>真实</b>页面内容凑到至少 {@link #MIN_CTX_PX} 见方再检测，然后只保留<b>框中心落在选区内</b>
+     * 的行——补出来的邻居中心在选区外，会被判据丢掉。整页口径的伪框过滤在这趟必须关（选区 y 从 0
+     * 起，套状态栏带会把真框全杀）。返回拼接文本；一行不剩时返回 null。
+     */
+    private String regionWithContext(Bitmap bmp, int selX0, int selY0, int selX1, int selY1,
+                                     int sw, int sh, int[] boxCount) {
+        int cx0 = selX0, cy0 = selY0, cx1 = selX1, cy1 = selY1;
+        int needW = MIN_CTX_PX - (selX1 - selX0);
+        int needH = MIN_CTX_PX - (selY1 - selY0);
+        if (needW > 0) {
+            int grow = needW / 2 + 1;
+            cx0 = Math.max(0, selX0 - grow);
+            cx1 = Math.min(sw, selX1 + (needW - grow));
+            if (cx1 - cx0 < MIN_CTX_PX) {
+                cx0 = Math.max(0, Math.min(cx0, sw - MIN_CTX_PX));
+                cx1 = Math.min(sw, cx0 + MIN_CTX_PX);
+            }
+        }
+        if (needH > 0) {
+            int grow = needH / 2 + 1;
+            cy0 = Math.max(0, selY0 - grow);
+            cy1 = Math.min(sh, selY1 + (needH - grow));
+            if (cy1 - cy0 < MIN_CTX_PX) {
+                cy0 = Math.max(0, Math.min(cy0, sh - MIN_CTX_PX));
+                cy1 = Math.min(sh, cy0 + MIN_CTX_PX);
+            }
+        }
+        // keep 盒 = 选区在送检图里的位置（送检图原点为 cx0,cy0）
+        final int[] keep = {selX0 - cx0, selY0 - cy0, selX1 - cx0, selY1 - cy0};
+        int cw = cx1 - cx0;
+        int ch = cy1 - cy0;
+        Bitmap crop = Bitmap.createBitmap(bmp, cx0, cy0, cw, ch);
+        try {
+            StringBuilder sb = new StringBuilder();
+            collectInto(crop, false, keep, sb, boxCount);
+            if (sb.length() == 0) {
+                Log.i(TAG, "REGION ctx empty ctx=" + cx0 + "," + cy0 + "," + cw + "x" + ch
+                        + " detBoxes=" + boxCount[0]);
+                return null;
+            }
+            Log.i(TAG, "REGION ctx ok lines=" + sb.toString().split("\n").length
+                    + " detBoxes=" + boxCount[0] + " ctx=" + cw + "x" + ch);
+            return sb.toString();
+        } finally {
+            // 选区铺满整屏时 createBitmap 直接返回源图，此时不能 recycle（bmp 由外层统一回收）
+            if (crop != bmp) {
+                crop.recycle();
+            }
+        }
+    }
+
+    /**
+     * 一趟识别收口：把非空行拼进 {@code out}，det 总框数写进 {@code boxCount[0]}。
+     * {@code keep} 非空时按<b>框中心</b>是否落在该盒内筛行（用中心不用整框包含：手画的框总比
+     * 真框紧一点，要求包含会把目标行本身也滤掉，实测 5 框全落空）。
+     */
+    private void collectInto(Bitmap img, boolean pageFilters, int[] keep,
+                             StringBuilder out, int[] boxCount) {
+        final List<String> kept = new ArrayList<>();
+        engine().recognizeStream(img, new OcrEngine.LineSink() {
+            @Override
+            public void onBoxes(int total) {
+                boxCount[0] = total;
+            }
+
+            @Override
+            public void onLine(int index, int total, int[] box, String text) {
+                String t = text == null ? "" : text.trim();
+                if (t.isEmpty()) {
+                    return;
+                }
+                if (box == null || keep == null) {
+                    kept.add(t);   // 后端未给框（桩/回退路径）或本趟无需判据，照收。
+                    return;
+                }
+                int bx = (box[0] + box[2]) / 2;
+                int by = (box[1] + box[3]) / 2;
+                if (bx >= keep[0] && bx <= keep[2] && by >= keep[1] && by <= keep[3]) {
+                    kept.add(t);
+                }
+            }
+
+            @Override
+            public void onDone() {
+            }
+        }, pageFilters);
+        for (int i = 0; i < kept.size(); i++) {
+            if (out.length() > 0) {
+                out.append('\n');
+            }
+            out.append(kept.get(i));
+        }
+    }
+
+    /**
+     * 把结果交回主线程：调用方（服务）拿到的是可直接操作面板的上下文。
+     * 用主 Looper Handler 而非 {@code Service#runOnUiThread}——后者在编译期不可见（基准机实测
+     * 「找不到符号」，2026-10-18），与其依赖一个不稳的 SDK 细节，不如自己 post。
+     */
+    private void deliver(java.util.function.Consumer<String> onText, String text) {
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(() -> onText.accept(text));
+    }
+
+    private static int clamp(int value, int min, int max) {
+        return max < min ? min : Math.max(min, Math.min(max, value));
+    }
+
+    /** 原位贴图版采集：OCR 收框+文本 → 整页路由选引擎 → 逐框译文按像素矩形原位贴。返回是否走到 A 态并出文本。 */
+    private boolean routeOnceInPlace() {
         ScreenCapturer capturer = service.capturer();
         Bitmap bmp = null;
         ScreenCapturer.CaptureException capErr = null;
@@ -219,7 +485,7 @@ public final class CaptureStateRouter {
             bmp.recycle();
             if (boxes.isEmpty()) {
                 overlayManager.showTextOverlay(RESULT_KEY, "A 可截图 " + w + "×" + h + " · 未识到文本");
-                return;
+                return false;
             }
             // 阅读顺序：y 主序、x 次序（det 已大致有序，再显式排一次稳态）
             Integer[] order = new Integer[boxes.size()];
@@ -236,7 +502,7 @@ public final class CaptureStateRouter {
             List<List<Integer>> clusters = clusterBoxes(boxes, order, OVERLAP_MERGE_RATIO);
             String pageText = String.join("\n", texts);
             runInPlace(mtHub.engineFor(pageText), boxes, texts, bgColors, clusters, w, h);
-            return;
+            return true;
         }
 
         String treeText = firstTextNodeText();
@@ -249,6 +515,7 @@ public final class CaptureStateRouter {
             Log.i(TAG, "ROUTE=C(inplace) " + text);
             overlayManager.showTextOverlay(RESULT_KEY, text);
         }
+        return false;
     }
 
     /**
@@ -350,7 +617,7 @@ public final class CaptureStateRouter {
         }
     }
 
-    private void routeOnce() {
+    private boolean routeOnce() {
         ScreenCapturer capturer = service.capturer();
         Bitmap bmp = null;
         ScreenCapturer.CaptureException capErr = null;
@@ -401,8 +668,9 @@ public final class CaptureStateRouter {
             if (!lines.isEmpty()) {
                 String pageText = String.join("\n", lines);
                 runTranslateSegmented(mtHub.engineFor(pageText), pageText, lines, w, h);
+                return true;
             }
-            return;
+            return false;
         }
 
         String treeText = firstTextNodeText();
@@ -415,6 +683,7 @@ public final class CaptureStateRouter {
             Log.i(TAG, "ROUTE=C " + text);
             overlayManager.showTextOverlay(RESULT_KEY, text);
         }
+        return false;
     }
 
     /**

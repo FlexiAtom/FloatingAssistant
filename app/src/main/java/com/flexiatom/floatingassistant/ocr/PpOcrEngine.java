@@ -106,19 +106,22 @@ public final class PpOcrEngine implements OcrEngine {
 
     @Override
     public Result recognize(Bitmap src) {
-        return run(src, null);
+        return run(src, null, true);
     }
 
     @Override
-    public void recognizeStream(Bitmap src, LineSink sink) {
-        run(src, sink);
+    public void recognizeStream(Bitmap src, LineSink sink, boolean pageFilters) {
+        run(src, sink, pageFilters);
     }
 
     /**
      * 端到端一次识别。sink 非空 → 逐框流式回调（B3：首字 ~0.4s 即出、逐行补全）；
      * sink 为空 → 退化为阻塞聚合，返回全部文本行。两条路径共用同一管线与过滤，保证口径一致。
+     *
+     * @param pageFilters 是否套用整页坐标口径的伪框过滤（状态栏带 + 矮框）。区域/抠图识别喂的不是
+     *                    整屏，其 y 从画布 0 起，套用会把真框全杀，故那两趟一律传 false。
      */
-    private Result run(Bitmap src, LineSink sink) {
+    private Result run(Bitmap src, LineSink sink, boolean pageFilters) {
         int srcW = src.getWidth();
         int srcH = src.getHeight();
         List<String> lines = new ArrayList<>();
@@ -148,12 +151,13 @@ public final class PpOcrEngine implements OcrEngine {
 
             // 伪框过滤：丢弃中心落在状态栏带内者（框竖直中心 ≤ skipTopPx，比底边更稳：
             // 时钟框常略探出名义状态栏底）与矮框（高 < minBoxH，图标/杂点）。
+            // 仅整页路径套用——区域识别喂的是选区裁剪，其 y 从 0 起，套用会误杀全部真框。
             List<int[]> boxes = new ArrayList<>(raw.size());
             for (int[] b : raw) {
-                if ((b[1] + b[3]) / 2 <= skipTopPx) {
+                if (pageFilters && (b[1] + b[3]) / 2 <= skipTopPx) {
                     continue;
                 }
-                if (b[3] - b[1] < minBoxH) {
+                if (pageFilters && b[3] - b[1] < minBoxH) {
                     continue;
                 }
                 boxes.add(b);

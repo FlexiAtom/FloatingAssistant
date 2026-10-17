@@ -44,6 +44,15 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P3_DEMO_DELAY_MS = "p3_demo_delay_ms";
     public static final String EXTRA_P3_INPLACE = "p3_inplace";
 
+    /**
+     * M1 框选量测入口：把 rect（屏幕 px，"x0,y0,x1,y1"）直接喂给生产的 {@code runOnceRegion}，
+     * 结果打日志。存在的理由是人机分工——触摸测试由用户做，我不得注入 input；要给两趟重试定标
+     * 就得有一条不经手势的触发路。与 {@code p3_inplace} 同类，属演示/量测入口，不进正式交互。
+     */
+    public static final String EXTRA_P4_REGION = "p4_region";
+    public static final String EXTRA_P4_REGION_RECT = "p4_region_rect";
+    public static final String EXTRA_P4_REGION_PAGE = "p4_region_page";
+
     private TextView statusText;
 
     @Override
@@ -66,6 +75,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP1(getIntent());
         maybeRunP3Demo(getIntent());
         maybeRunP3InPlace(getIntent());
+        maybeRunP4Region(getIntent());
     }
 
     @Override
@@ -78,6 +88,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP1(intent);
         maybeRunP3Demo(intent);
         maybeRunP3InPlace(intent);
+        maybeRunP4Region(intent);
     }
 
     private void maybeRunP0(Intent intent) {
@@ -193,6 +204,48 @@ public class MainActivity extends AppCompatActivity {
             }
             svc.runOnceNowInPlace(); // M3：capture → OCR 收框 → 逐框译文按矩形原位贴
         }, "p3-inplace").start();
+    }
+
+    private void maybeRunP4Region(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_P4_REGION, false)) {
+            return;
+        }
+        final String rectStr = intent.getStringExtra(EXTRA_P4_REGION_RECT);
+        if (rectStr == null) {
+            android.util.Log.e("P4REGION", "missing p4_region_rect \"x0,y0,x1,y1\"");
+            return;
+        }
+        final int[] rect;
+        try {
+            String[] parts = rectStr.split(",");
+            if (parts.length != 4) {
+                throw new NumberFormatException("need 4");
+            }
+            rect = new int[] {Integer.parseInt(parts[0].trim()), Integer.parseInt(parts[1].trim()),
+                    Integer.parseInt(parts[2].trim()), Integer.parseInt(parts[3].trim())};
+        } catch (NumberFormatException e) {
+            android.util.Log.e("P4REGION", "bad p4_region_rect=" + rectStr);
+            return;
+        }
+        if ("dense".equals(intent.getStringExtra(EXTRA_P4_REGION_PAGE))) {
+            showDensePage();
+        }
+        long delayMs = (long) intent.getIntExtra(EXTRA_P3_DEMO_DELAY_MS, 3000);
+        new Thread(() -> {
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            SphereAccessibilityService svc = SphereAccessibilityService.getInstance();
+            if (svc == null) {
+                android.util.Log.e("P4REGION", "no accessibility service connected");
+                return;
+            }
+            svc.runOnceNowRegion(rect, text ->
+                    android.util.Log.i("P4REGION", "rect=" + rectStr + " text=[" + text + "]"));
+        }, "p4-region").start();
     }
 
     // C 用：真实文本栈渲染的密集小字页（TextView 排版 + 自然折行 + 真实 AA），

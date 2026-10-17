@@ -1,18 +1,25 @@
 package com.flexiatom.floatingassistant.service;
 
 import android.accessibilityservice.AccessibilityService;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
 
 import com.flexiatom.floatingassistant.R;
 import com.flexiatom.floatingassistant.capture.ScreenCapturer;
 import com.flexiatom.floatingassistant.core.BlacklistMatcher;
 import com.flexiatom.floatingassistant.core.CaptureStateRouter;
+import com.flexiatom.floatingassistant.core.RuntimeStats;
 import com.flexiatom.floatingassistant.core.SettingsStore;
 import com.flexiatom.floatingassistant.ocr.PpOcrEngineFactory;
 import com.flexiatom.floatingassistant.mt.MtModelHub;
 import com.flexiatom.floatingassistant.overlay.BlacklistPanelView;
 import com.flexiatom.floatingassistant.overlay.FanMenuView;
 import com.flexiatom.floatingassistant.overlay.OverlayManager;
+import com.flexiatom.floatingassistant.overlay.RegionSelectView;
+import com.flexiatom.floatingassistant.overlay.TextPanelView;
 import com.flexiatom.floatingassistant.tool.ContainerTool;
 import com.flexiatom.floatingassistant.tool.SimpleTool;
 import com.flexiatom.floatingassistant.tool.Tool;
@@ -53,6 +60,24 @@ public class SphereAccessibilityService extends AccessibilityService {
         }
     };
 
+    /** 心跳与文本面板都在主线程 Handler 上跑（服务本身就在主线程 Looper，不另起线程）。 */
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+
+    /**
+     * 每 {@link RuntimeStats#HEARTBEAT_MS} 打一条自回报日志并推一次心跳。
+     * 被杀时 {@code onDestroy} 不保证执行，所以「服务活着」这件事得**主动留痕**，否则 24 h 验收无据可查。
+     */
+    private final Runnable heartbeat = new Runnable() {
+        @Override
+        public void run() {
+            RuntimeStats.of(SphereAccessibilityService.this).beat();
+            mainHandler.postDelayed(this, RuntimeStats.HEARTBEAT_MS);
+        }
+    };
+
+    /** 文本面板当前正文（复制动作取它）：面板一屏只放一份文本，故单字段足够，不开列表管理。 */
+    private String panelText = "";
+
     /** 最近一次窗口状态变化看到的顶层外部 App 包名（忽略自身覆盖层）。用于"切走即卸载"判定。 */
     private volatile String lastTopPkg;
     /** 本次采集/翻译针对的 App 包名；顶层变为别的 App 且空闲时 → 释放常驻模型。 */
@@ -88,6 +113,17 @@ public class SphereAccessibilityService extends AccessibilityService {
         }
     }
 
+    /**
+     * 以程序方式触发一次**框选识别**（M1 演示/量测入口，与点「框选」后松手同一条路径）。
+     * 回调给的是面板将显示的文本；量测方（adb intent）直接打日志即可。
+     */
+    public void runOnceNowRegion(int[] rect, java.util.function.Consumer<String> onText) {
+        CaptureStateRouter r = router;
+        if (r != null) {
+            r.runOnceRegion(rect, onText);
+        }
+    }
+
     /** 采集触发统一入口：先记住"这次翻的是哪个 App"，供切走即卸载判定。 */
     private void triggerRun() {
         CaptureStateRouter r = router;
@@ -120,18 +156,24 @@ public class SphereAccessibilityService extends AccessibilityService {
         // 点球 = 展开/收起同心环工具菜单（§10 M0 + #68），不再直接触发采集；采集改由菜单里选具体工具。
         overlayManager.setOnSphereTap(this::toggleToolMenu);
         overlayManager.showSphere();
+        // 自回报：起会话记账与心跳（runtime-self-report）。心跳先撤后布，防重连叠成两条节奏。
+        RuntimeStats.of(this).sessionStarted();
+        mainHandler.removeCallbacks(heartbeat);
+        mainHandler.postDelayed(heartbeat, RuntimeStats.HEARTBEAT_MS);
     }
 
     /**
      * 构建工具树（§10 M0 + #68 径向树）：注册顺序 = 最内环自上而下。
-     * 第1页 = [全屏翻译(叶子), 开发者选项(容器)]；
-     * 开发者选项 → [整页OCR(叶子), 模型档位(容器), 黑名单(叶子→悬浮窗)]；
+     * 第1页 = [全屏翻译(叶子), 框选(叶子), 开发者选项(容器)]；
+     * 开发者选项 → [整页OCR(叶子), 模型档位(容器), 黑名单(叶子→悬浮窗), 自检(叶子→悬浮窗)]；
      * 模型档位 → [自动, 轻量, 重量](叶子→即时设 model_mode)。
      */
     private void buildTools() {
         tools = new ToolRegistry();
         Tool fullscreen = new SimpleTool("fullscreen_translate",
                 getString(R.string.tool_fullscreen_translate), svc -> runInPlaceTracked());
+        Tool region = new SimpleTool("region_select",
+                getString(R.string.tool_region_select), svc -> startRegionSelect());
         Tool pageOcr = new SimpleTool("page_ocr",
                 getString(R.string.tool_page_ocr), svc -> triggerRun());
         Tool modelTier = new ContainerTool("model_tier",
@@ -144,9 +186,12 @@ public class SphereAccessibilityService extends AccessibilityService {
                                 svc -> setModelMode(SettingsStore.MODE_FORCE_HEAVY))));
         Tool blacklist = new SimpleTool("blacklist",
                 getString(R.string.tool_blacklist), svc -> openBlacklist());
+        Tool report = new SimpleTool("runtime_report",
+                getString(R.string.tool_runtime_report), svc -> openReport());
         Tool devOptions = new ContainerTool("developer_options",
-                getString(R.string.tool_developer_options), List.of(pageOcr, modelTier, blacklist));
+                getString(R.string.tool_developer_options), List.of(pageOcr, modelTier, blacklist, report));
         tools.register(fullscreen);
+        tools.register(region);
         tools.register(devOptions);
     }
 
@@ -271,6 +316,79 @@ public class SphereAccessibilityService extends AccessibilityService {
                 }));
     }
 
+    /**
+     * 框选（§10 M1 闭环第一步）：弹全屏选层，拖出矩形即「截图 → 裁剪 → OCR → 文本面板」。
+     *
+     * <p>选区窗必须在派发本次运行**之前**收掉：它带半透明遮罩，被拍进源图就等于给 OCR 掺了一层灰。
+     * {@code captureExcludingSelf} 摘的是当时仍挂在 {@code views} 里的窗，收掉即自然不含它。
+     */
+    private void startRegionSelect() {
+        overlayManager.showRegionSelect(getString(R.string.region_hint),
+                new RegionSelectView.Listener() {
+                    @Override
+                    public void onSelected(int x0, int y0, int x1, int y1) {
+                        overlayManager.hideRegionSelect();
+                        CaptureStateRouter r = router;
+                        if (r == null) {
+                            return;
+                        }
+                        translatedPkg = lastTopPkg;
+                        r.runOnceRegion(new int[]{x0, y0, x1, y1},
+                                text -> showTextPanel(getString(R.string.region_result_title), text));
+                    }
+
+                    @Override
+                    public void onCancelled() {
+                        overlayManager.hideRegionSelect();
+                    }
+                });
+    }
+
+    /** 自检报告（runtime-self-report 的人读出口）：同一份 {@code report()} 既喂面板也喂 logcat，两处真值同源。 */
+    private void openReport() {
+        if (overlayManager.isPanelVisible()) {
+            overlayManager.hidePanel();
+            return;
+        }
+        String report = RuntimeStats.of(this).report();
+        android.util.Log.i("RuntimeReport", "\n" + report);
+        showTextPanel(getString(R.string.report_title), report);
+    }
+
+    /** 文本面板（框选结果 / 自检报告共用一扇）：正文留一份供「复制」取用。 */
+    private void showTextPanel(String title, String body) {
+        panelText = body;
+        overlayManager.showPanel(new TextPanelView(overlayManager.themedContext(), title, body,
+                List.of(new TextPanelView.Action(getString(R.string.action_copy), this::copyPanelText),
+                        new TextPanelView.Action(getString(R.string.action_close),
+                                overlayManager::hidePanel)),
+                new TextPanelView.Listener() {
+                    @Override
+                    public void onClose() {
+                        overlayManager.hidePanel();
+                    }
+
+                    @Override
+                    public void onMove(int dx, int dy) {
+                        overlayManager.movePanel(dx, dy);
+                    }
+                }));
+    }
+
+    /**
+     * 复制面板正文到系统剪贴板——M1 框选的主输出。
+     * 无障碍服务不是前台 App，而 Android 10+ 对剪贴板有前台限制；**写**是否真生效须真机验
+     * （见 working/m1-region-select.md 反证表第 3 行）。
+     */
+    private void copyPanelText() {
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm == null) {
+            return;
+        }
+        cm.setPrimaryClip(ClipData.newPlainText("floating-assistant", panelText));
+        overlayManager.showTextOverlay("clipboard_feedback", getString(R.string.copied_to_clipboard));
+    }
+
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
         int type = event.getEventType();
@@ -306,10 +424,17 @@ public class SphereAccessibilityService extends AccessibilityService {
     public void onInterrupt() {
     }
 
+    /** 撤心跳并结算会话（{@code onUnbind} 与 {@code onDestroy} 常连着来，结算本身幂等）。 */
+    private void stopReporting() {
+        mainHandler.removeCallbacks(heartbeat);
+        RuntimeStats.of(this).sessionEnded();
+    }
+
     @Override
     public boolean onUnbind(android.content.Intent intent) {
         connected = false;
         instance = null;
+        stopReporting();
         if (overlayManager != null) {
             overlayManager.removeAllImmediate();
         }
@@ -320,6 +445,7 @@ public class SphereAccessibilityService extends AccessibilityService {
     public void onDestroy() {
         connected = false;
         instance = null;
+        stopReporting();
         if (router != null) {
             router.shutdown();
             router = null;

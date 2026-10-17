@@ -41,6 +41,9 @@ public class OverlayManager {
     /** 就地编辑面板（黑名单，#68-T8b）的 key：全 app 至多一扇，且**不参与截屏摘窗**（见 {@link #applyDetach}）。 */
     private static final String KEY_PANEL = "edit_panel";
 
+    /** 全屏框选层（§10 M1）的 key：模态触摸窗，选中/取消即收，也进 removeAllImmediate 兜底。 */
+    private static final String KEY_SELECT = "region_select";
+
     /** 悬浮球拖曳判定阈值（dp）：位移不超过它=点击，超过=拖窗。 */
     private static final int SPHERE_DRAG_SLOP_DP = 8;
 
@@ -246,6 +249,47 @@ public class OverlayManager {
     }
 
     /**
+     * 弹出全屏框选层（§10 M1）：吃掉全部触摸的模态窗，拖出矩形后由 {@link RegionSelectView.Listener}
+     * 交回屏幕像素坐标。登记进 {@code views}，故服务销毁/重建的 {@link #removeAllImmediate()} 一并兜底清除。
+     * 必须在主线程调用。
+     */
+    public void showRegionSelect(String hintText, RegionSelectView.Listener listener) {
+        hideRegionSelect();
+        RegionSelectView view = new RegionSelectView(overlayContext, hintText, listener);
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                // 可触摸（拖选区），但不抢 IME 焦点。
+                // FLAG_LAYOUT_IN_SCREEN **不足以**让窗原点落到屏幕左上角：真机实测选层仍被状态栏
+                // 下推 52px（拖到屏 y=712 记成视图 y=660），于是选区坐标与截屏坐标错位、按选区过滤
+                // 全落空。再加 NO_LIMITS + 刘海 ALWAYS，视图 px 才真正＝截屏 px。
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT);
+        lp.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+        addView(KEY_SELECT, view, lp);
+    }
+
+    /** 收起全屏框选层（不存在则忽略）。必须在主线程调用。 */
+    public void hideRegionSelect() {
+        View v = views.remove(KEY_SELECT);
+        if (v != null) {
+            try {
+                windowManager.removeViewImmediate(v);
+            } catch (Exception ignored) {
+                // 已失效
+            }
+        }
+    }
+
+    public boolean isRegionSelectVisible() {
+        return views.containsKey(KEY_SELECT);
+    }
+
+    /**
      * 就地编辑面板（#68-T8b）：居中一扇**可获焦**的 {@code TYPE_ACCESSIBILITY_OVERLAY}，承载
      * {@link BlacklistPanelView}。与球/菜单/贴图的关键差别是**不带** {@code FLAG_NOT_FOCUSABLE}——
      * 面板内 {@code EditText} 必须拿到窗口焦点才拉得起软键盘（项目此前所有窗体都不带焦点，此为第一例）。
@@ -255,7 +299,7 @@ public class OverlayManager {
     public void showPanel(View content) {
         hidePanel();
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                dp(BlacklistPanelView.WIDTH_DP),
+                dp(PanelView.WIDTH_DP),
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 // FLAG_LAYOUT_NO_LIMITS 是「让窗出屏」的关键：只带 LAYOUT_IN_SCREEN 时 WMS 会把 frame
@@ -299,18 +343,18 @@ public class OverlayManager {
             // 面板窗已失效：忽略
             return;
         }
-        if (v instanceof BlacklistPanelView panel && handleOffScreen(panel)) {
+        if (v instanceof PanelView panel && handleOffScreen(panel)) {
             hidePanel();
         }
     }
 
     /** 顶部浅灰条是否越出屏幕任一边缘（条在窗内位置 + 窗在屏内位置，都不依赖帧遍历）。 */
-    private boolean handleOffScreen(BlacklistPanelView panel) {
+    private boolean handleOffScreen(PanelView panel) {
         DisplayMetrics dm = context.getResources().getDisplayMetrics();
         android.graphics.Rect r = new android.graphics.Rect();
         panel.handleRectInRoot(r);
         // 窗左缘 = (屏宽 − 窗宽)/2 + x（CENTER_HORIZONTAL），窗上缘 = y（TOP）
-        r.offset((dm.widthPixels - dp(BlacklistPanelView.WIDTH_DP)) / 2 + panelLp.x, panelLp.y);
+        r.offset((dm.widthPixels - dp(PanelView.WIDTH_DP)) / 2 + panelLp.x, panelLp.y);
         return r.left < 0 || r.top < 0 || r.right > dm.widthPixels || r.bottom > dm.heightPixels;
     }
 

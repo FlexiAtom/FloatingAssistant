@@ -21,6 +21,17 @@ public interface OcrEngine {
      * 默认实现回退到阻塞 {@link #recognize}（桩/无流式后端仍可用）。
      */
     default void recognizeStream(Bitmap src, LineSink sink) {
+        recognizeStream(src, sink, true);
+    }
+
+    /**
+     * 同上，但可关掉**整页坐标口径**的伪框过滤（状态栏带、矮框阈值）。
+     *
+     * <p>M1 框选喂给引擎的是选区裁剪：它的 y 从 0 起，若照整屏口径过滤，"状态栏带"会盖住整个小图，
+     * 于是**全部真框被误杀**——真机实测表现为「选区文字少就报没有文字」（2026-10-18 用户人工复验）。
+     * 区域路径传 {@code pageFilters=false}。
+     */
+    default void recognizeStream(Bitmap src, LineSink sink, boolean pageFilters) {
         Result r = recognize(src);
         int n = r.lines.size();
         sink.onBoxes(n);
