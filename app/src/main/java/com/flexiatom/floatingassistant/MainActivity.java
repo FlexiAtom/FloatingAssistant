@@ -300,18 +300,22 @@ public class MainActivity extends AppCompatActivity {
                     Thread.currentThread().interrupt();
                     return;
                 }
-                svc.probeBallState(st -> {
+                svc.probeSphereState(st -> {
                     if (st.length == 0) {
                         android.util.Log.e("P5BALL", "no sphere view at all");
                         return;
                     }
-                    android.util.Log.i("P5BALL", "inViews=" + st[0] + " children=" + st[1]
-                            + " ballVis=" + st[2] + " host=" + st[3] + "x" + st[4]
-                            + " measured=" + st[5] + "x" + st[6]
-                            + " margin=" + st[7] + "," + st[8]
-                            + " ball=" + st[9] + "x" + st[10]
-                            + " sphereXY=" + st[11] + "," + st[12]
-                            + " win=" + st[13] + "," + st[14] + " " + st[15] + "x" + st[16]);
+                    // drawnC＝视图真正画球的点，ballC＝球屏幕几何按实际落位换算回窗内的点：
+                    // 两者不同＝「窗在而球不在该在的地方」（收起后球消失那一格的机读判据）
+                    android.util.Log.i("P5BALL", "inViews=" + st[0] + " view=" + st[1] + "x" + st[2]
+                            + " drawnC=" + st[3] + "," + st[4]
+                            + " ballC=" + st[13] + "," + st[14]
+                            + " concentric=" + (st[3] == st[13] && st[4] == st[14])
+                            + " menuOpen=" + st[15] + " attached=" + st[16]
+                            + " sphereXY=" + st[5] + "," + st[6]
+                            + " reqWin=" + st[7] + "," + st[8] + " " + st[9] + "x" + st[10]
+                            + " actualWin=" + st[11] + "," + st[12]
+                            + " view=" + Integer.toHexString(st[17]));
                 });
             }, "p5-ball").start();
             return;
@@ -331,14 +335,14 @@ public class MainActivity extends AppCompatActivity {
                     android.util.Log.e("P5MENU", "no menu window (ball=" + ball[0] + "," + ball[1] + ")");
                     return;
                 }
-                boolean concentric = probe[4] == probe[6] && probe[5] == probe[7];
-                boolean shifted = probe[0] != probe[2] || probe[1] != probe[3];
+                boolean concentric = probe[3] == probe[13] && probe[4] == probe[14];
+                boolean shifted = probe[7] != probe[11] || probe[8] != probe[12];
                 android.util.Log.i("P5MENU", "ball=" + ball[0] + "," + ball[1]
-                        + " reqWin=" + probe[0] + "," + probe[1]
-                        + " actualWin=" + probe[2] + "," + probe[3]
-                        + " fanC=" + probe[4] + "," + probe[5]
-                        + " ballC=" + probe[6] + "," + probe[7]
-                        + " win=" + probe[8] + "x" + probe[9]
+                        + " reqWin=" + probe[7] + "," + probe[8]
+                        + " actualWin=" + probe[11] + "," + probe[12]
+                        + " drawnC=" + probe[3] + "," + probe[4]
+                        + " ballC=" + probe[13] + "," + probe[14]
+                        + " win=" + probe[9] + "x" + probe[10]
                         + " depth=" + (path.length + 1)
                         + " concentric=" + concentric + " shifted=" + shifted);
             });

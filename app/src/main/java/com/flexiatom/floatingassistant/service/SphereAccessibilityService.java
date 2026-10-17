@@ -155,7 +155,7 @@ public class SphereAccessibilityService extends AccessibilityService {
             if (onProbe != null) {
                 // 探针要读的是**布局之后**的落位（getLocationOnScreen 在 addView 当刻还是旧值），
                 // 故排到下一帧之后；400 ms 是「布局肯定走完」的保守值，不是产品逻辑。
-                mainHandler.postDelayed(() -> onProbe.accept(overlayManager.menuProbeGeometry()), 400);
+                mainHandler.postDelayed(() -> onProbe.accept(overlayManager.sphereProbe()), 400);
             }
         });
     }
@@ -165,11 +165,11 @@ public class SphereAccessibilityService extends AccessibilityService {
         mainHandler.post(overlayManager::hideToolMenu);
     }
 
-    /** 球本体状态量测入口（用户报「收起扇形后球消失」）：回调 {@link OverlayManager#ballProbeState()}。 */
-    public void probeBallState(java.util.function.Consumer<int[]> onProbe) {
+    /** 球视图状态量测入口（用户报「收起扇形后球消失」）：回调 {@link OverlayManager#sphereProbe()}。 */
+    public void probeSphereState(java.util.function.Consumer<int[]> onProbe) {
         mainHandler.post(() -> {
             if (onProbe != null) {
-                onProbe.accept(overlayManager.ballProbeState());
+                onProbe.accept(overlayManager.sphereProbe());
             }
         });
     }

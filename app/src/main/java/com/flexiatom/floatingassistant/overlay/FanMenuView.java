@@ -14,16 +14,25 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * 悬浮球同心环工具菜单（提案 §10 M0 + #68 径向树）：以球心为原点、向屏幕内展开 180° 半圆，
+ * **悬浮球本体 + 它的同心环工具菜单**（提案 §10 M0 + #68 径向树）：一个视图同时画球与扇形，
+ * 球即**环 N=0**（枢纽）；扇形以球心为原点、向屏幕内展开 180° 半圆，
  * 由**同心圆**界定的若干**半圆环**，每环被 {@code 180/该页条目数} 度均分成若干**楔形分区**（一格一工具）。
+ *
+ * <p>球**不是**另一个子视图（用户 2026-10-18：「就不应该分两个，球是 N=0」）。两子视图＝两个触摸归属：
+ * 收起扇形的那趟 {@code removeView} 会向当时的触摸目标同步派发 {@code ACTION_CANCEL}，其回调再入
+ * {@link OverlayManager} 改子视图树，真机上出现过「窗还在、子里没球」＝收起后悬浮球凭空消失（卡片 3b）。
+ * 合成一个视图后，开合菜单只是同一视图换绘制内容，派发途中没有任何可摘的子视图 ⇒ 那类洞**结构性不存在**，
+ * 不靠守卫兜。
  *
  * <p>环数 = 已展开页数（嵌套深度）：最内环 = 第 1 页（顶层工具），向外逐层挂子页，**父环保留可见**
  * （由球心向外 = 选择轨迹）。条目两态：叶子=触发功能、容器=向外再加画一圈同心环展开其子项。
  * 触点按**相对球心的方位**决定：落某环某楔形即选中该格；落最内枢纽（球）= 返回上一层（回根层再点=关闭）；
  * 落最外环之外或背侧半圆 = 关闭整个菜单。可点按即选，也可按住拖动实时高亮、松手提交。
  *
- * <p>本视图放在一个**矩形** overlay 窗里：向右侧展开时球心对齐窗**左**边缘中点（cx=0, cy=高/2），
- * 向左侧展开（{@code facingLeft}，球被拖到屏幕右半边时）则球心对齐窗**右**边缘中点（cx=宽, cy=高/2）。
+ * <p>本视图放在一个**矩形** overlay 窗里，窗尺寸随菜单开合由 {@link OverlayManager} 换算：
+ * **收起**时窗就是球那么大、球心＝窗心（{@code cx=宽/2, cy=高/2}）；**展开**时窗为扇形外接盒，
+ * 向右侧展开球心对齐窗**左**边缘中点（cx=0, cy=高/2），向左侧展开（{@code facingLeft}，球被拖到屏幕右半边时）
+ * 则球心对齐窗**右**边缘中点（cx=宽, cy=高/2）——圆心一律由 {@link #cx()}/{@link #cy()} 现算，不缓存。
  * 出屏的那一半不接收触摸，只留环带那一侧。角度一律以「正上方」为 0°、向**开口侧**增大到 180°。
  * **每环宽度按内容独立解算**（{@link #fitRingWidths}）：第 k 环只量**自己页内最长的标签**在固定字号
  * {@code LABEL_TEXT_SP} 下所需宽度，与他环无关、也不凑任何统一尺寸；总外沿仅受上限 {@code OUTER_MAX_DP} 约束，
@@ -35,13 +44,15 @@ public final class FanMenuView extends View {
     private static final float SWEEP_DEG = 180f;
 
     // 几何常量（dp）。每环宽度按**该环自己页内最长标签**逐环解算（见 fitRingWidths）；总外沿只受上限约束，无基准保底。
-    private static final float INNER_DP = 30f;       // 最内枢纽（= 球心返回/关闭区）半径，覆盖 48dp 球
+    private static final float BALL_DP = 48f;        // 球（= 环 N=0 的枢纽本体）直径，也是收起时窗的边长
+    private static final float INNER_DP = 30f;       // 最内枢纽（= 球心返回/关闭区）半径，包住 48dp 球还留一圈可点边
     private static final float OUTER_MAX_DP = 240f;  // 外沿半径上限（防超大窗）
     private static final float GROWTH_STEP_DP = 2f;  // 逐环加宽的迭代步长（越小越贴合文字）
     private static final float CLOSING_GAP_DP = 28f; // 最外环之外的「关闭环带」宽度（点此区=关闭；须足够厚才点得到）
     private static final float LABEL_PAD_DP = 4f;    // 标签到环边的留白（参与 fit 判据，与 drawLabel 一致）
     private static final int LABEL_TEXT_SP = 9;      // 标签统一固定字号（不再动态缩字；放不下只靠自适应加宽圆）
     private static final int FULL_RING_COUNT = 2;    // 仅最外两圈显示完整标签；更内的轨迹环缩为「首字+省略号」
+    private static final float DRAG_SLOP_DP = 8f;    // 按在球上位移不超过它=点按，超过=拖窗（#68-T9 实测阈值）
 
     /** 一条菜单项（视图层不依赖 Tool，解耦）：文字 + 是否容器（容器带向右小箭头提示可展开）。 */
     public static final class Entry {
@@ -72,11 +83,29 @@ public final class FanMenuView extends View {
         /** 点/拖到第 {@code depth} 环（0=最内）第 {@code index} 格。 */
         void onEntry(int depth, int index);
 
-        /** 点最内枢纽（球心）：服务据此 pop 一层或关闭。 */
+        /** 点最内枢纽（球体外那一圈，或菜单收起时球体自身的角）：服务据此 pop 一层或关闭。 */
         void onHub();
 
         /** 点最外环之外 / 背侧半圆：服务据此关闭整个菜单。 */
         void onOutside();
+    }
+
+    /**
+     * 球体（环 N=0）被按住时的手势回调，交给 {@link OverlayManager}——它才是窗原点的持有者，
+     * 本视图只负责判定「这一下是按在球上」并报告相对按下处的位移。
+     */
+    public interface BallGesture {
+        /** 手指按在球体上（记下此刻的球屏幕位置，作为拖曳起点）。 */
+        void onBallDragStart();
+
+        /** 按在球体上且位移已超 slop：报告累计位移(px)，服务据此移动窗原点（扇形同窗，必跟着走）。 */
+        void onBallDrag(float dxPx, float dyPx);
+
+        /** 拖曳结束（松手/取消）：服务据此决定要不要翻开口朝向。 */
+        void onBallDragEnd();
+
+        /** 按在球体上但**没**拖开：菜单收起时＝请服务展开菜单（球是唯一的入口）。 */
+        void onBallTap();
     }
 
     /** 该环是否「完整显示标签」：仅最外 {@link #FULL_RING_COUNT} 圈完整，更内的轨迹环缩为首字+省略号。 */
@@ -229,6 +258,16 @@ public final class FanMenuView extends View {
         return out;
     }
 
+    /** 球（= 环 N=0）的直径(px)：收起时窗的边长，也是拖曳钳位用的球尺寸。 */
+    public static int ballSizePx(Context context) {
+        return (int) dp(context, BALL_DP);
+    }
+
+    /** 球体半径(px)：按下落在它之内就算「按在球上」（可拖、可点），与窗大小无关。 */
+    public static float ballRadiusPx(Context context) {
+        return dp(context, BALL_DP) / 2f;
+    }
+
     /**
      * 菜单窗宽度(px) = 自适应外沿半径 + 环外关闭余量。有效扇区全在球心右侧（φ∈[0,180] ⇒ dx≥0），
      * 故窗只需从球心向右铺；最外环外沿到窗边之间是 {@code CLOSING_GAP_DP}「关闭环带」（点此=关闭）。
@@ -247,14 +286,22 @@ public final class FanMenuView extends View {
                 context.getResources().getDisplayMetrics());
     }
 
-    private final Listener listener;
+    private final BallGesture ballGesture;
+    /** 服务侧选择回调，仅菜单展开期间非空：收起时球体只走 {@link BallGesture}（点=展开）。 */
+    private Listener listener;
     private List<Page> stack = new ArrayList<>(); // 由内向外：stack.get(0)=最内环=第1页
+    /** 开口朝向：false=向右（球心贴窗左边）、true=向左（球心贴窗右边）。球被拖到屏幕右半边时镜像。 */
+    private boolean facingLeft;
+    /** 角度增长方向：与 {@link #facingLeft} 对应，φ 从正上方向开口侧增大到 180°。 */
+    private int dir = 1;
 
     private final float innerR;
-    private final float outerR;
+    private final float ballR;
+    private float outerR;
     /** 每环的径向宽度（由内容逐环解算，见 {@link #fitRingWidths}），环边界 = innerR + 前缀和。 */
-    private final float[] ringWidths;
+    private float[] ringWidths = new float[0];
 
+    private final Paint ballPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint wedgePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint wedgeActivePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -265,31 +312,25 @@ public final class FanMenuView extends View {
     private final RectF innerRect = new RectF();
     private final Path sectorPath = new Path();
 
-    private float cx;
-    private float cy;
-    /** 开口朝向：false=向右（球心贴窗左边）、true=向左（球心贴窗右边）。球被拖到屏幕右半边时镜像。 */
-    private final boolean facingLeft;
-    /** 角度增长方向：与 {@link #facingLeft} 对应，φ 从正上方向开口侧增大到 180°。 */
-    private int dir = 1;
-    /** 球心在本窗内的 y(px)：由 {@link OverlayManager#showToolMenu} 按球位置算出（球贴屏幕上下沿时窗整体内收，此值随之偏离 h/2）。 */
-    private final int centerY;
+    /** 按在球体上时的按下点（raw px）与拖曳判定：球可拖（N=0 也是入口），扇形只管高亮。 */
+    private float ballDownRawX;
+    private float ballDownRawY;
+    private boolean pressedBall;
+    private boolean ballDragging;
     private int activeDepth = -1; // 拖动/点按当前高亮环，-1 = 无
     private int activeIndex = -1; // 当前高亮格，-1 = 无
 
-    public FanMenuView(Context context, List<Page> stack, Listener listener, boolean facingLeft, int centerY) {
+    public FanMenuView(Context context, BallGesture ballGesture) {
         super(context);
-        this.listener = listener;
-        this.facingLeft = facingLeft;
-        this.dir = facingLeft ? -1 : 1;
-        this.centerY = centerY;
-        this.stack = stack == null ? new ArrayList<>() : new ArrayList<>(stack);
-
+        this.ballGesture = ballGesture;
         this.innerR = dp(INNER_DP);
-        this.outerR = fitOuterPx(context, this.stack);
-        this.ringWidths = solveRingWidths(context, this.stack, this.outerR);
+        this.ballR = dp(BALL_DP) / 2f;
+        this.outerR = innerR;
 
         // 颜色全部取 M3 角色（md3-dynamic-color）：未选中格用 primaryContainer、高亮格翻成 primary，
         // 靠「容器↔主色」的明度反转表达选中，比原先「同一紫再亮一档」更贴 M3 的语义。
+        ballPaint.setStyle(Paint.Style.FILL);
+        ballPaint.setColor(M3.color(context, M3.PRIMARY));
         wedgePaint.setStyle(Paint.Style.FILL);
         wedgePaint.setColor(M3.alpha(M3.color(context, M3.PRIMARY_CONTAINER), 0.8f));
         wedgeActivePaint.setStyle(Paint.Style.FILL);
@@ -307,12 +348,58 @@ public final class FanMenuView extends View {
         labelTextActivePaint.setColor(M3.color(context, M3.ON_PRIMARY));
     }
 
-    @Override
-    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
-        super.onSizeChanged(w, h, oldw, oldh);
-        // 球心贴开口对侧的窗边：向右展开贴左边、向左展开贴右边（背侧半圆出屏/不接收触摸）
-        cx = facingLeft ? w : 0f;
-        cy = Math.max(0f, Math.min(h, centerY)); // 球贴近屏幕上下沿时窗整体内收，球心在窗内的 y 随之偏离 h/2
+    /**
+     * 展开/换页：换掉页栈与朝向，并按新内容重解外沿与各环宽度。
+     * 同一视图内完成，没有任何 {@code addView}/{@code removeView} ⇒ 触摸派发途中不会动子视图树。
+     * 窗尺寸由调用方（{@link OverlayManager}）按 {@link #measureWidthPx} 同步换算。
+     */
+    public void setMenu(List<Page> stack, Listener listener, boolean facingLeft) {
+        this.listener = listener;
+        this.stack = stack == null ? new ArrayList<>() : new ArrayList<>(stack);
+        this.facingLeft = facingLeft;
+        this.dir = facingLeft ? -1 : 1;
+        this.outerR = fitOuterPx(getContext(), this.stack);
+        this.ringWidths = solveRingWidths(getContext(), this.stack, this.outerR);
+        invalidate();
+    }
+
+    /** 收起菜单：只留球（环 N=0）。回调一并作废，收起后的球只应答 {@link BallGesture}。 */
+    public void clearMenu() {
+        this.listener = null;
+        this.stack = new ArrayList<>();
+        this.ringWidths = new float[0];
+        this.outerR = innerR;
+        resetTouchState();
+        invalidate();
+    }
+
+    public boolean menuOpen() {
+        return !stack.isEmpty();
+    }
+
+    /** 球心/扇形圆心的窗内 x(px)：展开时贴开口对侧窗边，收起时窗即球、圆心在窗心。现算不缓存。 */
+    public int centerX() {
+        return menuOpen() ? (facingLeft ? getWidth() : 0) : getWidth() / 2;
+    }
+
+    /** 球心/扇形圆心的窗内 y(px)：两种状态都落在窗的竖直中线上（窗原点由球心反推，见 OverlayManager）。 */
+    public int centerY() {
+        return getHeight() / 2;
+    }
+
+    private float cx() {
+        return centerX();
+    }
+
+    private float cy() {
+        return centerY();
+    }
+
+    private void resetTouchState() {
+        pressedBall = false;
+        ballDragging = false;
+        activeDepth = -1;
+        activeIndex = -1;
     }
 
     /** 第 {@code k} 环的内边界（r 坐标）：innerR + 前 k 环宽度之和。d 很小（≤ 树深），直接累加。 */
@@ -330,11 +417,21 @@ public final class FanMenuView extends View {
         return ro + (k < ringWidths.length ? ringWidths[k] : 0f);
     }
 
-    /** 触点命中结果：环内某格返回 {depth,index}；枢纽返回 {-1,-1}（hub）；环外返回 {-2,-2}（outside）。 */
+    /** 球体（环 N=0）的命中码：可拖、可点，与环/枢纽/环外并列。 */
+    private static final int ZONE_BALL = -3;
+
+    /**
+     * 触点命中结果：{@code h[0] >= 0} = 第 {@code h[0]} 环第 {@code h[1]} 格；{@code -1} = 枢纽（球外圈，返回上层）；
+     * {@code -2} = 环外/背侧（关闭）；{@code ZONE_BALL} = 球体本身（拖或点）。
+     * <p>菜单收起时整扇窗就是球 ⇒ 任何触点都算按球（窗是方的、球是圆的，窗角也得应答，否则点角落失灵）。
+     */
     private int[] hitAt(float px, float py) {
-        float dx = px - cx;
-        float dy = py - cy;
+        float dx = px - cx();
+        float dy = py - cy();
         float r = (float) Math.hypot(dx, dy);
+        if (!menuOpen() || r <= ballR) {
+            return new int[]{ZONE_BALL, -1}; // 球体（环 N=0）
+        }
         if (r < innerR) {
             return new int[]{-1, -1}; // 枢纽
         }
@@ -365,44 +462,95 @@ public final class FanMenuView extends View {
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         switch (e.getActionMasked()) {
-            case MotionEvent.ACTION_DOWN:
-            case MotionEvent.ACTION_MOVE: {
+            case MotionEvent.ACTION_DOWN: {
                 int[] h = hitAt(e.getX(), e.getY());
-                activeDepth = h[0] >= 0 ? h[0] : -1;
-                activeIndex = h[1] >= 0 ? h[1] : -1;
-                invalidate();
+                pressedBall = h[0] == ZONE_BALL;
+                if (pressedBall) {
+                    ballDownRawX = e.getRawX();
+                    ballDownRawY = e.getRawY();
+                    ballDragging = false;
+                    ballGesture.onBallDragStart(); // 记下球的起始屏幕位置，供位移钳位
+                } else {
+                    highlight(h);
+                }
+                return true;
+            }
+            case MotionEvent.ACTION_MOVE: {
+                if (pressedBall) {
+                    float dx = e.getRawX() - ballDownRawX;
+                    float dy = e.getRawY() - ballDownRawY;
+                    if (!ballDragging && Math.hypot(dx, dy) < dp(DRAG_SLOP_DP)) {
+                        return true; // 没过 slop 仍是点按候选，不动窗
+                    }
+                    ballDragging = true;
+                    ballGesture.onBallDrag(dx, dy);
+                } else {
+                    highlight(hitAt(e.getX(), e.getY()));
+                }
                 return true;
             }
             case MotionEvent.ACTION_UP: {
                 int[] h = hitAt(e.getX(), e.getY());
-                activeDepth = -1;
-                activeIndex = -1;
-                invalidate();
-                if (h[0] >= 0) {
+                clearHighlight();
+                if (pressedBall) {
+                    // 按在球上松手：拖过=一次搬窗（末了才翻朝向），没拖过=点球（展开着即枢纽，收起即入口）
+                    if (ballDragging) {
+                        ballDragging = false;
+                        ballGesture.onBallDragEnd();
+                    } else if (menuOpen()) {
+                        if (listener != null) {
+                            listener.onHub();
+                        }
+                    } else {
+                        ballGesture.onBallTap();
+                    }
+                } else if (listener == null) {
+                    // 不该出现（没页栈就没得可提交）：按结构洞处理，静默
+                } else if (h[0] >= 0) {
                     listener.onEntry(h[0], h[1]);
                 } else if (h[0] == -1) {
                     listener.onHub();
                 } else {
                     listener.onOutside();
                 }
+                pressedBall = false;
                 return true;
             }
             case MotionEvent.ACTION_CANCEL:
-                activeDepth = -1;
-                activeIndex = -1;
-                invalidate();
-                listener.onOutside();
+                // **不再**把取消当成「点了环外」：旧实现这里无条件 onOutside()，于是任何外部取消
+                // （子视图被摘、手势被抢）都会误触发关闭，并在关闭途中再入改树＝结构洞 2。
+                if (ballDragging) {
+                    ballDragging = false;
+                    ballGesture.onBallDragEnd();
+                }
+                pressedBall = false;
+                clearHighlight();
                 return true;
             default:
                 return super.onTouchEvent(e);
         }
     }
 
+    private void highlight(int[] h) {
+        activeDepth = h[0] >= 0 ? h[0] : -1;
+        activeIndex = h[1] >= 0 ? h[1] : -1;
+        invalidate();
+    }
+
+    private void clearHighlight() {
+        activeDepth = -1;
+        activeIndex = -1;
+        invalidate();
+    }
+
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
+        float cx = cx();
+        float cy = cy();
         int d = stack.size();
         if (d == 0) {
+            canvas.drawCircle(cx, cy, ballR, ballPaint); // 收起：窗即球，整扇窗只画这一颗
             return;
         }
 
@@ -466,10 +614,15 @@ public final class FanMenuView extends View {
                 drawLabel(canvas, en, lx, ly, midR, ro - ri, sector, full, ring == activeDepth && k == activeIndex);
             }
         }
+
+        // 5) 球体（环 N=0）最后画、压在枢纽圈里：展开着它仍是那颗可拖可点的球
+        canvas.drawCircle(cx, cy, ballR, ballPaint);
     }
 
     /** 画一格环形楔形：外弧走 sector 到内弧折回，闭合；高亮格用亮色。向左展开时角度镜像、扫过取负。 */
     private void drawWedge(Canvas canvas, float ri, float ro, float a0deg, float sector, boolean active) {
+        float cx = cx();
+        float cy = cy();
         outerRect.set(cx - ro, cy - ro, cx + ro, cy + ro);
         innerRect.set(cx - ri, cy - ri, cx + ri, cy + ri);
         // Android 角：东=0 顺时针。向右展开 φ 顺时针 ⇒ a0=φ-90；向左展开 φ 逆时针 ⇒ a0=-90-φ 且扫过为负
