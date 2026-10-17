@@ -2,7 +2,6 @@ package com.flexiatom.floatingassistant.overlay;
 
 import android.content.Context;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
@@ -289,20 +288,23 @@ public final class FanMenuView extends View {
         this.outerR = fitOuterPx(context, this.stack);
         this.ringWidths = solveRingWidths(context, this.stack, this.outerR);
 
+        // 颜色全部取 M3 角色（md3-dynamic-color）：未选中格用 primaryContainer、高亮格翻成 primary，
+        // 靠「容器↔主色」的明度反转表达选中，比原先「同一紫再亮一档」更贴 M3 的语义。
         wedgePaint.setStyle(Paint.Style.FILL);
-        wedgePaint.setColor(Color.parseColor("#D96750A4")); // 实心楔形（MD3 主色，略透）
+        wedgePaint.setColor(M3.alpha(M3.color(context, M3.PRIMARY_CONTAINER), 0.8f));
         wedgeActivePaint.setStyle(Paint.Style.FILL);
-        wedgeActivePaint.setColor(Color.parseColor("#F0A184E0")); // 高亮楔形（更亮）
+        wedgeActivePaint.setColor(M3.color(context, M3.PRIMARY));
         ringPaint.setStyle(Paint.Style.STROKE);
         ringPaint.setStrokeWidth(dp(1.5f));
-        ringPaint.setColor(Color.parseColor("#80FFFFFF"));
+        ringPaint.setColor(M3.alpha(M3.color(context, M3.OUTLINE), 0.7f));
         dividerPaint.setStyle(Paint.Style.STROKE);
         dividerPaint.setStrokeWidth(dp(1f));
-        dividerPaint.setColor(Color.parseColor("#55FFFFFF"));
+        dividerPaint.setColor(M3.alpha(M3.color(context, M3.OUTLINE_VARIANT), 0.7f));
         labelTextPaint.setStyle(Paint.Style.FILL);
-        labelTextPaint.setColor(Color.WHITE);
+        labelTextPaint.setColor(M3.color(context, M3.ON_PRIMARY_CONTAINER));
         labelTextPaint.setTextAlign(Paint.Align.CENTER);
         labelTextActivePaint.set(labelTextPaint);
+        labelTextActivePaint.setColor(M3.color(context, M3.ON_PRIMARY));
     }
 
     @Override

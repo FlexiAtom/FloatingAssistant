@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.FloatingAssistant" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/md_primary</item>
-        <item name="colorOnPrimary">@color/md_on_primary</item>
-        <item name="android:colorBackground">@color/md_surface</item>
-        <item name="colorSurface">@color/md_surface</item>
-        <item name="colorOnSurface">@color/md_on_surface</item>
-    </style>
+    <!--
+      父主题带 DynamicColors：Android 12+ 由系统在主题解析时挂上「壁纸调色板叠加」，
+      因此这里**不得**再静态覆盖 colorPrimary/colorSurface 等角色——静态值优先级更高，会永久压掉壁纸取色。
+      Android 11（minSdk 30）无动态叠加时，父主题自身的 M3 基线色板即为回落，不需要写版本分支。
+    -->
+    <style name="Theme.FloatingAssistant" parent="Theme.Material3.DynamicColors.DayNight.NoActionBar" />
 </resources>

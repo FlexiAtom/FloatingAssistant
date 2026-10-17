@@ -1,7 +1,6 @@
 package com.flexiatom.floatingassistant.overlay;
 
 import android.content.Context;
-import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.text.InputType;
 import android.util.TypedValue;
@@ -108,7 +107,7 @@ public final class BlacklistPanelView extends LinearLayout {
         View bar = new View(context);
         this.handle = bar; // 量的是**可见条**的矩形：判「拖出即关闭」以它为准，整条触摸区太宽会一拖就关
         GradientDrawable barBg = new GradientDrawable();
-        barBg.setColor(Color.parseColor("#80FFFFFF")); // 浅灰（半透明白叠在深色卡上）
+        barBg.setColor(M3.alpha(M3.color(context, M3.ON_SURFACE_VARIANT), 0.5f)); // 半透明 onSurfaceVariant：叠在容器面上是中性灰条
         barBg.setCornerRadius(dp(2));
         bar.setBackground(barBg);
         android.widget.FrameLayout.LayoutParams barLp = new android.widget.FrameLayout.LayoutParams(
@@ -193,7 +192,7 @@ public final class BlacklistPanelView extends LinearLayout {
         row.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = new TextView(context);
         title.setText(R.string.settings_blacklist_title);
-        title.setTextColor(Color.WHITE);
+        title.setTextColor(M3.color(context, M3.ON_SURFACE));
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         row.addView(title, rowLayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
         return row;
@@ -209,8 +208,8 @@ public final class BlacklistPanelView extends LinearLayout {
         input.setHint(R.string.settings_new_pattern_hint);
         input.setInputType(InputType.TYPE_CLASS_TEXT);
         input.setSingleLine(true);
-        input.setTextColor(Color.WHITE);
-        input.setHintTextColor(Color.parseColor("#99FFFFFF"));
+        input.setTextColor(M3.color(context, M3.ON_SURFACE));
+        input.setHintTextColor(M3.alpha(M3.color(context, M3.ON_SURFACE_VARIANT), 0.6f));
         input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         // 焦点型悬浮窗里点输入框才拉键盘：显式请求，免得某些 ROM 不自动弹
         input.setOnClickListener(v -> {
@@ -265,7 +264,7 @@ public final class BlacklistPanelView extends LinearLayout {
         if (entries.isEmpty()) {
             TextView empty = new TextView(context);
             empty.setText(R.string.settings_test_empty);
-            empty.setTextColor(Color.parseColor("#CCFFFFFF"));
+            empty.setTextColor(M3.alpha(M3.color(context, M3.ON_SURFACE_VARIANT), 0.8f));
             empty.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
             listContainer.addView(empty, rowLayoutParams(
                     LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
@@ -282,7 +281,7 @@ public final class BlacklistPanelView extends LinearLayout {
             text.setText(context.getString(
                     e.regex ? R.string.settings_entry_regex_prefix : R.string.settings_entry_keyword_prefix)
                     + " " + e.pattern);
-            text.setTextColor(Color.WHITE);
+            text.setTextColor(M3.color(context, M3.ON_SURFACE));
             text.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
             text.setSingleLine(true);
             text.setEllipsize(android.text.TextUtils.TruncateAt.END);
@@ -316,7 +315,7 @@ public final class BlacklistPanelView extends LinearLayout {
         Button b = new Button(context);
         b.setText(textRes);
         b.setAllCaps(false);
-        b.setTextColor(Color.WHITE);
+        b.setTextColor(M3.color(context, M3.ON_SECONDARY_CONTAINER));
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         b.setMinWidth(0);
         b.setMinimumWidth(0);
@@ -324,7 +323,7 @@ public final class BlacklistPanelView extends LinearLayout {
         b.setMinimumHeight(0);
         b.setStateListAnimator(null);
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.parseColor("#33FFFFFF"));
+        bg.setColor(M3.color(context, M3.SECONDARY_CONTAINER)); // M3 tonal 按钮底（配 onSecondaryContainer 字）
         bg.setCornerRadius(dp(6));
         b.setBackground(bg);
         b.setPadding(dp(6), dp(4), dp(6), dp(4));
@@ -333,7 +332,8 @@ public final class BlacklistPanelView extends LinearLayout {
 
     private GradientDrawable cardBackground() {
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.parseColor("#F21C1B1F"));
+        // 容器面保留 95% 不透明：悬浮窗贴在任何 App 上，留一点透明度表层级、留一点实心保可读
+        bg.setColor(M3.alpha(M3.color(getContext(), M3.SURFACE_CONTAINER_HIGH), 0.95f));
         bg.setCornerRadius(dp(12));
         return bg;
     }

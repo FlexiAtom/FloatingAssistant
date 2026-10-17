@@ -250,7 +250,9 @@ public class SphereAccessibilityService extends AccessibilityService {
             overlayManager.hidePanel();
             return;
         }
-        overlayManager.showPanel(new BlacklistPanelView(this, settings.blacklist(),
+        // 内容视图用 OverlayManager 的 M3 上下文构造（不是服务本身）：服务上下文没有 app 主题，
+        // 面板里读 colorSurfaceContainerHigh 这类角色属性会读不到值（md3-dynamic-color）。
+        overlayManager.showPanel(new BlacklistPanelView(overlayManager.themedContext(), settings.blacklist(),
                 new BlacklistPanelView.Listener() {
                     @Override
                     public void onSave(List<SettingsStore.Entry> entries) {

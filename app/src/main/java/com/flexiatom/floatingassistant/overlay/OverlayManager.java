@@ -1,7 +1,6 @@
 package com.flexiatom.floatingassistant.overlay;
 
 import android.content.Context;
-import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
@@ -57,6 +56,11 @@ public class OverlayManager {
     private WindowManager.LayoutParams panelLp;
 
     private final Context context;
+    /**
+     * 带 app 主题 + 壁纸动态叠加的上下文（{@link M3#themed}）：所有 overlay 视图都用它构造，
+     * 服务侧建面板时也经 {@link #themedContext()} 取同一份。窗口几何/flag 仍走 {@link #context}。
+     */
+    private final Context overlayContext;
     private final WindowManager windowManager;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final Map<String, View> views = new HashMap<>();
@@ -71,7 +75,13 @@ public class OverlayManager {
 
     public OverlayManager(Context context) {
         this.context = context;
+        this.overlayContext = M3.themed(context);
         this.windowManager = (WindowManager) context.getSystemService(Context.WINDOW_SERVICE);
+    }
+
+    /** 供服务侧构造 overlay 内容视图（如黑名单面板）用同一份 M3 上下文。 */
+    public Context themedContext() {
+        return overlayContext;
     }
 
     public void setOnSphereTap(Runnable onSphereTap) {
@@ -82,7 +92,7 @@ public class OverlayManager {
         if (views.containsKey(KEY_SPHERE)) {
             return;
         }
-        FloatingBallView sphere = new FloatingBallView(context);
+        FloatingBallView sphere = new FloatingBallView(overlayContext);
         sphere.setClickable(true);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
@@ -195,7 +205,7 @@ public class OverlayManager {
                 // 已失效
             }
         }
-        int mw = FanMenuView.measureWidthPx(context, stack);
+        int mw = FanMenuView.measureWidthPx(overlayContext, stack);
         int mh = 2 * mw;
         DisplayMetrics dm = context.getResources().getDisplayMetrics();
         int ballCx = sphereX + sphereSizePx / 2;
@@ -204,7 +214,7 @@ public class OverlayManager {
         boolean facingLeft = ballCx > dm.widthPixels / 2;
         // 窗尽量把球心摆在自己竖直中线上；球贴近屏幕上下沿时窗整体内收，球心在窗内的 y 随之偏移
         int winY = clamp(ballCy - mh / 2, 0, Math.max(0, dm.heightPixels - mh));
-        FanMenuView menu = new FanMenuView(context, stack, listener, facingLeft, ballCy - winY);
+        FanMenuView menu = new FanMenuView(overlayContext, stack, listener, facingLeft, ballCy - winY);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 mw, mh,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -332,14 +342,16 @@ public class OverlayManager {
             tv.setText(text);
             return;
         }
-        TextView tv = new TextView(context);
+        TextView tv = new TextView(overlayContext);
         tv.setText(text);
-        tv.setTextColor(Color.WHITE);
+        // 状态浮层用 M3 反色对（surfaceInverse/onSurfaceInverse）：深色模式下它是浅色字配深底，
+        // 浅色模式下自动翻成深字配浅底，不再是我原先写死的一路白字。
+        tv.setTextColor(M3.color(overlayContext, M3.ON_INVERSE_SURFACE));
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         int padH = dp(12), padV = dp(8);
         tv.setPadding(padH, padV, padH, padV);
         GradientDrawable bg = new GradientDrawable();
-        bg.setColor(Color.parseColor("#CC1C1B1F")); // MD3 反色表面 ~80% 不透明
+        bg.setColor(M3.alpha(M3.color(overlayContext, M3.INVERSE_SURFACE), 0.8f));
         bg.setCornerRadius(dp(8));
         tv.setBackground(bg);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(

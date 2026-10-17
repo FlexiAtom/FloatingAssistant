@@ -1,10 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="seed">#6750A4</color>
-    <color name="md_primary">#6750A4</color>
-    <color name="md_on_primary">#FFFFFF</color>
-    <color name="md_surface">#FFFBFE</color>
-    <color name="md_on_surface">#1C1B1F</color>
-    <color name="sphere_bg">#B36750A4</color>
+    <!-- 启动图标背景：静态值（图标不随壁纸变色，属品牌资产）。界面与悬浮窗的颜色一律走 M3 角色属性。 -->
     <color name="ic_launcher_background">#6750A4</color>
 </resources>

@@ -2,7 +2,6 @@ package com.flexiatom.floatingassistant.overlay;
 
 import android.content.Context;
 import android.graphics.Canvas;
-import android.graphics.Color;
 import android.graphics.Paint;
 import android.util.TypedValue;
 import android.view.View;
@@ -17,7 +16,7 @@ public class FloatingBallView extends View {
         sizePx = (int) TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP, 48, getResources().getDisplayMetrics());
         fillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        fillPaint.setColor(Color.parseColor("#6750A4"));
+        fillPaint.setColor(M3.color(context, M3.PRIMARY));
         fillPaint.setStyle(Paint.Style.FILL);
     }
 
