@@ -248,14 +248,20 @@ public class OverlayManager {
                 dp(BlacklistPanelView.WIDTH_DP),
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                // FLAG_LAYOUT_NO_LIMITS 是「让窗出屏」的关键：只带 LAYOUT_IN_SCREEN 时 WMS 会把 frame
+                // 钳回显示区域内，导致面板拖到边沿就停（跟手不回＝用户报的抽搐），且浅灰条永远越不出屏、
+                // 也就永远触发不了「拖出即关闭」。加它之后屏内与否完全由 movePanel 自己判。
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                 PixelFormat.TRANSLUCENT);
         // 顶部锚定（不是居中）：居中时卡片下半张正好被软键盘盖住（T8b 真机复验的残留缺陷）。
         // 键盘高度约屏高 1/3，卡片贴顶后输入行始终在键盘之上；仍可被顶部手柄拖到任意位置。
         lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
         lp.y = dp(PANEL_TOP_DP);
-        // 非 Activity 窗里 ADJUST_RESIZE 不生效（本窗高度是 WRAP_CONTENT，不随键盘收缩）；ADJUST_PAN 才是这类窗的正解
-        lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN;
+        // 键盘让位交给「贴顶 + 手柄拖曳」，窗自己绝不动：ADJUST_PAN 是 WMS 用动画平移 surface 实现的，
+        // 它每帧改一次窗的可视偏移，和拖曳里逐帧写的 lp.x/lp.y 叠加＝抖动的第二个来源（抽搐的另一半）。
+        // 卡片贴顶时输入行本就在键盘之上，不需要系统再顶一次。
+        lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING;
         windowManager.addView(content, lp);
         views.put(KEY_PANEL, content);
         panelLp = lp;
@@ -264,29 +270,38 @@ public class OverlayManager {
 
     /**
      * 按增量拖动编辑面板窗（顶部手柄拖曳用）。gravity 是 {@code TOP|CENTER_HORIZONTAL}，故
-     * {@code x} 是相对屏幕中线的偏移（可负）、{@code y} 是距顶距离；两者都钳在屏内。
+     * {@code x} 是相对屏幕中线的偏移（可负）、{@code y} 是距顶距离。
+     *
+     * <p>**不做屏内钳位**（用户裁定）：钳位会让窗停在边界而手指继续走，逐帧回弹＝拖曳抽搐；Java 层钳位已删，
+     * WMS 那道钳位由本窗的 {@code FLAG_LAYOUT_NO_LIMITS} 放开（见 {@link #showPanel}）。改成
+     * 「顶部浅灰条越出任一屏边即 {@link #hidePanel()}」——拖出屏幕就是丢弃面板。
      */
     public void movePanel(int dx, int dy) {
         View v = views.get(KEY_PANEL);
         if (v == null || panelLp == null) {
             return;
         }
-        DisplayMetrics dm = context.getResources().getDisplayMetrics();
-        int pw = dp(BlacklistPanelView.WIDTH_DP);
-        int ph = v.getHeight() > 0 ? v.getHeight() : dp(280);
-        int halfRange = Math.max(0, (dm.widthPixels - pw) / 2);
-        int nx = clamp(panelLp.x + dx, -halfRange, halfRange);
-        int ny = clamp(panelLp.y + dy, 0, Math.max(0, dm.heightPixels - ph));
-        if (nx == panelLp.x && ny == panelLp.y) {
-            return;
-        }
-        panelLp.x = nx;
-        panelLp.y = ny;
+        panelLp.x += dx;
+        panelLp.y += dy;
         try {
             windowManager.updateViewLayout(v, panelLp);
         } catch (Exception ignored) {
             // 面板窗已失效：忽略
+            return;
         }
+        if (v instanceof BlacklistPanelView panel && handleOffScreen(panel)) {
+            hidePanel();
+        }
+    }
+
+    /** 顶部浅灰条是否越出屏幕任一边缘（条在窗内位置 + 窗在屏内位置，都不依赖帧遍历）。 */
+    private boolean handleOffScreen(BlacklistPanelView panel) {
+        DisplayMetrics dm = context.getResources().getDisplayMetrics();
+        android.graphics.Rect r = new android.graphics.Rect();
+        panel.handleRectInRoot(r);
+        // 窗左缘 = (屏宽 − 窗宽)/2 + x（CENTER_HORIZONTAL），窗上缘 = y（TOP）
+        r.offset((dm.widthPixels - dp(BlacklistPanelView.WIDTH_DP)) / 2 + panelLp.x, panelLp.y);
+        return r.left < 0 || r.top < 0 || r.right > dm.widthPixels || r.bottom > dm.heightPixels;
     }
 
     /** 收起就地编辑面板（不存在则忽略）。必须在主线程调用。 */

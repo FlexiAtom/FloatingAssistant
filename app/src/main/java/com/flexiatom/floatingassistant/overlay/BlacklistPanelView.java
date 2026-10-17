@@ -5,7 +5,6 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.text.InputType;
 import android.util.TypedValue;
-import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -44,6 +43,12 @@ public final class BlacklistPanelView extends LinearLayout {
     /** 规则列表区高度（dp），超出走滚动，避免长列表把卡片顶出屏幕。 */
     private static final int LIST_HEIGHT_DP = 200;
 
+    /** 拖曳起始阈值（px²，TouchTool 同款 9px 的平方）：位移不足它不算拖，留给双击判定。 */
+    private static final float DRAG_SLOP_SQ_PX = 81f;
+
+    /** 手柄两次轻点间隔不超过它算「双击关闭」。 */
+    private static final long DOUBLE_TAP_TIMEOUT_MS = 300L;
+
     public interface Listener {
         /** 规则集合变化（增/删之后），参数为**当前完整列表**（接收方直接整体覆盖持久层）。 */
         void onSave(List<SettingsStore.Entry> entries);
@@ -58,6 +63,8 @@ public final class BlacklistPanelView extends LinearLayout {
     private final Listener listener;
     private final List<SettingsStore.Entry> entries = new ArrayList<>();
     private final LinearLayout listContainer;
+    /** 顶部**可见浅灰条**（不是整条触摸区）：{@link OverlayManager#movePanel} 以它是否越出屏边判「拖出即关闭」。 */
+    private View handle;
     // 由 buildAddRow 装配（Java 不允许在非构造器方法里给 blank final 赋值），故不加 final
     private EditText input;
     private Button typeButton;
@@ -99,6 +106,7 @@ public final class BlacklistPanelView extends LinearLayout {
     private View buildHandle(Context context) {
         android.widget.FrameLayout touchArea = new android.widget.FrameLayout(context);
         View bar = new View(context);
+        this.handle = bar; // 量的是**可见条**的矩形：判「拖出即关闭」以它为准，整条触摸区太宽会一拖就关
         GradientDrawable barBg = new GradientDrawable();
         barBg.setColor(Color.parseColor("#80FFFFFF")); // 浅灰（半透明白叠在深色卡上）
         barBg.setCornerRadius(dp(2));
@@ -108,28 +116,69 @@ public final class BlacklistPanelView extends LinearLayout {
         barLp.gravity = Gravity.CENTER_HORIZONTAL;
         touchArea.addView(bar, barLp);
 
-        GestureDetector gd = new GestureDetector(context, new GestureDetector.SimpleOnGestureListener() {
-            @Override
-            public boolean onDown(MotionEvent e) {
-                return true; // 认领本次手势，后续 onScroll/onDoubleTap 才会派发
-            }
+        // 拖曳按 TouchTool（top.bogey.touch_tool/utils/float_window_manager/FloatViewParent）的写法自算：
+        // 每事件取「本点 − 上一点」的 raw 增量、并把基准推进到本点。**不用 GestureDetector.onScroll**——
+        // 它的 distanceX/Y 在新实现里是按整段手势累计的，把它当逐帧增量累加进 lp.x 会让窗跑得比手指快，
+        // 撞上屏边即回弹＝用户报的抽搐。双击也自己判（两次 UP 间隔内、且期间没拖动）。
+        touchArea.setOnTouchListener(new View.OnTouchListener() {
+            private float lastRawX;
+            private float lastRawY;
+            private float carryX;
+            private float carryY;
+            private boolean dragging;
+            private long lastTapUpAt;
 
             @Override
-            public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
-                // distanceX = 上一事件 x − 本事件 x（即手指位移的相反数），取负才是窗口该跟的增量
-                listener.onMove(Math.round(-distanceX), Math.round(-distanceY));
-                return true;
+            public boolean onTouch(View v, MotionEvent e) {
+                switch (e.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        lastRawX = e.getRawX();
+                        lastRawY = e.getRawY();
+                        carryX = 0f;
+                        carryY = 0f;
+                        dragging = false;
+                        return true;
+                    case MotionEvent.ACTION_MOVE: {
+                        float dx = e.getRawX() - lastRawX;
+                        float dy = e.getRawY() - lastRawY;
+                        if (!dragging && dx * dx + dy * dy < DRAG_SLOP_SQ_PX) {
+                            return true;
+                        }
+                        dragging = true;
+                        // 亚像素余量进 carry 累加，免得连续小步位移被 round 吃成 0（拖不动）
+                        float fx = dx + carryX;
+                        float fy = dy + carryY;
+                        int ix = Math.round(fx);
+                        int iy = Math.round(fy);
+                        carryX = fx - ix;
+                        carryY = fy - iy;
+                        lastRawX = e.getRawX();
+                        lastRawY = e.getRawY();
+                        if (ix != 0 || iy != 0) {
+                            listener.onMove(ix, iy);
+                        }
+                        return true;
+                    }
+                    case MotionEvent.ACTION_UP:
+                        if (dragging) {
+                            dragging = false;
+                            return true;
+                        }
+                        long now = android.os.SystemClock.uptimeMillis();
+                        if (lastTapUpAt > 0 && now - lastTapUpAt <= DOUBLE_TAP_TIMEOUT_MS) {
+                            lastTapUpAt = 0;
+                            listener.onClose();
+                        } else {
+                            lastTapUpAt = now;
+                        }
+                        return true;
+                    case MotionEvent.ACTION_CANCEL:
+                        dragging = false;
+                        return true;
+                    default:
+                        return false;
+                }
             }
-
-            @Override
-            public boolean onDoubleTap(MotionEvent e) {
-                listener.onClose();
-                return true;
-            }
-        });
-        touchArea.setOnTouchListener((v, event) -> {
-            gd.onTouchEvent(event);
-            return true;
         });
         LinearLayout.LayoutParams lp = rowLayoutParams(LayoutParams.MATCH_PARENT, dp(20));
         lp.bottomMargin = dp(4);
@@ -137,7 +186,7 @@ public final class BlacklistPanelView extends LinearLayout {
         return touchArea;
     }
 
-    /** 标题行：左「黑名单（命中则整页升 Q4）」，右「关闭」。 */
+    /** 标题行：「黑名单（命中则整页升 Q4）」。关闭不走按钮，由顶部手柄双击/返回键承担。 */
     private View buildHeader(Context context) {
         LinearLayout row = new LinearLayout(context);
         row.setOrientation(HORIZONTAL);
@@ -147,9 +196,6 @@ public final class BlacklistPanelView extends LinearLayout {
         title.setTextColor(Color.WHITE);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         row.addView(title, rowLayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
-        Button close = smallButton(context, R.string.panel_close);
-        close.setOnClickListener(v -> listener.onClose());
-        row.addView(close, rowLayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
         return row;
     }
 
@@ -249,6 +295,20 @@ public final class BlacklistPanelView extends LinearLayout {
             listContainer.addView(row, rowLayoutParams(
                     LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
         }
+    }
+
+    /**
+     * 顶部浅灰条在**本视图（= 窗内容）坐标**内的矩形，供 {@link OverlayManager#movePanel} 结合窗位置判
+     * 「浅灰条拖出屏幕即关闭」。用布局坐标而非 {@code getLocationOnScreen}：后者要等下一帧遍历才反映
+     * {@code updateViewLayout} 的新位置，逐帧拖曳会读到一个事件滞后的旧值。
+     */
+    public void handleRectInRoot(android.graphics.Rect out) {
+        if (handle == null) {
+            out.setEmpty();
+            return;
+        }
+        handle.getDrawingRect(out);
+        offsetDescendantRectToMyCoords(handle, out);
     }
 
     /** 面板内的紧凑按钮：自带圆角背景（不带框架按钮的 4/6dp 内建 inset）+ 零最小宽高，尺寸只由文字与内边距决定。 */
