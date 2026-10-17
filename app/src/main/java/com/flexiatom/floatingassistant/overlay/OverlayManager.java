@@ -6,8 +6,10 @@ import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
+import android.util.DisplayMetrics;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.widget.TextView;
 
@@ -40,10 +42,19 @@ public class OverlayManager {
     /** 就地编辑面板（黑名单，#68-T8b）的 key：全 app 至多一扇，且**不参与截屏摘窗**（见 {@link #applyDetach}）。 */
     private static final String KEY_PANEL = "edit_panel";
 
-    /** 悬浮球屏幕几何（px），供扇形菜单锚定；将来球可拖曳时改这三个值即可让菜单跟随。 */
+    /** 悬浮球拖曳判定阈值（dp）：位移不超过它=点击，超过=拖窗。 */
+    private static final int SPHERE_DRAG_SLOP_DP = 8;
+
+    /** 编辑面板默认距屏幕顶部的距离（dp）：顶部锚定让输入行避开软键盘。 */
+    private static final int PANEL_TOP_DP = 32;
+
+    /** 悬浮球屏幕几何（px），供扇形菜单锚定；{@link SphereDrag} 拖曳时实时更新，菜单随之跟随。 */
     private int sphereX;
     private int sphereY;
     private int sphereSizePx;
+
+    /** 编辑面板窗参数（拖曳手柄改 x/y 后 {@code updateViewLayout} 用）；面板关闭即置空。 */
+    private WindowManager.LayoutParams panelLp;
 
     private final Context context;
     private final WindowManager windowManager;
@@ -73,32 +84,103 @@ public class OverlayManager {
         }
         FloatingBallView sphere = new FloatingBallView(context);
         sphere.setClickable(true);
-        sphere.setOnClickListener(v -> {
-            if (onSphereTap != null) {
-                onSphereTap.run();
-            }
-        });
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                // 交互型：可触摸，但不抢焦点（点击由无障碍窗接收，下层仍可操作）
+                // 交互型：可触摸，但不抢焦点（点击/拖曳由无障碍窗接收，下层仍可操作）
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
-        // 左边缘、垂直居中：给向右展开的 180° 扇形菜单留出上下空间（球贴顶会使上方 chip 被裁）。
+        // 初始停在左边缘、垂直居中：给向右展开的 180° 扇形菜单留出上下空间（球贴顶会使上方楔形被裁）。
+        // 之后由用户拖到任意位置（{@link SphereDrag}），菜单纯几何跟随球心并按最近边缘决定开口朝向。
         sphereSizePx = dp(48);
         sphereX = 0;
         sphereY = (context.getResources().getDisplayMetrics().heightPixels - sphereSizePx) / 2;
         lp.x = sphereX;
         lp.y = sphereY;
+        // 触摸自处理：按下即消费，故不再挂 OnClickListener（否则拖曳与点击会双触发）
+        sphere.setOnTouchListener(new SphereDrag(sphere, lp));
         addView(KEY_SPHERE, sphere, lp);
     }
 
     /**
-     * 弹出同心环工具菜单（§10 M0 + #68 径向树）：以悬浮球球心为原点向右展开半圆，页面栈由内向外画成同心环。
-     * 窗从球心向右铺（{@link FanMenuView#measureWidthPx}，外沿半径按当前页栈内容自适应），球心对齐窗左边缘中点，故无需负偏移。
+     * 悬浮球拖曳（#68-T9）：位移超过 {@code touchSlop} 才认定为拖窗——期间逐帧 {@code updateViewLayout}
+     * 并把新位置同步进 {@link #sphereX}/{@link #sphereY}（扇形菜单锚点即读即跟随）；未超过则松手算点击。
+     * 位置只限在本进程本次服务生命周期内，不写 prefs（服务重连回默认左缘中点）。
+     */
+    private final class SphereDrag implements View.OnTouchListener {
+        private final View target;
+        private final WindowManager.LayoutParams lp;
+        private float downRawX;
+        private float downRawY;
+        private float startLpX;
+        private float startLpY;
+        private boolean dragging;
+
+        SphereDrag(View target, WindowManager.LayoutParams lp) {
+            this.target = target;
+            this.lp = lp;
+        }
+
+        @Override
+        public boolean onTouch(View v, MotionEvent e) {
+            switch (e.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    downRawX = e.getRawX();
+                    downRawY = e.getRawY();
+                    startLpX = lp.x;
+                    startLpY = lp.y;
+                    dragging = false;
+                    return true;
+                case MotionEvent.ACTION_MOVE: {
+                    float dx = e.getRawX() - downRawX;
+                    float dy = e.getRawY() - downRawY;
+                    if (!dragging && Math.hypot(dx, dy) < dp(SPHERE_DRAG_SLOP_DP)) {
+                        return true;
+                    }
+                    dragging = true;
+                    DisplayMetrics dm = context.getResources().getDisplayMetrics();
+                    int nx = clamp(Math.round(startLpX + dx), 0, dm.widthPixels - sphereSizePx);
+                    int ny = clamp(Math.round(startLpY + dy), 0, dm.heightPixels - sphereSizePx);
+                    if (nx == lp.x && ny == lp.y) {
+                        return true;
+                    }
+                    lp.x = nx;
+                    lp.y = ny;
+                    sphereX = nx;
+                    sphereY = ny;
+                    try {
+                        windowManager.updateViewLayout(target, lp);
+                    } catch (Exception ignored) {
+                        // 球窗已随服务失效：位置改动无意义，静默
+                    }
+                    return true;
+                }
+                case MotionEvent.ACTION_UP:
+                    if (!dragging && onSphereTap != null) {
+                        onSphereTap.run();
+                    }
+                    dragging = false;
+                    return true;
+                case MotionEvent.ACTION_CANCEL:
+                    dragging = false;
+                    return true;
+                default:
+                    return false;
+            }
+        }
+    }
+
+    private static int clamp(int value, int min, int max) {
+        return max < min ? min : Math.max(min, Math.min(max, value));
+    }
+
+    /**
+     * 弹出同心环工具菜单（§10 M0 + #68 径向树）：以悬浮球球心为原点向**最近边缘的对侧**展开半圆，
+     * 页面栈由内向外画成同心环。窗从球心向开口侧铺（{@link FanMenuView#measureWidthPx}，外沿半径按当前页栈
+     * 内容自适应），球心对齐窗**开口对侧**边缘（球在左半→窗左边、球在右半→窗右边）；球贴近屏幕上下沿时窗整体内收。
      * 必须在主线程调用（球点击回调 / 服务事件均在主线程）。push/pop 改变页栈后由服务重新调用本方法重建窗（尺寸随内容而变）。
      *
      * @param stack    页面栈（{@code stack.get(0)}=最内环=顶层工具；向外逐层子页）
@@ -115,7 +197,14 @@ public class OverlayManager {
         }
         int mw = FanMenuView.measureWidthPx(context, stack);
         int mh = 2 * mw;
-        FanMenuView menu = new FanMenuView(context, stack, listener);
+        DisplayMetrics dm = context.getResources().getDisplayMetrics();
+        int ballCx = sphereX + sphereSizePx / 2;
+        int ballCy = sphereY + sphereSizePx / 2;
+        // 开口朝向最近边缘：球在屏幕右半边就向左展开（否则环带整条出屏）
+        boolean facingLeft = ballCx > dm.widthPixels / 2;
+        // 窗尽量把球心摆在自己竖直中线上；球贴近屏幕上下沿时窗整体内收，球心在窗内的 y 随之偏移
+        int winY = clamp(ballCy - mh / 2, 0, Math.max(0, dm.heightPixels - mh));
+        FanMenuView menu = new FanMenuView(context, stack, listener, facingLeft, ballCy - winY);
         WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                 mw, mh,
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
@@ -124,9 +213,9 @@ public class OverlayManager {
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
         lp.gravity = Gravity.TOP | Gravity.START;
-        // 球心 = 窗左边缘中点
-        lp.x = sphereX + sphereSizePx / 2;
-        lp.y = sphereY + sphereSizePx / 2 - mh / 2;
+        // 球心 = 窗（开口对侧）边缘中点
+        lp.x = facingLeft ? ballCx - mw : ballCx;
+        lp.y = winY;
         addView(KEY_MENU, menu, lp);
     }
 
@@ -161,16 +250,49 @@ public class OverlayManager {
                 WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 PixelFormat.TRANSLUCENT);
-        lp.gravity = Gravity.CENTER;
-        lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE;
+        // 顶部锚定（不是居中）：居中时卡片下半张正好被软键盘盖住（T8b 真机复验的残留缺陷）。
+        // 键盘高度约屏高 1/3，卡片贴顶后输入行始终在键盘之上；仍可被顶部手柄拖到任意位置。
+        lp.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
+        lp.y = dp(PANEL_TOP_DP);
+        // 非 Activity 窗里 ADJUST_RESIZE 不生效（本窗高度是 WRAP_CONTENT，不随键盘收缩）；ADJUST_PAN 才是这类窗的正解
+        lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_PAN;
         windowManager.addView(content, lp);
         views.put(KEY_PANEL, content);
+        panelLp = lp;
         content.requestFocus(); // 焦点落进面板，返回键才会走它的 dispatchKeyEvent
+    }
+
+    /**
+     * 按增量拖动编辑面板窗（顶部手柄拖曳用）。gravity 是 {@code TOP|CENTER_HORIZONTAL}，故
+     * {@code x} 是相对屏幕中线的偏移（可负）、{@code y} 是距顶距离；两者都钳在屏内。
+     */
+    public void movePanel(int dx, int dy) {
+        View v = views.get(KEY_PANEL);
+        if (v == null || panelLp == null) {
+            return;
+        }
+        DisplayMetrics dm = context.getResources().getDisplayMetrics();
+        int pw = dp(BlacklistPanelView.WIDTH_DP);
+        int ph = v.getHeight() > 0 ? v.getHeight() : dp(280);
+        int halfRange = Math.max(0, (dm.widthPixels - pw) / 2);
+        int nx = clamp(panelLp.x + dx, -halfRange, halfRange);
+        int ny = clamp(panelLp.y + dy, 0, Math.max(0, dm.heightPixels - ph));
+        if (nx == panelLp.x && ny == panelLp.y) {
+            return;
+        }
+        panelLp.x = nx;
+        panelLp.y = ny;
+        try {
+            windowManager.updateViewLayout(v, panelLp);
+        } catch (Exception ignored) {
+            // 面板窗已失效：忽略
+        }
     }
 
     /** 收起就地编辑面板（不存在则忽略）。必须在主线程调用。 */
     public void hidePanel() {
         View v = views.remove(KEY_PANEL);
+        panelLp = null;
         if (v != null) {
             try {
                 windowManager.removeViewImmediate(v);

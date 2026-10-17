@@ -5,8 +5,10 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.text.InputType;
 import android.util.TypedValue;
+import android.view.GestureDetector;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
@@ -46,8 +48,11 @@ public final class BlacklistPanelView extends LinearLayout {
         /** 规则集合变化（增/删之后），参数为**当前完整列表**（接收方直接整体覆盖持久层）。 */
         void onSave(List<SettingsStore.Entry> entries);
 
-        /** 用户请求关闭面板（关闭按钮 / 返回键）。 */
+        /** 用户请求关闭面板（关闭按钮 / 返回键 / 手柄双击）。 */
         void onClose();
+
+        /** 手柄按住拖曳：请求把面板窗移动 ({@code dx},{@code dy}) 屏幕像素增量（正=右下）。 */
+        void onMove(int dx, int dy);
     }
 
     private final Listener listener;
@@ -74,6 +79,7 @@ public final class BlacklistPanelView extends LinearLayout {
         // 让面板自身可接收焦点（返回键要落到本视图树的 dispatchKeyEvent）
         setFocusableInTouchMode(true);
 
+        addView(buildHandle(context));
         addView(buildHeader(context));
         listContainer = new LinearLayout(context);
         listContainer.setOrientation(VERTICAL);
@@ -83,6 +89,52 @@ public final class BlacklistPanelView extends LinearLayout {
         addView(scroll, rowLayoutParams(LayoutParams.MATCH_PARENT, dp(LIST_HEIGHT_DP)));
         addView(buildAddRow(context));
         rebuildList();
+    }
+
+    /**
+     * 顶部手柄（#68-T8b 复验补充）：居中一条浅灰短条，长度＝面板窗宽的一半。
+     * **双击=关闭面板**，**按住拖曳=移动面板窗**（默认贴顶，键盘遮不住；仍可按需拖开）。
+     * 触摸目标是整条 {@link android.widget.FrameLayout}（高 20dp，远大于 4dp 的可见条），免得细条点不中。
+     */
+    private View buildHandle(Context context) {
+        android.widget.FrameLayout touchArea = new android.widget.FrameLayout(context);
+        View bar = new View(context);
+        GradientDrawable barBg = new GradientDrawable();
+        barBg.setColor(Color.parseColor("#80FFFFFF")); // 浅灰（半透明白叠在深色卡上）
+        barBg.setCornerRadius(dp(2));
+        bar.setBackground(barBg);
+        android.widget.FrameLayout.LayoutParams barLp = new android.widget.FrameLayout.LayoutParams(
+                dp(WIDTH_DP / 2), dp(4));
+        barLp.gravity = Gravity.CENTER_HORIZONTAL;
+        touchArea.addView(bar, barLp);
+
+        GestureDetector gd = new GestureDetector(context, new GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onDown(MotionEvent e) {
+                return true; // 认领本次手势，后续 onScroll/onDoubleTap 才会派发
+            }
+
+            @Override
+            public boolean onScroll(MotionEvent e1, MotionEvent e2, float distanceX, float distanceY) {
+                // distanceX = 上一事件 x − 本事件 x（即手指位移的相反数），取负才是窗口该跟的增量
+                listener.onMove(Math.round(-distanceX), Math.round(-distanceY));
+                return true;
+            }
+
+            @Override
+            public boolean onDoubleTap(MotionEvent e) {
+                listener.onClose();
+                return true;
+            }
+        });
+        touchArea.setOnTouchListener((v, event) -> {
+            gd.onTouchEvent(event);
+            return true;
+        });
+        LinearLayout.LayoutParams lp = rowLayoutParams(LayoutParams.MATCH_PARENT, dp(20));
+        lp.bottomMargin = dp(4);
+        touchArea.setLayoutParams(lp);
+        return touchArea;
     }
 
     /** 标题行：左「黑名单（命中则整页升 Q4）」，右「关闭」。 */
@@ -199,14 +251,23 @@ public final class BlacklistPanelView extends LinearLayout {
         }
     }
 
-    /** 面板内的紧凑按钮：去掉默认最小宽/内边距，免得三个按钮把行挤爆。 */
+    /** 面板内的紧凑按钮：自带圆角背景（不带框架按钮的 4/6dp 内建 inset）+ 零最小宽高，尺寸只由文字与内边距决定。 */
     private Button smallButton(Context context, int textRes) {
         Button b = new Button(context);
         b.setText(textRes);
         b.setAllCaps(false);
+        b.setTextColor(Color.WHITE);
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        b.setMinWidth(0);
         b.setMinimumWidth(0);
-        b.setPadding(dp(8), dp(2), dp(8), dp(2));
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
+        b.setStateListAnimator(null);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(Color.parseColor("#33FFFFFF"));
+        bg.setCornerRadius(dp(6));
+        b.setBackground(bg);
+        b.setPadding(dp(6), dp(4), dp(6), dp(4));
         return b;
     }
 

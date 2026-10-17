@@ -261,6 +261,11 @@ public class SphereAccessibilityService extends AccessibilityService {
                     public void onClose() {
                         overlayManager.hidePanel();
                     }
+
+                    @Override
+                    public void onMove(int dx, int dy) {
+                        overlayManager.movePanel(dx, dy);
+                    }
                 }));
     }
 

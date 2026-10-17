@@ -21,9 +21,11 @@ import java.util.List;
  * <p>环数 = 已展开页数（嵌套深度）：最内环 = 第 1 页（顶层工具），向外逐层挂子页，**父环保留可见**
  * （由球心向外 = 选择轨迹）。条目两态：叶子=触发功能、容器=向外再加画一圈同心环展开其子项。
  * 触点按**相对球心的方位**决定：落某环某楔形即选中该格；落最内枢纽（球）= 返回上一层（回根层再点=关闭）；
- * 落最外环之外或左半 = 关闭整个菜单。可点按即选，也可按住拖动实时高亮、松手提交。
+ * 落最外环之外或背侧半圆 = 关闭整个菜单。可点按即选，也可按住拖动实时高亮、松手提交。
  *
- * <p>本视图放在一个**矩形** overlay 窗里，球心对齐到窗左边缘中点（cx=0, cy=高/2）；左边缘时左半出屏不接收触摸，只留右半环带。
+ * <p>本视图放在一个**矩形** overlay 窗里：向右侧展开时球心对齐窗**左**边缘中点（cx=0, cy=高/2），
+ * 向左侧展开（{@code facingLeft}，球被拖到屏幕右半边时）则球心对齐窗**右**边缘中点（cx=宽, cy=高/2）。
+ * 出屏的那一半不接收触摸，只留环带那一侧。角度一律以「正上方」为 0°、向**开口侧**增大到 180°。
  * **每环宽度按内容独立解算**（{@link #fitRingWidths}）：第 k 环只量**自己页内最长的标签**在固定字号
  * {@code LABEL_TEXT_SP} 下所需宽度，与他环无关、也不凑任何统一尺寸；总外沿仅受上限 {@code OUTER_MAX_DP} 约束，
  * 触顶时退化为均分并由标签省略号兜底；窗尺寸随总外沿联动。最外环外留 {@code CLOSING_GAP_DP}「关闭环带」（点此区=关闭）。
@@ -74,7 +76,7 @@ public final class FanMenuView extends View {
         /** 点最内枢纽（球心）：服务据此 pop 一层或关闭。 */
         void onHub();
 
-        /** 点最外环之外 / 左半：服务据此关闭整个菜单。 */
+        /** 点最外环之外 / 背侧半圆：服务据此关闭整个菜单。 */
         void onOutside();
     }
 
@@ -266,12 +268,21 @@ public final class FanMenuView extends View {
 
     private float cx;
     private float cy;
+    /** 开口朝向：false=向右（球心贴窗左边）、true=向左（球心贴窗右边）。球被拖到屏幕右半边时镜像。 */
+    private final boolean facingLeft;
+    /** 角度增长方向：与 {@link #facingLeft} 对应，φ 从正上方向开口侧增大到 180°。 */
+    private int dir = 1;
+    /** 球心在本窗内的 y(px)：由 {@link OverlayManager#showToolMenu} 按球位置算出（球贴屏幕上下沿时窗整体内收，此值随之偏离 h/2）。 */
+    private final int centerY;
     private int activeDepth = -1; // 拖动/点按当前高亮环，-1 = 无
     private int activeIndex = -1; // 当前高亮格，-1 = 无
 
-    public FanMenuView(Context context, List<Page> stack, Listener listener) {
+    public FanMenuView(Context context, List<Page> stack, Listener listener, boolean facingLeft, int centerY) {
         super(context);
         this.listener = listener;
+        this.facingLeft = facingLeft;
+        this.dir = facingLeft ? -1 : 1;
+        this.centerY = centerY;
         this.stack = stack == null ? new ArrayList<>() : new ArrayList<>(stack);
 
         this.innerR = dp(INNER_DP);
@@ -297,8 +308,9 @@ public final class FanMenuView extends View {
     @Override
     protected void onSizeChanged(int w, int h, int oldw, int oldh) {
         super.onSizeChanged(w, h, oldw, oldh);
-        cx = 0f;        // 球心贴窗左边缘（环带全在右侧）
-        cy = h / 2f;    // 上下居中
+        // 球心贴开口对侧的窗边：向右展开贴左边、向左展开贴右边（背侧半圆出屏/不接收触摸）
+        cx = facingLeft ? w : 0f;
+        cy = Math.max(0f, Math.min(h, centerY)); // 球贴近屏幕上下沿时窗整体内收，球心在窗内的 y 随之偏离 h/2
     }
 
     /** 第 {@code k} 环的内边界（r 坐标）：innerR + 前 k 环宽度之和。d 很小（≤ 树深），直接累加。 */
@@ -324,9 +336,9 @@ public final class FanMenuView extends View {
         if (r < innerR) {
             return new int[]{-1, -1}; // 枢纽
         }
-        double phi = Math.toDegrees(Math.atan2(dx, -dy)); // 上=0，顺时针到右=90，到下=180
+        double phi = Math.toDegrees(Math.atan2(dir * dx, -dy)); // 上=0，向开口侧顺时针到 180
         if (phi < 0 || phi > SWEEP_DEG) {
-            return new int[]{-2, -2}; // 左半
+            return new int[]{-2, -2}; // 背侧半圆
         }
         int d = stack.size();
         for (int ring = 0; ring < d; ring++) {
@@ -424,9 +436,9 @@ public final class FanMenuView extends View {
             float sector = SWEEP_DEG / size;
             for (int k = 0; k <= size; k++) {
                 double phiB = Math.toRadians(k * sector);
-                float sx = (float) (cx + ri * Math.sin(phiB));
+                float sx = (float) (cx + dir * ri * Math.sin(phiB));
                 float sy = (float) (cy - ri * Math.cos(phiB));
-                float ex = (float) (cx + ro * Math.sin(phiB));
+                float ex = (float) (cx + dir * ro * Math.sin(phiB));
                 float ey = (float) (cy - ro * Math.cos(phiB));
                 canvas.drawLine(sx, sy, ex, ey, dividerPaint);
             }
@@ -447,21 +459,23 @@ public final class FanMenuView extends View {
             for (int k = 0; k < size; k++) {
                 Entry en = page.entries.get(k);
                 double phiC = Math.toRadians((k + 0.5f) * sector);
-                float lx = (float) (cx + midR * Math.sin(phiC));
+                float lx = (float) (cx + dir * midR * Math.sin(phiC));
                 float ly = (float) (cy - midR * Math.cos(phiC));
                 drawLabel(canvas, en, lx, ly, midR, ro - ri, sector, full, ring == activeDepth && k == activeIndex);
             }
         }
     }
 
-    /** 画一格环形楔形：外弧 a0→a0+sector，折回内弧，闭合；高亮格用亮色。 */
+    /** 画一格环形楔形：外弧走 sector 到内弧折回，闭合；高亮格用亮色。向左展开时角度镜像、扫过取负。 */
     private void drawWedge(Canvas canvas, float ri, float ro, float a0deg, float sector, boolean active) {
         outerRect.set(cx - ro, cy - ro, cx + ro, cy + ro);
         innerRect.set(cx - ri, cy - ri, cx + ri, cy + ri);
-        float a0 = a0deg - 90f; // Android 角：东=0 顺时针，减 90 使 0°=正上方
+        // Android 角：东=0 顺时针。向右展开 φ 顺时针 ⇒ a0=φ-90；向左展开 φ 逆时针 ⇒ a0=-90-φ 且扫过为负
+        float a0 = facingLeft ? -90f - a0deg : a0deg - 90f;
+        float sweep = facingLeft ? -sector : sector;
         sectorPath.reset();
-        sectorPath.arcTo(outerRect, a0, sector);
-        sectorPath.arcTo(innerRect, a0 + sector, -sector);
+        sectorPath.arcTo(outerRect, a0, sweep);
+        sectorPath.arcTo(innerRect, a0 + sweep, -sweep);
         sectorPath.close();
         canvas.drawPath(sectorPath, active ? wedgeActivePaint : wedgePaint);
     }
