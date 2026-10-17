@@ -55,6 +55,7 @@ public final class RuntimeStats {
     public static final String RUN_PAGE = "page";
     public static final String RUN_INPLACE = "inplace";
     public static final String RUN_REGION = "region";
+    public static final String RUN_SHOT = "shot";
 
     private static volatile RuntimeStats instance;
 

@@ -52,6 +52,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P4_REGION = "p4_region";
     public static final String EXTRA_P4_REGION_RECT = "p4_region_rect";
     public static final String EXTRA_P4_REGION_PAGE = "p4_region_page";
+    /** 量测哪条框选产物：{@code ocr}（默认）或 {@code shot}（存相册）。 */
+    public static final String EXTRA_P4_REGION_ACT = "p4_region_act";
 
     private TextView statusText;
 
@@ -243,8 +245,13 @@ public class MainActivity extends AppCompatActivity {
                 android.util.Log.e("P4REGION", "no accessibility service connected");
                 return;
             }
-            svc.runOnceNowRegion(rect, text ->
-                    android.util.Log.i("P4REGION", "rect=" + rectStr + " text=[" + text + "]"));
+            java.util.function.Consumer<String> report = text ->
+                    android.util.Log.i("P4REGION", "rect=" + rectStr + " text=[" + text + "]");
+            if ("shot".equals(intent.getStringExtra(EXTRA_P4_REGION_ACT))) {
+                svc.runOnceNowShot(rect, report);
+            } else {
+                svc.runOnceNowRegion(rect, report);
+            }
         }, "p4-region").start();
     }
 

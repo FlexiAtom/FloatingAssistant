@@ -124,6 +124,14 @@ public class SphereAccessibilityService extends AccessibilityService {
         }
     }
 
+    /** 部分截图量测入口（同 {@link #runOnceNowRegion}，走相册落盘那条）。 */
+    public void runOnceNowShot(int[] rect, java.util.function.Consumer<String> onDone) {
+        CaptureStateRouter r = router;
+        if (r != null) {
+            r.runOnceRegionShot(rect, onDone);
+        }
+    }
+
     /** 采集触发统一入口：先记住"这次翻的是哪个 App"，供切走即卸载判定。 */
     private void triggerRun() {
         CaptureStateRouter r = router;
@@ -172,8 +180,12 @@ public class SphereAccessibilityService extends AccessibilityService {
         tools = new ToolRegistry();
         Tool fullscreen = new SimpleTool("fullscreen_translate",
                 getString(R.string.tool_fullscreen_translate), svc -> runInPlaceTracked());
-        Tool region = new SimpleTool("region_select",
-                getString(R.string.tool_region_select), svc -> startRegionSelect());
+        Tool region = new ContainerTool("region_select",
+                getString(R.string.tool_region_select), List.of(
+                        new SimpleTool("partial_screenshot", getString(R.string.tool_partial_screenshot),
+                                svc -> startRegionSelect(true)),
+                        new SimpleTool("ocr_copy", getString(R.string.tool_ocr_copy),
+                                svc -> startRegionSelect(false))));
         Tool pageOcr = new SimpleTool("page_ocr",
                 getString(R.string.tool_page_ocr), svc -> triggerRun());
         Tool modelTier = new ContainerTool("model_tier",
@@ -322,7 +334,7 @@ public class SphereAccessibilityService extends AccessibilityService {
      * <p>选区窗必须在派发本次运行**之前**收掉：它带半透明遮罩，被拍进源图就等于给 OCR 掺了一层灰。
      * {@code captureExcludingSelf} 摘的是当时仍挂在 {@code views} 里的窗，收掉即自然不含它。
      */
-    private void startRegionSelect() {
+    private void startRegionSelect(final boolean shot) {
         overlayManager.showRegionSelect(getString(R.string.region_hint),
                 new RegionSelectView.Listener() {
                     @Override
@@ -333,8 +345,14 @@ public class SphereAccessibilityService extends AccessibilityService {
                             return;
                         }
                         translatedPkg = lastTopPkg;
-                        r.runOnceRegion(new int[]{x0, y0, x1, y1},
-                                text -> showTextPanel(getString(R.string.region_result_title), text));
+                        int[] rect = new int[]{x0, y0, x1, y1};
+                        if (shot) {
+                            r.runOnceRegionShot(rect,
+                                    text -> overlayManager.showTextOverlay("shot_feedback", text));
+                        } else {
+                            r.runOnceRegion(rect,
+                                    text -> showTextPanel(getString(R.string.region_result_title), text));
+                        }
                     }
 
                     @Override
@@ -355,7 +373,7 @@ public class SphereAccessibilityService extends AccessibilityService {
         showTextPanel(getString(R.string.report_title), report);
     }
 
-    /** 文本面板（框选结果 / 自检报告共用一扇）：正文留一份供「复制」取用。 */
+    /** 文本面板（框选结果 / 自检报告共用一扇）：正文留一份初值，供面板已收起时「复制」兜底取用。 */
     private void showTextPanel(String title, String body) {
         panelText = body;
         overlayManager.showPanel(new TextPanelView(overlayManager.themedContext(), title, body,
@@ -376,7 +394,8 @@ public class SphereAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * 复制面板正文到系统剪贴板——M1 框选的主输出。
+     * 复制面板正文到系统剪贴板——M1 框选的主输出。取**当前**正文而非灌入时的快照：面板可编辑，
+     * 用户改过的字必须能复制走，否则「就地改错字」这条流程是断的。
      * 无障碍服务不是前台 App，而 Android 10+ 对剪贴板有前台限制；**写**是否真生效须真机验
      * （见 working/m1-region-select.md 反证表第 3 行）。
      */
@@ -385,7 +404,8 @@ public class SphereAccessibilityService extends AccessibilityService {
         if (cm == null) {
             return;
         }
-        cm.setPrimaryClip(ClipData.newPlainText("floating-assistant", panelText));
+        cm.setPrimaryClip(ClipData.newPlainText("floating-assistant",
+                overlayManager.panelBodyText(panelText)));
         overlayManager.showTextOverlay("clipboard_feedback", getString(R.string.copied_to_clipboard));
     }
 

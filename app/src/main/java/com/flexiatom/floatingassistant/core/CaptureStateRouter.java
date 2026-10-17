@@ -233,6 +233,117 @@ public final class CaptureStateRouter {
         });
     }
 
+    /**
+     * 框选 ▸ 部分截图（{@code partial-screenshot}）：对选区矩形裁一张**原分辨率** PNG 存进系统相册，
+     * 结果文本（成功含文件名）在主线程回调给浮层回执。
+     *
+     * <p>刻意与 OCR 路径分开：OCR 那趟为救小字召回会把图抬到 48 px 字高，那是**送检图**的加工，
+     * 产物绝不能是它——存出去的必须是屏幕所见的那块像素（2026-10-18 全局坑：对 UI 不能去色或缩放）。
+     * <p>复用同一 {@code busy}/单 worker：与 OCR 抢同一个截屏窗口，不允许并行两次采集。
+     */
+    public void runOnceRegionShot(int[] rect, java.util.function.Consumer<String> onDone) {
+        if (!busy.compareAndSet(false, true)) {
+            cancelRequested = true;
+            overlayManager.showTextOverlay(RESULT_KEY, "上一次仍在处理中，正在取消…\n再点一次开始新采集");
+            return;
+        }
+        cancelRequested = false;
+        worker.execute(() -> {
+            long t0 = SystemClock.elapsedRealtime();
+            boolean ok = false;
+            try {
+                overlayManager.showTextOverlay(RESULT_KEY, "选区保存中…");
+                ok = routeOnceRegionShot(rect, onDone);
+            } finally {
+                overlayManager.removeOverlay(RESULT_KEY);
+                RuntimeStats.of(service).run(RuntimeStats.RUN_SHOT,
+                        SystemClock.elapsedRealtime() - t0, ok);
+                busy.set(false);
+            }
+        });
+    }
+
+    /** 部分截图一趟：截屏（排除自家浮层）→ 原分辨率裁剪 → MediaStore 落 PNG。失败给类别文本。 */
+    private boolean routeOnceRegionShot(int[] rect, java.util.function.Consumer<String> onDone) {
+        Bitmap bmp;
+        try {
+            bmp = captureExcludingSelf(service.capturer());
+        } catch (ScreenCapturer.CaptureException e) {
+            Log.i(TAG, "SHOT fail capture=" + e.outcome + " rect=" + rect[0] + "," + rect[1]
+                    + "," + rect[2] + "," + rect[3] + " (" + e.getMessage() + ")");
+            deliver(onDone, "此页面不支持截图 · 截图失败(" + e.outcome + ")");
+            return false;
+        }
+        int sw = bmp.getWidth();
+        int sh = bmp.getHeight();
+        int x0 = clamp(Math.min(rect[0], rect[2]), 0, sw);
+        int y0 = clamp(Math.min(rect[1], rect[3]), 0, sh);
+        int x1 = clamp(Math.max(rect[0], rect[2]), 0, sw);
+        int y1 = clamp(Math.max(rect[1], rect[3]), 0, sh);
+        int w = x1 - x0;
+        int h = y1 - y0;
+        if (w < 8 || h < 8) {
+            bmp.recycle();
+            Log.i(TAG, "SHOT fail tooSmall=" + w + "x" + h);
+            deliver(onDone, "选区太小（" + w + "×" + h + " px），未保存");
+            return false;
+        }
+        // createBitmap(src, 全幅) 会**原样返回 src**，所以两处回收都得防重复：满屏框选时只有一张图可回收。
+        Bitmap cut = Bitmap.createBitmap(bmp, x0, y0, w, h);
+        try {
+            String name = "floating-" + new java.text.SimpleDateFormat("yyyyMMdd-HHmmss",
+                    java.util.Locale.US).format(new java.util.Date()) + ".png";
+            android.net.Uri uri = saveShotToGallery(cut, name);
+            if (uri == null) {
+                Log.i(TAG, "SHOT fail save rect=" + x0 + "," + y0 + " " + w + "x" + h);
+                deliver(onDone, "保存失败 · 相册写入被拒");
+                return false;
+            }
+            Log.i(TAG, "SHOT done rect=" + x0 + "," + y0 + " " + w + "x" + h + " file=" + name);
+            deliver(onDone, "已存到相册 · Pictures/悬浮助手/" + name);
+            return true;
+        } finally {
+            if (cut != bmp) {
+                bmp.recycle();
+            }
+            cut.recycle();
+        }
+    }
+
+    /**
+     * 分区存储写相册（minSdk 30 ⇒ 只有这一条路，不申请存储权限）：{@code IS_PENDING} 建 → 写 PNG → 收尾。
+     * 任何一步失败都删掉半成品，相册里不留空文件。文件名用 ASCII（部分 ROM 的媒体扫描对中文名不稳）。
+     */
+    private android.net.Uri saveShotToGallery(Bitmap bmp, String displayName) {
+        android.content.ContentValues v = new android.content.ContentValues();
+        v.put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, displayName);
+        v.put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/png");
+        v.put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/悬浮助手");
+        v.put(android.provider.MediaStore.Images.Media.IS_PENDING, 1);
+        android.content.ContentResolver cr = service.getContentResolver();
+        android.net.Uri uri = cr.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+        if (uri == null) {
+            return null;
+        }
+        try (java.io.OutputStream out = cr.openOutputStream(uri, "w")) {
+            if (out == null) {
+                throw new java.io.IOException("openOutputStream 返回空");
+            }
+            if (!bmp.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                throw new java.io.IOException("PNG 压缩失败");
+            }
+            out.flush();
+        } catch (java.io.IOException e) {
+            Log.i(TAG, "SHOT write fail " + e);
+            cr.delete(uri, null, null);
+            return null;
+        }
+        v = new android.content.ContentValues();
+        v.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0);
+        cr.update(uri, v, null, null);
+        return uri;
+    }
+
     /** 区域 OCR：截图失败沿用三态语义（给出类别文本），成功则只读选区内的行。 */
     private boolean routeOnceRegion(int[] rect, java.util.function.Consumer<String> onText) {
         Bitmap bmp;

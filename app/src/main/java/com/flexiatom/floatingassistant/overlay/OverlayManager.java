@@ -375,6 +375,15 @@ public class OverlayManager {
         return views.containsKey(KEY_PANEL);
     }
 
+    /**
+     * 面板正文的**当前**文本（{@link TextPanelView} 的正文可编辑，用户可能已就地改过 OCR 结果）。
+     * 面板未开、或开的是别种面板时返回 {@code fallback}——调用方传的通常是自己上次灌进去的那份。
+     */
+    public String panelBodyText(String fallback) {
+        View v = views.get(KEY_PANEL);
+        return v instanceof TextPanelView text ? text.bodyText() : fallback;
+    }
+
     /** 展示型文本浮层：不拦截下层触摸/焦点。同一 key 重复调用即原位更新内容。 */
     public void showTextOverlay(String key, String text) {
         mainHandler.post(() -> applyTextOverlay(key, text));

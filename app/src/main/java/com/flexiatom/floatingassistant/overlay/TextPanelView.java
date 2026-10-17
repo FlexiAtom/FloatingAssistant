@@ -1,10 +1,12 @@
 package com.flexiatom.floatingassistant.overlay;
 
 import android.content.Context;
+import android.text.InputType;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -12,11 +14,16 @@ import android.widget.TextView;
 import java.util.List;
 
 /**
- * 通用**文本面板**（runtime-self-report / m1-region-select 共用）：一屏只读文本 + 底部动作按钮行。
+ * 通用**文本面板**（runtime-self-report / m1-region-select 共用）：一屏文本 + 底部动作按钮行。
  *
  * <p>它存在的理由是「两处需求形状相同」：自检报告要「长文本 + 复制」，框选结果要「长文本 + 复制/关闭」。
  * 与其各造一张卡，不如把 M3 卡片、滚动、手柄拖曳、返回键关闭这一套共用下去（手势见 {@link PanelDragHandle}，
  * 样式见 {@link PanelStyles}）。本视图不认识 prefs、剪贴板与 OCR，只把动作按钮回调出去。
+ *
+ * <p>正文是 {@link EditText} 而非只读 TextView：调用方给的文本是 OCR 猜的，人一眼就能看出哪里错，
+ * 故要能就地改（{@link #bodyText()} 取**改后**的值）。这要求面板窗**可聚焦**，见
+ * {@link OverlayManager#showPanel}——焦点窗的键盘能否真的在无障碍覆盖层上弹出属真机待验（见状态池
+ * overlay-ime-input-failure），代码只保证视图侧不拦。
  *
  * <p>关闭有三条：动作按钮里自带的「关闭」（由调用方放进 actions）、手柄双击、返回键
  * （{@link #dispatchKeyEvent} 拦 {@code KEYCODE_BACK}）。面板窗带焦点（{@link OverlayManager#showPanel}），
@@ -46,8 +53,9 @@ public final class TextPanelView extends LinearLayout implements PanelView {
 
     private final Listener listener;
     private final PanelDragHandle handle;
+    private final EditText body;
 
-    public TextPanelView(Context context, String title, CharSequence body,
+    public TextPanelView(Context context, String title, CharSequence bodyText,
                          List<Action> actions, Listener listener) {
         super(context);
         this.listener = listener;
@@ -79,13 +87,17 @@ public final class TextPanelView extends LinearLayout implements PanelView {
         titleView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         addView(titleView, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
 
-        TextView bodyView = new TextView(context);
-        bodyView.setText(body);
+        // 正文**可编辑**（用户 2026-10-18：结果要能唤起软键盘改识别结果）：OCR 对拉丁/符号仍会错读，
+        // 改五个字比重新框一次快。用 EditText 而非 textIsSelectable 的 TextView——后者只能选不能改。
+        // 背景置空是必须的：EditText 默认底会把 M3 卡片再套一层输入框边。
+        EditText bodyView = new EditText(context);
+        bodyView.setText(bodyText);
         bodyView.setTextColor(M3.color(context, M3.ON_SURFACE));
         bodyView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        // 逐字可选：整段复制走动作按钮，想只要其中一行也能选出来
-        bodyView.setTextIsSelectable(true);
+        bodyView.setBackground(null);
+        bodyView.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
         bodyView.setPadding(0, dp(6), 0, dp(6));
+        this.body = bodyView;
         ScrollView scroll = new ScrollView(context);
         scroll.addView(bodyView, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
@@ -110,6 +122,11 @@ public final class TextPanelView extends LinearLayout implements PanelView {
     public void handleRectInRoot(android.graphics.Rect out) {
         handle.barRectInRoot(out);
         offsetDescendantRectToMyCoords(handle, out);
+    }
+
+    /** 正文**当前**文本：用户改过就是改后的，复制必须以它为准（面板初值会过期）。 */
+    public String bodyText() {
+        return body.getText().toString();
     }
 
     @Override
