@@ -223,6 +223,30 @@ public class OverlayManager {
     }
 
     /**
+     * 球本体状态探针（用户 2026-10-18 报「收起扇形后悬浮球消失」——窗在而看不见，得把子视图状态量出来）。
+     * 返回：{@code [在views表, 宿主子视图数, 球visibility, 宿主w×h的w, 宿主h, 宿主measuredW, measuredH,
+     * 球leftMargin, 球topMargin, 球宽, 球高, sphereX, sphereY, 窗x, 窗y, 窗宽, 窗高]}；球视图不在时返回长度 0。
+     */
+    public int[] ballProbeState() {
+        if (sphereHost == null || sphereBall == null) {
+            return new int[0];
+        }
+        return new int[]{
+                views.containsKey(KEY_SPHERE) ? 1 : 0,
+                sphereHost.getChildCount(),
+                sphereBall.getVisibility(),
+                sphereHost.getWidth(), sphereHost.getHeight(),
+                sphereHost.getMeasuredWidth(), sphereHost.getMeasuredHeight(),
+                ballLp == null ? -1 : ballLp.leftMargin, ballLp == null ? -1 : ballLp.topMargin,
+                sphereBall.getWidth(), sphereBall.getHeight(),
+                sphereX, sphereY,
+                sphereWinLp == null ? -1 : sphereWinLp.x,
+                sphereWinLp == null ? -1 : sphereWinLp.y,
+                sphereWinLp == null ? -1 : sphereWinLp.width,
+                sphereWinLp == null ? -1 : sphereWinLp.height};
+    }
+
+    /**
      * 悬浮球拖曳（#68-T9）：位移超过 {@code touchSlop} 才认定为拖窗——期间逐帧改**球**的位置并重推窗原点
      * （{@link #applySphereWindow}），故菜单展开着也跟着走；未超过则松手算点击。
      * <p>拖过屏幕中线时开口朝向要翻面，那是**换扇形视图**而不是挪窗，只在松手时做一次（逐帧重建会闪）。
@@ -321,6 +345,9 @@ public class OverlayManager {
             menuView = null;
         }
         if (menuStack == null) {
+            // 没页栈就没扇形：仍要把窗缩回球那么大，否则窗留在扇形尺寸、球的 margin 也留在扇形圆心
+            // ⇒ 球会被画到窗外（用户 2026-10-18 报的「收起扇形后悬浮球消失」正是这一格）。
+            applySphereWindow();
             return;
         }
         FanMenuView fan = new FanMenuView(overlayContext, menuStack, menuListener,
@@ -332,6 +359,9 @@ public class OverlayManager {
 
     /** 拖过中线后开口朝向要翻面：只在松手时换一次视图，避免逐帧重建闪烁。 */
     private void refreshMenuFacing() {
+        if (menuStack == null) {
+            return; // 菜单已收起：没有朝向要翻，也别把扇形尺寸的窗留在那儿
+        }
         boolean facingLeft = sphereX + sphereSizePx / 2
                 > context.getResources().getDisplayMetrics().widthPixels / 2;
         if (facingLeft != menuFacingLeft) {

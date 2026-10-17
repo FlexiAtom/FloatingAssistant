@@ -67,6 +67,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P5_PATH = "p5_path";
     /** 只收菜单不弹（配合截屏：量完把模态窗清掉，别留着挡下层）。 */
     public static final String EXTRA_P5_MENU_HIDE = "p5_menu_hide";
+    /** 量测球本体子视图状态（用户报「收起扇形后球消失」）：窗在但看不见时，得把 visibility/margin/尺寸量出来。 */
+    public static final String EXTRA_P5_BALL_STATE = "p5_ball_state";
 
     private TextView statusText;
 
@@ -287,6 +289,31 @@ public class MainActivity extends AppCompatActivity {
         if (intent.getBooleanExtra(EXTRA_P5_MENU_HIDE, false)) {
             svc.hideMenuForTest();
             android.util.Log.i("P5MENU", "hidden");
+            return;
+        }
+        if (intent.getBooleanExtra(EXTRA_P5_BALL_STATE, false)) {
+            long waitMs = (long) intent.getIntExtra(EXTRA_P3_DEMO_DELAY_MS, 800);
+            new Thread(() -> {
+                try {
+                    Thread.sleep(waitMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                svc.probeBallState(st -> {
+                    if (st.length == 0) {
+                        android.util.Log.e("P5BALL", "no sphere view at all");
+                        return;
+                    }
+                    android.util.Log.i("P5BALL", "inViews=" + st[0] + " children=" + st[1]
+                            + " ballVis=" + st[2] + " host=" + st[3] + "x" + st[4]
+                            + " measured=" + st[5] + "x" + st[6]
+                            + " margin=" + st[7] + "," + st[8]
+                            + " ball=" + st[9] + "x" + st[10]
+                            + " sphereXY=" + st[11] + "," + st[12]
+                            + " win=" + st[13] + "," + st[14] + " " + st[15] + "x" + st[16]);
+                });
+            }, "p5-ball").start();
             return;
         }
         final int[] ball = parsePair(intent.getStringExtra(EXTRA_P5_BALL), 0, 0);

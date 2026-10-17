@@ -165,6 +165,15 @@ public class SphereAccessibilityService extends AccessibilityService {
         mainHandler.post(overlayManager::hideToolMenu);
     }
 
+    /** 球本体状态量测入口（用户报「收起扇形后球消失」）：回调 {@link OverlayManager#ballProbeState()}。 */
+    public void probeBallState(java.util.function.Consumer<int[]> onProbe) {
+        mainHandler.post(() -> {
+            if (onProbe != null) {
+                onProbe.accept(overlayManager.ballProbeState());
+            }
+        });
+    }
+
     /** 采集触发统一入口：先记住"这次翻的是哪个 App"，供切走即卸载判定。 */
     private void triggerRun() {
         CaptureStateRouter r = router;
