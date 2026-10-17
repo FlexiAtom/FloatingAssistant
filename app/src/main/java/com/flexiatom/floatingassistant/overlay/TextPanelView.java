@@ -5,6 +5,7 @@ import android.text.InputType;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -21,9 +22,8 @@ import java.util.List;
  * 样式见 {@link PanelStyles}）。本视图不认识 prefs、剪贴板与 OCR，只把动作按钮回调出去。
  *
  * <p>正文是 {@link EditText} 而非只读 TextView：调用方给的文本是 OCR 猜的，人一眼就能看出哪里错，
- * 故要能就地改（{@link #bodyText()} 取**改后**的值）。这要求面板窗**可聚焦**，见
- * {@link OverlayManager#showPanel}——焦点窗的键盘能否真的在无障碍覆盖层上弹出属真机待验（见状态池
- * overlay-ime-input-failure），代码只保证视图侧不拦。
+ * 故要能就地改（{@link #bodyText()} 取**改后**的值）。这要求面板窗**可聚焦**（{@link OverlayManager#showPanel}），
+ * 且点击时要显式 {@code showSoftInput} —— 两条都抄 {@link BlacklistPanelView} 的实测结论。
  *
  * <p>关闭有三条：动作按钮里自带的「关闭」（由调用方放进 actions）、手柄双击、返回键
  * （{@link #dispatchKeyEvent} 拦 {@code KEYCODE_BACK}）。面板窗带焦点（{@link OverlayManager#showPanel}），
@@ -96,6 +96,15 @@ public final class TextPanelView extends LinearLayout implements PanelView {
         bodyView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         bodyView.setBackground(null);
         bodyView.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        // 与 {@link BlacklistPanelView} 同一条实测经验：焦点型悬浮窗里**点**输入框才拉得起键盘，
+        // 得显式 showSoftInput，免得某些 ROM 不自动弹（黑名单页「输不进去」的同一格）。
+        bodyView.setOnClickListener(v -> {
+            InputMethodManager imm = (InputMethodManager)
+                    v.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) {
+                imm.showSoftInput(v, InputMethodManager.SHOW_IMPLICIT);
+            }
+        });
         bodyView.setPadding(0, dp(6), 0, dp(6));
         this.body = bodyView;
         ScrollView scroll = new ScrollView(context);
