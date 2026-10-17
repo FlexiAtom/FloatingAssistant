@@ -19,6 +19,8 @@
     <string name="tool_mode_heavy">重量</string>
     <string name="tool_blacklist">黑名单</string>
 
+    <string name="panel_close">关闭</string>
+
     <string name="settings_title">翻译设置</string>
     <string name="settings_model_title">模型选择</string>
     <string name="settings_mode_auto">自动（按黑名单，默认轻量）</string>

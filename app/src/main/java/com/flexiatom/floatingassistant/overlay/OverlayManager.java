@@ -37,6 +37,9 @@ public class OverlayManager {
     /** 工具扇形菜单窗的 key（§10 M0）；登记进 views 供 removeAllImmediate 兜底清理。 */
     private static final String KEY_MENU = "tool_menu";
 
+    /** 就地编辑面板（黑名单，#68-T8b）的 key：全 app 至多一扇，且**不参与截屏摘窗**（见 {@link #applyDetach}）。 */
+    private static final String KEY_PANEL = "edit_panel";
+
     /** 悬浮球屏幕几何（px），供扇形菜单锚定；将来球可拖曳时改这三个值即可让菜单跟随。 */
     private int sphereX;
     private int sphereY;
@@ -143,6 +146,44 @@ public class OverlayManager {
         return views.containsKey(KEY_MENU);
     }
 
+    /**
+     * 就地编辑面板（#68-T8b）：居中一扇**可获焦**的 {@code TYPE_ACCESSIBILITY_OVERLAY}，承载
+     * {@link BlacklistPanelView}。与球/菜单/贴图的关键差别是**不带** {@code FLAG_NOT_FOCUSABLE}——
+     * 面板内 {@code EditText} 必须拿到窗口焦点才拉得起软键盘（项目此前所有窗体都不带焦点，此为第一例）。
+     * 代价：该窗是触摸模态的，面板开着时下层 App（含悬浮球）收不到触摸，只能由面板自己的「关闭」按钮或返回键退出。
+     * 已存在则先替换。必须在主线程调用。
+     */
+    public void showPanel(View content) {
+        hidePanel();
+        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
+                dp(BlacklistPanelView.WIDTH_DP),
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT);
+        lp.gravity = Gravity.CENTER;
+        lp.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE;
+        windowManager.addView(content, lp);
+        views.put(KEY_PANEL, content);
+        content.requestFocus(); // 焦点落进面板，返回键才会走它的 dispatchKeyEvent
+    }
+
+    /** 收起就地编辑面板（不存在则忽略）。必须在主线程调用。 */
+    public void hidePanel() {
+        View v = views.remove(KEY_PANEL);
+        if (v != null) {
+            try {
+                windowManager.removeViewImmediate(v);
+            } catch (Exception ignored) {
+                // 已失效
+            }
+        }
+    }
+
+    public boolean isPanelVisible() {
+        return views.containsKey(KEY_PANEL);
+    }
+
     /** 展示型文本浮层：不拦截下层触摸/焦点。同一 key 重复调用即原位更新内容。 */
     public void showTextOverlay(String key, String text) {
         mainHandler.post(() -> applyTextOverlay(key, text));
@@ -240,6 +281,11 @@ public class OverlayManager {
         if (detach) {
             detachedForCapture.clear();
             for (Map.Entry<String, View> e : new ArrayList<>(views.entrySet())) {
+                // 就地编辑面板**不参与截屏摘窗**：它是全 app 唯一带焦点的窗，摘掉再挂回会丢软键盘与光标；
+                // 而采集只在跑翻译时发生，那时编辑面板本就关着，没有拍进源图的现实路径。
+                if (KEY_PANEL.equals(e.getKey())) {
+                    continue;
+                }
                 View v = e.getValue();
                 if (!(v.getLayoutParams() instanceof WindowManager.LayoutParams lp)) {
                     continue;

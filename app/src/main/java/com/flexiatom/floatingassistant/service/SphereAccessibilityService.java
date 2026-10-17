@@ -1,7 +1,6 @@
 package com.flexiatom.floatingassistant.service;
 
 import android.accessibilityservice.AccessibilityService;
-import android.content.Intent;
 import android.view.accessibility.AccessibilityEvent;
 
 import com.flexiatom.floatingassistant.R;
@@ -11,9 +10,9 @@ import com.flexiatom.floatingassistant.core.CaptureStateRouter;
 import com.flexiatom.floatingassistant.core.SettingsStore;
 import com.flexiatom.floatingassistant.ocr.PpOcrEngineFactory;
 import com.flexiatom.floatingassistant.mt.MtModelHub;
+import com.flexiatom.floatingassistant.overlay.BlacklistPanelView;
 import com.flexiatom.floatingassistant.overlay.FanMenuView;
 import com.flexiatom.floatingassistant.overlay.OverlayManager;
-import com.flexiatom.floatingassistant.settings.SettingsActivity;
 import com.flexiatom.floatingassistant.tool.ContainerTool;
 import com.flexiatom.floatingassistant.tool.SimpleTool;
 import com.flexiatom.floatingassistant.tool.Tool;
@@ -239,13 +238,30 @@ public class SphereAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * 黑名单入口。#68-T8a 占位：暂跳 {@link SettingsActivity}（下一步 T8b 改为就地弹可获焦悬浮窗，
-     * 消除反馈#2「子页与顶层页平级」的独立 Activity）。
+     * 黑名单就地编辑面板（#68-T8b）：不再另起 {@code SettingsActivity}——那会让「子页」与悬浮层平级、
+     * 且把用户从正在读的页面上带走（反馈#2）。改为在**当前页之上**弹一扇可获焦的居中面板；
+     * 面板已在显示时再选本项=收起（当开关用）。
+     *
+     * <p>增删即时经 {@link SettingsStore#setBlacklist} 落盘；下一次采集时 {@code BlacklistMatcher}
+     * 按 {@code version()} 现读重编译，**无需重启服务**。
      */
     private void openBlacklist() {
-        Intent i = new Intent(this, SettingsActivity.class);
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        startActivity(i);
+        if (overlayManager.isPanelVisible()) {
+            overlayManager.hidePanel();
+            return;
+        }
+        overlayManager.showPanel(new BlacklistPanelView(this, settings.blacklist(),
+                new BlacklistPanelView.Listener() {
+                    @Override
+                    public void onSave(List<SettingsStore.Entry> entries) {
+                        settings.setBlacklist(entries);
+                    }
+
+                    @Override
+                    public void onClose() {
+                        overlayManager.hidePanel();
+                    }
+                }));
     }
 
     @Override
