@@ -14,6 +14,7 @@ import android.widget.TextView;
 
 import android.view.WindowManager;
 import android.widget.FrameLayout;
+import android.view.ViewGroup;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -120,6 +121,23 @@ public class OverlayManager {
         sphereHost = new FrameLayout(overlayContext);
         FloatingBallView ball = new FloatingBallView(overlayContext);
         ball.setClickable(true);
+        // 「窗在而球不见了」（用户 2026-10-18 第 3b 条复现）：现场量到 host.getChildCount()==0，
+        // 但本类只有两处 removeView，且摘的都是扇形。故在球本体上钉一个拆卸听诊器，把调用栈打出来。
+        // 截屏摘窗 / 服务销毁也会触发 detach，栈能分清这三者。
+        ball.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View v) {
+            }
+
+            @Override
+            public void onViewDetachedFromWindow(View v) {
+                android.util.Log.e("P5BALL", "ball detached; host children="
+                        + (sphereHost == null ? -1 : sphereHost.getChildCount()), new Throwable("who"));
+                // 迟一拍再判一次：正常路径里截屏摘窗/服务拆除会在几十毫秒内重挂，不该由这条修；
+                // 若两拍之后球仍不在本该挂着的宿主里，就是「窗在、球没了」那一格，就地补挂并留痕。
+                mainHandler.postDelayed(OverlayManager.this::ensureBallAttached, 2000);
+            }
+        });
         sphereBall = ball;
         ballLp = new FrameLayout.LayoutParams(sphereSizePx, sphereSizePx);
         sphereHost.addView(ball, ballLp);
@@ -152,6 +170,9 @@ public class OverlayManager {
         if (sphereHost == null || sphereWinLp == null) {
             return;
         }
+        if (sphereBall != null && sphereBall.getParent() != sphereHost) {
+            ensureBallAttached();
+        }
         int ballCx = sphereX + sphereSizePx / 2;
         int ballCy = sphereY + sphereSizePx / 2;
         if (menuView == null) {
@@ -181,6 +202,34 @@ public class OverlayManager {
             ballLp.leftMargin = left;
             ballLp.topMargin = top;
             sphereHost.requestLayout();
+        }
+    }
+
+    /**
+     * 不变量守卫：**球必须是宿主 FrameLayout 的子视图**。真机上出现过「窗在、子里没球」（{@code children=0}），
+     * 症状就是收起扇形后悬浮球凭空消失（用户 2026-10-18 卡片 3b），而类里两处 {@code removeView} 摘的都是扇形，
+     * 指认不到元凶 ⇒ 先把球补挂回来（摆在扇形之上，与 {@link #showSphere} 首次挂载的层序一致），
+     * 同时留一条带栈日志，交给拆卸听诊器去比对是哪一次拆卸。
+     */
+    private void ensureBallAttached() {
+        if (sphereHost == null || sphereBall == null || ballLp == null) {
+            return; // 球窗本就没建（或已随服务拆除）：没得补
+        }
+        if (sphereBall.getParent() == sphereHost) {
+            return;
+        }
+        if (!views.containsKey(KEY_SPHERE)) {
+            return; // 截屏摘窗期间或尚未 showSphere：由各自的恢复路径负责重挂
+        }
+        android.util.Log.e("P5BALL", "ball not in host; re-attach children="
+                + sphereHost.getChildCount(), new Throwable("seen"));
+        try {
+            if (sphereBall.getParent() != null) {
+                ((ViewGroup) sphereBall.getParent()).removeView(sphereBall);
+            }
+            sphereHost.addView(sphereBall, Math.min(1, sphereHost.getChildCount()), ballLp);
+        } catch (Exception ignored) {
+            // 补挂失败也不能让守卫把调用链打断（例如正处在一趟派发里）
         }
     }
 
