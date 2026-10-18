@@ -5,6 +5,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.Settings;
 import android.view.accessibility.AccessibilityEvent;
 
 import com.flexiatom.floatingassistant.R;
@@ -32,6 +33,8 @@ public class SphereAccessibilityService extends AccessibilityService {
 
     private static volatile boolean connected = false;
     private static volatile SphereAccessibilityService instance;
+    /** 反馈浮层的兜底时长：这类窗没有别的关闭通路，不自动收就永久挡在屏幕顶部（用户 2026-10-18 裁决 2s）。 */
+    private static final long FEEDBACK_MS = 2000L;
 
     private OverlayManager overlayManager;
     private ScreenCapturer screenCapturer;
@@ -215,7 +218,7 @@ public class SphereAccessibilityService extends AccessibilityService {
     /**
      * 构建工具树（§10 M0 + #68 径向树）：注册顺序 = 最内环自上而下。
      * 第1页 = [全屏翻译(叶子), 框选(叶子), 开发者选项(容器)]；
-     * 开发者选项 → [整页OCR(叶子), 模型档位(容器), 黑名单(叶子→悬浮窗), 自检(叶子→悬浮窗)]；
+     * 开发者选项 → [整页OCR(叶子), 模型档位(容器), 黑名单(叶子→悬浮窗), 自检(叶子→悬浮窗), 关闭切换动画(叶子→悬浮窗反馈)]；
      * 模型档位 → [自动, 轻量, 重量](叶子→即时设 model_mode)。
      */
     private void buildTools() {
@@ -242,8 +245,11 @@ public class SphereAccessibilityService extends AccessibilityService {
                 getString(R.string.tool_blacklist), svc -> openBlacklist());
         Tool report = new SimpleTool("runtime_report",
                 getString(R.string.tool_runtime_report), svc -> openReport());
+        Tool closeAnim = new SimpleTool("close_anim",
+                getString(R.string.tool_close_anim), svc -> toggleAnimScale());
         Tool devOptions = new ContainerTool("developer_options",
-                getString(R.string.tool_developer_options), List.of(pageOcr, modelTier, blacklist, report));
+                getString(R.string.tool_developer_options),
+                List.of(pageOcr, modelTier, blacklist, report, closeAnim));
         tools.register(fullscreen);
         tools.register(region);
         tools.register(devOptions);
@@ -324,7 +330,40 @@ public class SphereAccessibilityService extends AccessibilityService {
                 name = getString(R.string.tool_mode_auto);
         }
         overlayManager.showTextOverlay("model_mode_feedback",
-                getString(R.string.tool_model_tier) + " = " + name);
+                getString(R.string.tool_model_tier) + " = " + name, FEEDBACK_MS);
+    }
+
+    /** 系统「动画时长缩放」三键：关则三者同时为 0，恢复则同时回 1.0。 */
+    private static final String[] ANIM_SCALE_KEYS = {
+            "window_animation_scale", "transition_animation_scale", "animator_duration_scale"};
+
+    /**
+     * 切换系统转场动画开关（在途/收起都归这三键管），双向：三项全 0 就恢复成 1.0，否则压成 0。
+     * 结果一律走浮层反馈——写 {@code Settings.Global} 需要 WRITE_SECURE_SETTINGS，
+     * 声明不等于获得（无障碍服务身份也不附带它），没授权时只可能 adb 授一次，故把命令原样打进反馈里。
+     */
+    public void toggleAnimScale() {
+        boolean allOff = true;
+        for (String key : ANIM_SCALE_KEYS) {
+            if (Settings.Global.getFloat(getContentResolver(), key, 1f) != 0f) {
+                allOff = false;
+                break;
+            }
+        }
+        float value = allOff ? 1f : 0f;
+        boolean ok = true;
+        try {
+            for (String key : ANIM_SCALE_KEYS) {
+                ok &= Settings.Global.putFloat(getContentResolver(), key, value);
+            }
+        } catch (SecurityException e) {
+            ok = false;
+        }
+        String head = getString(R.string.tool_close_anim) + "：";
+        overlayManager.showTextOverlay("anim_scale_feedback", ok
+                ? head + (value == 0f ? "已关闭（三键缩放 = 0）" : "已恢复（三键缩放 = 1.0）")
+                : head + "未生效——缺 WRITE_SECURE_SETTINGS，授一次：adb shell pm grant "
+                        + getPackageName() + " android.permission.WRITE_SECURE_SETTINGS", FEEDBACK_MS);
     }
 
     /** 原位全屏翻译（带切走即卸载记账）：记住本次目标 App，再走 M3 原位路径。 */
@@ -390,7 +429,7 @@ public class SphereAccessibilityService extends AccessibilityService {
                         int[] rect = new int[]{x0, y0, x1, y1};
                         if (shot) {
                             r.runOnceRegionShot(rect,
-                                    text -> overlayManager.showTextOverlay("shot_feedback", text));
+                                    text -> overlayManager.showTextOverlay("shot_feedback", text, FEEDBACK_MS));
                         } else {
                             r.runOnceRegion(rect,
                                     text -> showTextPanel(getString(R.string.region_result_title), text));
@@ -448,7 +487,8 @@ public class SphereAccessibilityService extends AccessibilityService {
         }
         cm.setPrimaryClip(ClipData.newPlainText("floating-assistant",
                 overlayManager.panelBodyText(panelText)));
-        overlayManager.showTextOverlay("clipboard_feedback", getString(R.string.copied_to_clipboard));
+        overlayManager.showTextOverlay("clipboard_feedback",
+                getString(R.string.copied_to_clipboard), FEEDBACK_MS);
     }
 
     @Override

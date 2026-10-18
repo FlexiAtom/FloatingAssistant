@@ -22,6 +22,7 @@
     <string name="tool_partial_screenshot">部分截图</string>
     <string name="tool_ocr_copy">OCR复制</string>
     <string name="tool_runtime_report">自检</string>
+    <string name="tool_close_anim">关闭切换动画</string>
 
     <string name="region_hint">拖动框选区域 · 松手执行 · 原地轻点取消</string>
     <string name="region_result_title">框选识别</string>

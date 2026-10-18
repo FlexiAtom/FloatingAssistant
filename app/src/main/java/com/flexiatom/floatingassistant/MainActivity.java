@@ -69,6 +69,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P5_MENU_HIDE = "p5_menu_hide";
     /** 量测球本体子视图状态（用户报「收起扇形后球消失」）：窗在但看不见时，得把 visibility/margin/尺寸量出来。 */
     public static final String EXTRA_P5_BALL_STATE = "p5_ball_state";
+    /** 「关闭切换动画」叶子的机读入口：只验写权限那条通路（三键缩放翻转），扇形里点它仍归人。 */
+    public static final String EXTRA_ANIM_TOGGLE = "anim_toggle";
 
     private TextView statusText;
 
@@ -94,6 +96,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP3InPlace(getIntent());
         maybeRunP4Region(getIntent());
         maybeRunP5Menu(getIntent());
+        maybeRunAnimToggle(getIntent());
     }
 
     @Override
@@ -108,6 +111,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP3InPlace(intent);
         maybeRunP4Region(intent);
         maybeRunP5Menu(intent);
+        maybeRunAnimToggle(intent);
     }
 
     private void maybeRunP0(Intent intent) {
@@ -347,6 +351,18 @@ public class MainActivity extends AppCompatActivity {
                         + " concentric=" + concentric + " shifted=" + shifted);
             });
         }, "p5-menu").start();
+    }
+
+    private void maybeRunAnimToggle(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_ANIM_TOGGLE, false)) {
+            return;
+        }
+        SphereAccessibilityService svc = SphereAccessibilityService.getInstance();
+        if (svc == null) {
+            android.util.Log.e("ANIMTOGGLE", "no accessibility service connected");
+            return;
+        }
+        svc.toggleAnimScale();
     }
 
     private static int[] parsePair(String value, int fallbackX, int fallbackY) {

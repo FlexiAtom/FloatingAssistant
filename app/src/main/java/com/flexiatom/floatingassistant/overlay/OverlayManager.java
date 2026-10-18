@@ -87,6 +87,8 @@ public class OverlayManager {
     private final Map<String, Set<String>> groups = new HashMap<>();
     /** 每组待触发的软过期移除任务，重排期时先撤旧的（§5.2-5）。 */
     private final Map<String, Runnable> expiry = new HashMap<>();
+    /** 反馈浮层的**单键**软过期任务（同 {@link #expiry} 的语义，只是粒度是 key 不是组）：重排期先撤旧的。 */
+    private final Map<String, Runnable> textExpiry = new HashMap<>();
     /** 截屏期间临时 detach 的窗（key/View/params），供 {@link #showSelfAfterCapture()} 原样挂回。 */
     private final List<Detached> detachedForCapture = new ArrayList<>();
 
@@ -477,12 +479,47 @@ public class OverlayManager {
         return v instanceof TextPanelView text ? text.bodyText() : fallback;
     }
 
-    /** 展示型文本浮层：不拦截下层触摸/焦点。同一 key 重复调用即原位更新内容。 */
+    /** 展示型文本浮层：不拦截下层触摸/焦点。同一 key 重复调用即原位更新内容；**常驻**（无超时，靠调用方移除）。 */
     public void showTextOverlay(String key, String text) {
         mainHandler.post(() -> applyTextOverlay(key, text));
     }
 
+    /**
+     * 带兜底超时的反馈浮层：弹出后 {@code durationMs} 自动移除；同 key 再调用＝换文本**并重排期**（撤旧计时）。
+     *
+     * <p>反馈类（模型档位/动画缩放/存相册/复制）必须走这条：它们没有别的移除通路——
+     * {@code removeOverlay} 全仓只服务译文结果窗——不加超时就会永久压在屏幕顶部挡住下层
+     * （用户 2026-10-18 裁决：兜底 2s）。
+     */
+    public void showTextOverlay(String key, String text, long durationMs) {
+        mainHandler.post(() -> {
+            applyTextOverlay(key, text);
+            scheduleTextExpiry(key, durationMs);
+        });
+    }
+
+    private void scheduleTextExpiry(String key, long durationMs) {
+        cancelTextExpiry(key);
+        if (durationMs <= 0) {
+            return;
+        }
+        Runnable r = () -> {
+            textExpiry.remove(key);
+            removeOverlay(key);
+        };
+        textExpiry.put(key, r);
+        mainHandler.postDelayed(r, durationMs);
+    }
+
+    private void cancelTextExpiry(String key) {
+        Runnable r = textExpiry.remove(key);
+        if (r != null) {
+            mainHandler.removeCallbacks(r);
+        }
+    }
+
     private void applyTextOverlay(String key, String text) {
+        cancelTextExpiry(key); // 走常驻通路时，别让上一轮的计时器把这一轮的窗吃掉
         View existing = views.get(key);
         if (existing instanceof TextView tv) {
             tv.setText(text);
