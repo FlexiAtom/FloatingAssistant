@@ -263,6 +263,14 @@ public final class FanMenuView extends View {
         return (int) dp(context, BALL_DP);
     }
 
+    /**
+     * 球**此刻**的填充色（真值就是 {@code ballPaint}）。给打底副本窗读用：副本必须与真球逐像素全等，
+     * 所以它不许自己按 M3 角色重算颜色——那样一旦换壁纸色，两份就会分叉出一圈异色边。
+     */
+    public int ballColor() {
+        return ballPaint.getColor();
+    }
+
     /** 球体半径(px)：按下落在它之内就算「按在球上」（可拖、可点），与窗大小无关。 */
     public static float ballRadiusPx(Context context) {
         return dp(context, BALL_DP) / 2f;

@@ -1,6 +1,8 @@
 package com.flexiatom.floatingassistant.overlay;
 
 import android.content.Context;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
@@ -16,6 +18,7 @@ import android.view.WindowManager;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -30,6 +33,12 @@ import java.util.Set;
 public class OverlayManager {
 
     private static final String KEY_SPHERE = "sphere";
+
+    /**
+     * 打底副本窗的 key（用户 2026-10-19 提出：「像全屏翻译的覆盖，提前在切换前在圆上绘制全等且同色的一个色块」）。
+     * 它只画一颗与真球**全等且同色**的圆，尺寸恒定、{@code FLAG_NOT_TOUCHABLE}，见 {@link #BallBaseView}。
+     */
+    private static final String KEY_SPHERE_BASE = "sphere_base";
 
     /** 原位贴图分组名：路由贴入、页面变化/软过期移除，统一走这一组（§5.2-4/5/6）。 */
     public static final String GROUP_MT = "mt_overlay";
@@ -63,6 +72,33 @@ public class OverlayManager {
     private FanMenuView sphereView;
     private WindowManager.LayoutParams sphereWinLp;
 
+    /** 打底副本窗的视图与其画笔；随球窗同生同灭（见 {@link #showSphere()} / {@link #hideSphere()}）。 */
+    private View ballBaseView;
+    /** 副本画笔：AA 与真球同一套（{@code Paint} 默认 style 即 FILL）；颜色每帧从真球读，不在此缓存。 */
+    private final Paint ballBasePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    /**
+     * 副本此刻该不该画。**只在"刚推过一次窗尺寸变化"的那段窗口里为真**——这是用户 2026-10-19 原话里
+     * 那条被我读漏的前提：「提前<b>在切换前</b>在圆上绘制全等且同色的一个色块」。
+     *
+     * <p>常驻遮盖是错的：副本走绘制管线（{@code invalidate → queueBuffer}），真球走 WMS 几何事务
+     * （{@code updateViewLayout}），二者不保证同帧 ⇒ 一移动就露出"遮盖与被遮盖错位"（本机装机首报即
+     * 「y轴错位」，两层圆心差 52px）。而拖曳路径根本不改尺寸、也就没有可遮的闪 ⇒ **移动期间一律不画**。
+     */
+    private boolean ballBaseMasking;
+
+    /** 遮盖的撤除时刻（主线程 one-shot，重复推尺寸则重排）。身份必须稳定，否则 {@code removeCallbacks} 认不出。 */
+    private final Runnable ballBaseUnmask = this::stopBallBaseMask;
+
+    /**
+     * 一次尺寸变化**落地后**再保持遮盖的时长（ms）。刻意不用"起罩那一刻起算的固定尾巴"：
+     * 尾巴有 120ms，而罩只在起罩那一帧画过一次——尾巴里球只要动起来（一次滑动就能飞几百 px），
+     * 屏上就是"圆飞走了、罩还留在原地"的大错位（用户 2026-10-19 手绘：橘=罩、黑=圆，水平偏 ~2.7 个球半径）。
+     * 现在罩的寿命严格挂在"这一次 relayout"上：起罩 → 下一帧推窗 → 推完 2 帧（≈33ms，实测缺席只有
+     * 一个采样时刻）即撤。移动期间一律不盖。
+     */
+    private static final long BALL_BASE_HOLD_MS = 33L;
+
     /** 扇形菜单态：展开时的尺寸/朝向/页栈与选择回调（视图自己另存一份页栈用于绘制）。 */
     private boolean menuOpen;
     private List<FanMenuView.Page> menuStack;
@@ -82,7 +118,12 @@ public class OverlayManager {
     private final Context overlayContext;
     private final WindowManager windowManager;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final Map<String, View> views = new HashMap<>();
+    /**
+     * 挂着的窗及其 key。**必须是 {@code LinkedHashMap}：这里的插入序有语义**——{@link #applyDetach} 摘完
+     * 按同一序挂回，而 {@code TYPE_ACCESSIBILITY_OVERLAY} 之间后挂者压前挂者，故先挂的打底副本窗（
+     * {@link #KEY_SPHERE_BASE}）必须始终排在球窗之前，截屏往返后才不会翻到真球与框选层之上。
+     */
+    private final Map<String, View> views = new LinkedHashMap<>();
     /** 分组注册表：group → 该组所有 key，供 removeGroup 一次性批量移除（§5.2-6）。 */
     private final Map<String, Set<String>> groups = new HashMap<>();
     /** 每组待触发的软过期移除任务，重排期时先撤旧的（§5.2-5）。 */
@@ -136,7 +177,63 @@ public class OverlayManager {
         sphereWinLp.gravity = Gravity.TOP | Gravity.START;
         sphereWinLp.x = sphereX;
         sphereWinLp.y = sphereY;
+        // 副本先挂 ⇒ 它在球窗**之下**：真球在场时把它逐像素盖住（两者全等），只有球窗缺席的那一帧才露出来。
+        ballBaseView = new BallBaseView(overlayContext);
+        WindowManager.LayoutParams baseLp = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                // 只画不点：NOT_TOUCHABLE 让这扇全屏窗在输入分派里根本不存在 ⇒ 它吃得下多大面积都不影响下层，
+                // 于是可以**永久维持这一个尺寸**——不 relayout，就没有"新尺寸第一个 buffer 是空的"那条病路。
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+                        // 这两位不是可选的装饰：本机实测全屏窗只带 LAYOUT_IN_SCREEN 时仍被**挖孔下推 52px**
+                        // （dumpsys 里 Requested h=1548 而非 1600；DisplayCutout insets=Rect(0,52-0,0)），
+                        // 于是副本圆心落在 sphereY+48+52 ⇒ 肉眼看到"球上下各一颗、只偏 y 不偏 x"（用户 10-19
+                        // 装机首报「y轴错位，不明」）。同一条坑框选层早已踩过并写明解法（见 showRegionSelect）。
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT);
+        baseLp.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+        baseLp.gravity = Gravity.TOP | Gravity.START;
+        addView(KEY_SPHERE_BASE, ballBaseView, baseLp);
+
         addView(KEY_SPHERE, sphereView, sphereWinLp);
+    }
+
+    /**
+     * 打底副本窗的视图：整扇全屏只画一颗与真球**全等且同色**的圆。
+     *
+     * <p>它存在只为那一帧：球窗开合要改尺寸，实测 WMS 把**旧 buffer 居中摆进新 frame** 一帧 ⇒
+     * 屏幕上的球瞬移 {@code Δorigin + Δsize/2}（本档 §6）。这扇窗尺寸恒定、永不 relayout ⇒ 它不走那条病路；而球在收起态与展开态
+     * **都必然在场**（{@code FanMenuView.onDraw} 里 {@code stack.size()==0} 时也只画这一颗），
+     * 所以一份永不重排的副本在两种状态下都是正确答案——它是全等复制，不是遮罩（遮罩要付"挡住下层"的代价）。
+     *
+     * <p>全等由构造保证：圆心是 {@link #sphereX}/{@link #sphereY} 推出来的球心，与
+     * {@link #applySphereWindow()} 推给窗原点的是同一个整数（收起态 {@code lp.x + getWidth()/2}；
+     * 展开态 {@code ballCx − fanCx + centerX()} 里 {@code fanCx} 与 {@code centerX()} 的取整互抵）；
+     * 半径与颜色都**从真球读**（{@link FanMenuView#ballRadiusPx} / {@link FanMenuView#ballColor()}），
+     * 不在这里重算主题——否则 MD3 换壁纸色时两份会分叉，那反而是我们自己造出来的新闪。
+     */
+    private final class BallBaseView extends View {
+        BallBaseView(Context c) {
+            super(c);
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            if (!ballBaseMasking) {
+                return; // 只在尺寸变化那一段盖着画；平时这扇全屏窗什么都不画（见 ballBaseMasking）
+            }
+            FanMenuView ball = sphereView;
+            if (ball == null) {
+                return; // 球窗已摘：副本没有真值可读，宁可不画也别画出一颗孤儿球
+            }
+            ballBasePaint.setColor(ball.ballColor());
+            canvas.drawCircle(sphereX + sphereSizePx / 2f, sphereY + sphereSizePx / 2f,
+                    FanMenuView.ballRadiusPx(overlayContext), ballBasePaint);
+        }
     }
 
     /**
@@ -191,26 +288,103 @@ public class OverlayManager {
         }
         int ballCx = sphereX + sphereSizePx / 2;
         int ballCy = sphereY + sphereSizePx / 2;
+        int newW;
+        int newH;
+        int newX;
+        int newY;
         if (!menuOpen) {
-            sphereWinLp.width = sphereSizePx;
-            sphereWinLp.height = sphereSizePx;
-            sphereWinLp.x = sphereX;
-            sphereWinLp.y = sphereY;
+            newW = sphereSizePx;
+            newH = sphereSizePx;
+            newX = sphereX;
+            newY = sphereY;
         } else {
             // 背侧留 N=0 的**命中**半径（innerR），不是球的视觉半径：留 ballR 时球画全了，
             // 但背侧 48–60px 那一圈返回区落在窗 surface 之外 ⇒ 同一个层级的触摸目标左右不对称。
             int back = Math.round(FanMenuView.hubRadiusPx(overlayContext));
             int fanCx = menuFacingLeft ? menuWidthPx : back; // 球心在窗内的 x，须与 FanMenuView.centerX() 同式
             int fanCy = menuHeightPx / 2;
-            sphereWinLp.width = menuWidthPx + back;
-            sphereWinLp.height = menuHeightPx;
-            sphereWinLp.x = ballCx - fanCx;
-            sphereWinLp.y = ballCy - fanCy;
+            newW = menuWidthPx + back;
+            newH = menuHeightPx;
+            newX = ballCx - fanCx;
+            newY = ballCy - fanCy;
         }
+        // 尺寸与原点**必须一起推**（同一次 relayout）：只推尺寸不推原点，收起后窗还停在展开态的原点，
+        // 球就画到屏外（2026-10-19 装机实测「点击展开前后圆的位置不同」；机读判据 p5_ball_state 的
+        // concentric：view=96x96 drawnC=48,48 而 ballC=228,228）。
+        sphereWinLp.x = newX;
+        sphereWinLp.y = newY;
+        boolean resized = newW != sphereWinLp.width || newH != sphereWinLp.height;
+        sphereWinLp.width = newW;
+        sphereWinLp.height = newH;
+        if (!resized) {
+            boolean pushWasPending = pushScheduled;
+            if (pushWasPending) {
+                mainHandler.removeCallbacks(pushSphereWindowNow);
+                pushScheduled = false;
+            }
+            pushSphereWindow();
+            if (ballBaseMasking) {
+                if (pushWasPending) {
+                    // 这一次移动把待推的尺寸变化一起推出去了 ⇒ 罩改挂到"落地后 HOLD"计时，
+                    // 就地撤正好会空那一帧（起罩与落地之间本来就只隔一帧，不会拖出鬼影）
+                    mainHandler.removeCallbacks(ballBaseUnmask);
+                    mainHandler.postDelayed(ballBaseUnmask, BALL_BASE_HOLD_MS);
+                } else {
+                    stopBallBaseMask(); // 纯移动：没有可遮的闪，立刻撤，别留"圆走了罩还在"的鬼影
+                }
+            }
+            return;
+        }
+        // 尺寸要变 ⇒ 这一步**只挂罩、不推窗**。原话是「**提前在切换前**绘制」：罩与 relayout 排在同一条
+        // 消息队列里会互相抢，先让罩在下一帧把 buffer 交出去，再把尺寸变化推给 WMS——空帧来的时候屏上
+        // 已经有那颗全等的圆了。post 出的同步消息跑在下一帧 traversal **之后**（同步栅栏在 doTraversal 里
+        // 先被摘掉，但整帧绘制仍在当次回调内完成），所以这一次确实是"画完再改"。
+        startBallBaseMask();
+        if (!pushScheduled) {
+            pushScheduled = true;
+            mainHandler.post(pushSphereWindowNow);
+        }
+    }
+
+    private boolean pushScheduled;
+
+    /** 把当前 {@link #sphereWinLp} 推给 WMS——全类唯一的那次 {@code updateViewLayout}。 */
+    private void pushSphereWindow() {
         try {
             windowManager.updateViewLayout(sphereView, sphereWinLp);
         } catch (Exception ignored) {
             // 球窗已随服务失效：位置改动无意义，静默
+        }
+    }
+
+    private final Runnable pushSphereWindowNow = () -> {
+        pushScheduled = false;
+        if (sphereView == null || sphereWinLp == null) {
+            return;
+        }
+        pushSphereWindow();
+        // 落地即开始计时：罩只为盖住 relayout 之后那一帧的空档，多留一帧都不给移动留鬼影的机会
+        if (ballBaseMasking) {
+            mainHandler.removeCallbacks(ballBaseUnmask);
+            mainHandler.postDelayed(ballBaseUnmask, BALL_BASE_HOLD_MS);
+        }
+    };
+
+    /** 挂上遮盖并画第一帧。**必须在推窗之前**调用，否则副本的第一个 buffer 仍排在空帧之后。 */
+    private void startBallBaseMask() {
+        ballBaseMasking = true;
+        mainHandler.removeCallbacks(ballBaseUnmask);
+        if (ballBaseView != null) {
+            ballBaseView.invalidate();
+        }
+    }
+
+    /** 撤除遮盖：副本全屏，所以必须显式重绘一次才能真的清干净。 */
+    private void stopBallBaseMask() {
+        ballBaseMasking = false;
+        mainHandler.removeCallbacks(ballBaseUnmask);
+        if (ballBaseView != null) {
+            ballBaseView.invalidate();
         }
     }
 
@@ -566,6 +740,14 @@ public class OverlayManager {
         if (v != null) {
             windowManager.removeViewImmediate(v);
         }
+        View base = views.remove(KEY_SPHERE_BASE);
+        if (base != null) {
+            windowManager.removeViewImmediate(base);
+        }
+        ballBaseView = null; // 与 showSphere 成对：留引用会让 onDraw 画到已 detach 的视图
+        stopBallBaseMask();
+        mainHandler.removeCallbacks(pushSphereWindowNow);
+        pushScheduled = false;
     }
 
     /**
@@ -672,6 +854,11 @@ public class OverlayManager {
         // 球窗没了 ⇒ 它的视图引用与菜单态一并作废，否则 hideToolMenu/applySphereWindow 会去动一个已 detach 的视图
         sphereView = null;
         sphereWinLp = null;
+        ballBaseView = null;
+        ballBaseMasking = false;
+        mainHandler.removeCallbacks(ballBaseUnmask); // 窗没了还挂着撤除回调，下次 showSphere 会被它无故清罩
+        mainHandler.removeCallbacks(pushSphereWindowNow);
+        pushScheduled = false;
         menuOpen = false;
         menuStack = null;
         menuListener = null;
