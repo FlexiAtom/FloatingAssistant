@@ -195,9 +195,9 @@ public class OverlayManager {
             sphereWinLp.x = sphereX;
             sphereWinLp.y = sphereY;
         } else {
-            // 背侧必须多留一个球半径：窗若正好从球心起铺，球的背半边就落在窗 surface 之外，
-            // 展开态会被裁成半圆（2026-10-18 像素实测：球色宽度 48px 而非 96px）。
-            int back = sphereSizePx / 2;
+            // 背侧留 N=0 的**命中**半径（innerR），不是球的视觉半径：留 ballR 时球画全了，
+            // 但背侧 48–60px 那一圈返回区落在窗 surface 之外 ⇒ 同一个层级的触摸目标左右不对称。
+            int back = Math.round(FanMenuView.hubRadiusPx(overlayContext));
             int fanCx = menuFacingLeft ? menuWidthPx : back; // 球心在窗内的 x，须与 FanMenuView.centerX() 同式
             int fanCy = menuHeightPx / 2;
             sphereWinLp.width = menuWidthPx + back;

@@ -269,6 +269,15 @@ public final class FanMenuView extends View {
     }
 
     /**
+     * N=0 层级的**命中**半径(px)＝最内枢纽半径：球体＋外圈一圈都算 N=0（点＝返回），所以它比
+     * {@link #ballRadiusPx} 大。展开时窗在背侧必须留满这个半径，否则背侧那一圈落在窗 surface
+     * 之外，N=0 的触摸目标左右不对称（画得出、点不到）。
+     */
+    public static float hubRadiusPx(Context context) {
+        return dp(context, INNER_DP);
+    }
+
+    /**
      * 菜单窗宽度(px) = 自适应外沿半径 + 环外关闭余量。有效扇区全在球心右侧（φ∈[0,180] ⇒ dx≥0），
      * 故窗只需从球心向右铺；最外环外沿到窗边之间是 {@code CLOSING_GAP_DP}「关闭环带」（点此=关闭）。
      */
@@ -378,16 +387,16 @@ public final class FanMenuView extends View {
     }
 
     /**
-     * 球心/扇形圆心的窗内 x(px)：**展开时圆心距背侧窗边留一个球半径**，不是贴窗边——窗只往开口侧
-     * 铺到「最外环＋关闭带」，背侧再多出 {@code ballR}，否则球的背半边落在窗 surface 之外被裁成半圆
-     * （2026-10-18 装机像素实测：展开态球色只覆盖屏幕 x∈[48,94]，x≤46 全是下层内容）。
+     * 球心/扇形圆心的窗内 x(px)：**展开时圆心距背侧窗边留 N=0 的命中半径 {@code innerR}**，不是贴窗边——
+     * 窗只往开口侧铺到「最外环＋关闭带」，背侧再多出 innerR。留一个球半径（视觉 48px）不够：球画全了，
+     * 但背侧 48–60px 那一圈返回区仍在窗外（2026-10-18 像素实测两事——留 0px 被裁成半圆；留 48px 那圈点不到）。
      * 收起时窗即球、圆心在窗心。现算不缓存。
      */
     public int centerX() {
         if (!menuOpen()) {
             return getWidth() / 2;
         }
-        return facingLeft ? Math.round(getWidth() - ballR) : Math.round(ballR);
+        return facingLeft ? Math.round(getWidth() - innerR) : Math.round(innerR);
     }
 
     /** 球心/扇形圆心的窗内 y(px)：两种状态都落在窗的竖直中线上（窗原点由球心反推，见 OverlayManager）。 */
