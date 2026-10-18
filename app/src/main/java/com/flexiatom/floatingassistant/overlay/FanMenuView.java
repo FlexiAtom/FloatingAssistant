@@ -263,14 +263,6 @@ public final class FanMenuView extends View {
         return (int) dp(context, BALL_DP);
     }
 
-    /**
-     * 球**此刻**的填充色（真值就是 {@code ballPaint}）。给打底副本窗读用：副本必须与真球逐像素全等，
-     * 所以它不许自己按 M3 角色重算颜色——那样一旦换壁纸色，两份就会分叉出一圈异色边。
-     */
-    public int ballColor() {
-        return ballPaint.getColor();
-    }
-
     /** 球体半径(px)：按下落在它之内就算「按在球上」（可拖、可点），与窗大小无关。 */
     public static float ballRadiusPx(Context context) {
         return dp(context, BALL_DP) / 2f;
@@ -366,6 +358,30 @@ public final class FanMenuView extends View {
     }
 
     /**
+     * 像素宿主（恒原点像素层）的重绘入口。本视图是**透明触点层**：它只判命中、不吃绘制，
+     * 所以任何"画面要变了"的状态迁移（换页/高亮/收起）都必须叫宿主重绘，而不是自己的
+     * {@code invalidate()}——自己重绘只会画一张空 surface。未挂宿主时退回自身（单测与旧路径）。
+     */
+    public interface PixelSink {
+        void requestRedraw();
+    }
+
+    private PixelSink pixelSink;
+
+    public void setPixelSink(PixelSink sink) {
+        this.pixelSink = sink;
+    }
+
+    private void requestPixels() {
+        PixelSink sink = pixelSink;
+        if (sink != null) {
+            sink.requestRedraw();
+        } else {
+            invalidate();
+        }
+    }
+
+    /**
      * 展开/换页：换掉页栈与朝向，并按新内容重解外沿与各环宽度。
      * 同一视图内完成，没有任何 {@code addView}/{@code removeView} ⇒ 触摸派发途中不会动子视图树。
      * 窗尺寸由调用方（{@link OverlayManager}）按 {@link #measureWidthPx} 同步换算。
@@ -377,7 +393,7 @@ public final class FanMenuView extends View {
         this.dir = facingLeft ? -1 : 1;
         this.outerR = fitOuterPx(getContext(), this.stack);
         this.ringWidths = solveRingWidths(getContext(), this.stack, this.outerR);
-        invalidate();
+        requestPixels();
     }
 
     /** 收起菜单：只留球（环 N=0）。回调一并作废，收起后的球只应答 {@link BallGesture}。 */
@@ -387,7 +403,7 @@ public final class FanMenuView extends View {
         this.ringWidths = new float[0];
         this.outerR = innerR;
         resetTouchState();
-        invalidate();
+        requestPixels();
     }
 
     public boolean menuOpen() {
@@ -400,13 +416,21 @@ public final class FanMenuView extends View {
      * 但背侧 48–60px 那一圈返回区仍在窗外（2026-10-18 像素实测两事——留 0px 被裁成半圆；留 48px 那圈点不到）。
      * 收起时窗即球、圆心在窗心。现算不缓存。
      *
-     * <p>分母是**窗此刻的宽度**，不是 {@link #menuOpen()}：收起那一趟是「先挂罩、下一帧才推尺寸」，
-     * 中间有一两帧菜单已清而窗还是展开宽——按状态算会得到 {@code 288/2=144} 而不是展开态的 60，
-     * 球就在屏上右移 84px（2026-10-19 录屏实测 17/245 帧如此，其中 2 帧原位还透出下层 App）。
-     * 按宽度算，这两帧球留在真位不动；窗缩回 96 的那一帧起，窗心就是真位，仍然不动。
+     * <p>分母是**本窗此刻的实际宽度**，不是 {@link #menuOpen()}：WMS 先把新 frame 变成触摸的分派范围，
+     * 而"菜单已清、窗还是展开宽"的那一两帧里按状态算会得到 {@code 288/2=144} 而不是展开态的 60，
+     * 命中区就与触摸实际落进来的那块矩形错位（2026-10-19 录屏实测 17/245 帧，其中 2 帧原位还透出下层 App）。
+     * 绘制不再受这一条牵连：像素层走 {@link #centerFor(int)}，用的是刚推给 WMS 的那对几何。
      */
     public int centerX() {
-        int w = getWidth();
+        return centerFor(getWidth());
+    }
+
+    /**
+     * 按**给定窗宽**算圆心 x——与 {@link #centerX()} 同一条式子，只是分母由调用方给。
+     * 恒原点像素层必须用它：它画的是屏幕绝对坐标，窗宽取自"刚推给 WMS 的那对几何"，
+     * 而不是自己那扇全屏窗的宽度（后者恒等于屏宽，用它就把扇形画到屏外去了）。
+     */
+    public int centerFor(int w) {
         if (w <= ballSizePx(getContext())) {
             return w / 2; // 窗＝球
         }
@@ -416,6 +440,10 @@ public final class FanMenuView extends View {
     /** 球心/扇形圆心的窗内 y(px)：两种状态都落在窗的竖直中线上（窗原点由球心反推，见 OverlayManager）。 */
     public int centerY() {
         return getHeight() / 2;
+    }
+
+    public int centerForY(int h) {
+        return h / 2;
     }
 
     private float cx() {
@@ -565,25 +593,43 @@ public final class FanMenuView extends View {
     private void highlight(int[] h) {
         activeDepth = h[0] >= 0 ? h[0] : -1;
         activeIndex = h[1] >= 0 ? h[1] : -1;
-        invalidate();
+        requestPixels();
     }
 
     private void clearHighlight() {
         activeDepth = -1;
         activeIndex = -1;
-        invalidate();
+        requestPixels();
     }
 
+    /**
+     * 触点层不画任何像素（恒原点像素层才是唯一绘制层，见 {@link OverlayManager}）。
+     * 保留这个空重写是为了让"只点不画"这件事写在类自己身上，而不是靠调用方记得别画。
+     */
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        float cx = cx();
-        float cy = cy();
+    }
+
+    /**
+     * 把球与扇形画到**屏幕绝对坐标**上：由恒原点像素层在自己的全屏 canvas 上调用。
+     *
+     * <p>{@code (winX, winY, winW, winH)} 必须是调用方**刚推给 WMS 的那对触点窗几何**（唯一真值，
+     * 见 {@code OverlayManager.applySphereWindow}），于是"画在哪"与"点在哪"共用一条式子：
+     * 圆心 {@code = (winX + centerFor(winW), winY + centerForY(winH)) = (球心)}，同心由构造保证。
+     * 内部仍然按窗内局部坐标算（{@code canvas.translate} 一次），所以页栈、环宽、标签这些
+     * 与触点层命中判定同源的算术一个字都不用改。
+     */
+    public void drawContent(Canvas canvas, int winX, int winY, int winW, int winH) {
+        float cx = centerFor(winW);
+        float cy = centerForY(winH);
         int d = stack.size();
         if (d == 0) {
-            canvas.drawCircle(cx, cy, ballR, ballPaint); // 收起：窗即球，整扇窗只画这一颗
+            canvas.drawCircle(winX + cx, winY + cy, ballR, ballPaint); // 收起：只画那颗球
             return;
         }
+        canvas.save();
+        canvas.translate(winX, winY);
 
         // 1) 每环的楔形分区填充（含高亮）
         for (int ring = 0; ring < d; ring++) {
@@ -596,7 +642,7 @@ public final class FanMenuView extends View {
             float ro = ringOuter(ring);
             float sector = SWEEP_DEG / size;
             for (int k = 0; k < size; k++) {
-                drawWedge(canvas, ri, ro, k * sector, sector, ring == activeDepth && k == activeIndex);
+                drawWedge(canvas, cx, cy, ri, ro, k * sector, sector, ring == activeDepth && k == activeIndex);
             }
         }
 
@@ -648,12 +694,12 @@ public final class FanMenuView extends View {
 
         // 5) 球体（环 N=0）最后画、压在枢纽圈里：展开着它仍是那颗可拖可点的球
         canvas.drawCircle(cx, cy, ballR, ballPaint);
+        canvas.restore();
     }
 
     /** 画一格环形楔形：外弧走 sector 到内弧折回，闭合；高亮格用亮色。向左展开时角度镜像、扫过取负。 */
-    private void drawWedge(Canvas canvas, float ri, float ro, float a0deg, float sector, boolean active) {
-        float cx = cx();
-        float cy = cy();
+    private void drawWedge(Canvas canvas, float cx, float cy,
+                           float ri, float ro, float a0deg, float sector, boolean active) {
         outerRect.set(cx - ro, cy - ro, cx + ro, cy + ro);
         innerRect.set(cx - ri, cy - ri, cx + ri, cy + ri);
         // Android 角：东=0 顺时针。向右展开 φ 顺时针 ⇒ a0=φ-90；向左展开 φ 逆时针 ⇒ a0=-90-φ 且扫过为负

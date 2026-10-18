@@ -309,8 +309,10 @@ public class MainActivity extends AppCompatActivity {
                         android.util.Log.e("P5BALL", "no sphere view at all");
                         return;
                     }
-                    // drawnC＝视图真正画球的点，ballC＝球屏幕几何按实际落位换算回窗内的点：
+                    // drawnC＝触点窗内圆心，ballC＝球屏幕几何按实际落位换算回窗内的点：
                     // 两者不同＝「窗在而球不在该在的地方」（收起后球消失那一格的机读判据）
+                    // pixelC/onTruth＝恒原点像素层画球的**屏幕**点与它是否等于球心真值（本设计的立论）
+                    // pixelWin＝像素层实际落位 frame（应当恒 (0,0,屏宽×屏高)，任何一次变化都是立论失效）
                     android.util.Log.i("P5BALL", "inViews=" + st[0] + " view=" + st[1] + "x" + st[2]
                             + " drawnC=" + st[3] + "," + st[4]
                             + " ballC=" + st[13] + "," + st[14]
@@ -319,6 +321,10 @@ public class MainActivity extends AppCompatActivity {
                             + " sphereXY=" + st[5] + "," + st[6]
                             + " reqWin=" + st[7] + "," + st[8] + " " + st[9] + "x" + st[10]
                             + " actualWin=" + st[11] + "," + st[12]
+                            + " pixelC=" + st[18] + "," + st[19]
+                            + " truthC=" + (st[5] + st[24] / 2) + "," + (st[6] + st[24] / 2)
+                            + " onTruth=" + (st[18] == st[5] + st[24] / 2 && st[19] == st[6] + st[24] / 2)
+                            + " pixelWin=" + st[20] + "," + st[21] + " " + st[22] + "x" + st[23]
                             + " view=" + Integer.toHexString(st[17]));
                 });
             }, "p5-ball").start();
