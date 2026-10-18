@@ -377,9 +377,17 @@ public final class FanMenuView extends View {
         return !stack.isEmpty();
     }
 
-    /** 球心/扇形圆心的窗内 x(px)：展开时贴开口对侧窗边，收起时窗即球、圆心在窗心。现算不缓存。 */
+    /**
+     * 球心/扇形圆心的窗内 x(px)：**展开时圆心距背侧窗边留一个球半径**，不是贴窗边——窗只往开口侧
+     * 铺到「最外环＋关闭带」，背侧再多出 {@code ballR}，否则球的背半边落在窗 surface 之外被裁成半圆
+     * （2026-10-18 装机像素实测：展开态球色只覆盖屏幕 x∈[48,94]，x≤46 全是下层内容）。
+     * 收起时窗即球、圆心在窗心。现算不缓存。
+     */
     public int centerX() {
-        return menuOpen() ? (facingLeft ? getWidth() : 0) : getWidth() / 2;
+        if (!menuOpen()) {
+            return getWidth() / 2;
+        }
+        return facingLeft ? Math.round(getWidth() - ballR) : Math.round(ballR);
     }
 
     /** 球心/扇形圆心的窗内 y(px)：两种状态都落在窗的竖直中线上（窗原点由球心反推，见 OverlayManager）。 */

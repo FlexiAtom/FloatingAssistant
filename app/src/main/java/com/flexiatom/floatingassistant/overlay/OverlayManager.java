@@ -195,9 +195,12 @@ public class OverlayManager {
             sphereWinLp.x = sphereX;
             sphereWinLp.y = sphereY;
         } else {
-            int fanCx = menuFacingLeft ? menuWidthPx : 0;
+            // 背侧必须多留一个球半径：窗若正好从球心起铺，球的背半边就落在窗 surface 之外，
+            // 展开态会被裁成半圆（2026-10-18 像素实测：球色宽度 48px 而非 96px）。
+            int back = sphereSizePx / 2;
+            int fanCx = menuFacingLeft ? menuWidthPx : back; // 球心在窗内的 x，须与 FanMenuView.centerX() 同式
             int fanCy = menuHeightPx / 2;
-            sphereWinLp.width = menuWidthPx;
+            sphereWinLp.width = menuWidthPx + back;
             sphereWinLp.height = menuHeightPx;
             sphereWinLp.x = ballCx - fanCx;
             sphereWinLp.y = ballCy - fanCy;
