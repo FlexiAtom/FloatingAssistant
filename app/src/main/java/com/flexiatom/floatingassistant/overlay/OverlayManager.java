@@ -221,6 +221,26 @@ public class OverlayManager {
         applySphereWindow();
     }
 
+    /**
+     * 屏幕方向变了：先收扇形，再把球钳回**新方向**的屏内并重推窗。必须在主线程调用。
+     * <p>这是唯一由系统发起的几何变化（其余都来自拖球或开合菜单），所以它同样只能走
+     * {@link #applySphereWindow} 这一个出口。不补这一格的话，横屏时合法停在 {@code x=1504} 的球
+     * 一转回竖屏（宽 720）就落在屏外，表现正是「球消失了」；展开着的扇形也会把大半张甩出屏，
+     * 因为开口朝向的阈值（球心 vs 屏宽中线）是按旧方向算的。
+     */
+    public void onScreenRotation() {
+        if (sphereView == null || sphereWinLp == null) {
+            return;
+        }
+        if (menuOpen) {
+            hideToolMenu();
+        }
+        DisplayMetrics dm = context.getResources().getDisplayMetrics();
+        sphereX = clamp(sphereX, 0, dm.widthPixels - sphereSizePx);
+        sphereY = clamp(sphereY, 0, dm.heightPixels - sphereSizePx);
+        applySphereWindow();
+    }
+
     /** 量测用：球当前屏幕几何（左上角 + 直径，px）。 */
     public int[] sphereRectForTest() {
         return new int[]{sphereX, sphereY, sphereSizePx};

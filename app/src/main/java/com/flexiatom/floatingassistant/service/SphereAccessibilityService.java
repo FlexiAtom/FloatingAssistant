@@ -503,6 +503,18 @@ public class SphereAccessibilityService extends AccessibilityService {
         return super.onUnbind(intent);
     }
 
+    /**
+     * 方向变化（系统自动旋转开着时，人把手机侧过来就会触发）：球窗与扇形的位置都是按**旧方向**算出来的，
+     * 当场交给 {@link OverlayManager#onScreenRotation()} 纠正，否则球会停在屏外＝「球消失」。
+     */
+    @Override
+    public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (overlayManager != null) {
+            mainHandler.post(overlayManager::onScreenRotation);
+        }
+    }
+
     @Override
     public void onDestroy() {
         connected = false;
