@@ -399,12 +399,18 @@ public final class FanMenuView extends View {
      * 窗只往开口侧铺到「最外环＋关闭带」，背侧再多出 innerR。留一个球半径（视觉 48px）不够：球画全了，
      * 但背侧 48–60px 那一圈返回区仍在窗外（2026-10-18 像素实测两事——留 0px 被裁成半圆；留 48px 那圈点不到）。
      * 收起时窗即球、圆心在窗心。现算不缓存。
+     *
+     * <p>分母是**窗此刻的宽度**，不是 {@link #menuOpen()}：收起那一趟是「先挂罩、下一帧才推尺寸」，
+     * 中间有一两帧菜单已清而窗还是展开宽——按状态算会得到 {@code 288/2=144} 而不是展开态的 60，
+     * 球就在屏上右移 84px（2026-10-19 录屏实测 17/245 帧如此，其中 2 帧原位还透出下层 App）。
+     * 按宽度算，这两帧球留在真位不动；窗缩回 96 的那一帧起，窗心就是真位，仍然不动。
      */
     public int centerX() {
-        if (!menuOpen()) {
-            return getWidth() / 2;
+        int w = getWidth();
+        if (w <= ballSizePx(getContext())) {
+            return w / 2; // 窗＝球
         }
-        return facingLeft ? Math.round(getWidth() - innerR) : Math.round(innerR);
+        return facingLeft ? Math.round(w - innerR) : Math.round(innerR); // 窗＝扇形外接盒
     }
 
     /** 球心/扇形圆心的窗内 y(px)：两种状态都落在窗的竖直中线上（窗原点由球心反推，见 OverlayManager）。 */
