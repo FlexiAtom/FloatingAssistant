@@ -5,6 +5,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
@@ -186,6 +187,49 @@ public class SphereAccessibilityService extends AccessibilityService {
     /** 量测用：关掉当前面板（{@link #openTranslatePanelForTest} 的另一半）。 */
     public void closePanelForTest() {
         mainHandler.post(overlayManager::hidePanel);
+    }
+
+    /**
+     * 量测用（runtime-self-report 行 70「心跳不扰主线程」）：在主线程上以 200 ms 固定节拍自采样，
+     * 跑满 {@code seconds} 后打一条漂移分布。
+     *
+     * <p>原方案是"心跳触发时连续框选 3 次，比对 {@code run_ms} 与无心跳基线"——那要手指，且"无心跳基线"
+     * 根本没有（关掉心跳得改生产代码）。本采样直接量同一件事：心跳与采样跑在**同一条主线程队列**上，
+     * 心跳若堵住队列，漂移就会在 60 s 周期处出尖峰。报出的 {@code maxWall} 是墙钟毫秒，与
+     * {@code logcat -s RuntimeReport} 里 beat 行的时间戳对时即可判定尖峰是不是心跳造成的。
+     */
+    public void mainThreadJitterForTest(int seconds) {
+        final int intervalMs = 200;
+        mainHandler.post(new Runnable() {
+            private final long startUptime = SystemClock.uptimeMillis();
+            private final long startWall = System.currentTimeMillis();
+            private long scheduled = startUptime;
+            private int n;
+            private long sum;
+            private long maxDrift;
+            private long maxWall;
+
+            @Override
+            public void run() {
+                long now = SystemClock.uptimeMillis();
+                long drift = now - scheduled;
+                if (n++ > 0) { // 第一拍 scheduled==startUptime，drift 恒 0，不计
+                    sum += drift;
+                    if (drift > maxDrift) {
+                        maxDrift = drift;
+                        maxWall = startWall + (now - startUptime);
+                    }
+                }
+                if (now - startUptime >= seconds * 1000L) {
+                    android.util.Log.i("P5JITTER", "n=" + (n - 1) + " spanS=" + seconds
+                            + " mean=" + (sum / (n - 1)) + "ms max=" + maxDrift + "ms"
+                            + " maxAt=" + maxWall + " beatEveryMs=" + RuntimeStats.HEARTBEAT_MS);
+                    return;
+                }
+                scheduled = now + intervalMs;
+                mainHandler.postDelayed(this, intervalMs);
+            }
+        });
     }
 
     /**
