@@ -628,6 +628,36 @@ public class SphereAccessibilityService extends AccessibilityService {
         }, wasVisible ? 60 : 500);
     }
 
+    /**
+     * 量测用：证「复制取到的是**当前**正文」这条行为变更点。开面板 → 把正文换成带标记的串（模拟就地
+     * 改过字）→ 点正文框（真实 showSoftInput 路径）→ 走复制动作 → 回读剪贴板。IME 上屏那一格仍归人，
+     * 这里只证取值口与剪贴板写入。临时诊断入口，与 {@code P5} 族同批撤。
+     */
+    public void editableCopyProbeForTest(String marker) {
+        boolean wasVisible = overlayManager.isPanelVisible();
+        if (!wasVisible) {
+            mainHandler.post(this::openReport);
+        }
+        mainHandler.postDelayed(() -> {
+            View panel = overlayManager.currentPanel();
+            if (!(panel instanceof TextPanelView tv)) {
+                android.util.Log.e("P5EDIT", "panel not a TextPanelView (visible=" + wasVisible + ")");
+                return;
+            }
+            String initial = tv.bodyText();
+            tv.setBodyForTest(marker);
+            tv.imeTapForTest();
+            copyPanelText();
+            ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            ClipData cd = cm == null ? null : cm.getPrimaryClip();
+            String got = cd == null || cd.getItemCount() == 0
+                    ? "<null>" : cd.getItemAt(0).coerceToText(this).toString();
+            android.util.Log.i("P5EDIT", "initialLen=" + initial.length() + " marker=" + marker
+                    + " clip=" + got + " clipIsMarker=" + marker.equals(got)
+                    + " clipIsInitial=" + initial.equals(got));
+        }, wasVisible ? 60 : 500);
+    }
+
     private void openReport() {
         if (overlayManager.isPanelVisible()) {
             overlayManager.hidePanel();

@@ -147,6 +147,11 @@ public final class TextPanelView extends LinearLayout implements PanelView {
      * 点击处理器自己调 showSoftInput），把 IME 侧的状态串返回给日志。缺的只有触摸命中测试——那一格归人。
      * 临时诊断入口，结案后与 {@code P5} 族同批撤。
      */
+    /** 量测用：把正文换成给定串（模拟"人已就地改过字"），只动控件，不碰调用方那份初值。 */
+    public void setBodyForTest(String text) {
+        body.setText(text);
+    }
+
     public String imeTapForTest() {
         boolean before = body.isFocused();
         body.requestFocus();
