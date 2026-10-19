@@ -608,6 +608,26 @@ public class SphereAccessibilityService extends AccessibilityService {
         }, 400);
     }
 
+    /**
+     * 量测用：走「点正文框拉键盘」这条真实路径（面板没开就先开），把 {@link TextPanelView} 返回的
+     * IME 状态串打进日志——配合外部 {@code dumpsys input_method} 判「无障碍覆盖层窗能否收 IME」
+     * （overlay-ime-input-failure 的地基格）。临时诊断入口，与 {@code P5} 族同批撤。
+     */
+    public void imeProbeForTest() {
+        boolean wasVisible = overlayManager.isPanelVisible();
+        if (!wasVisible) {
+            mainHandler.post(this::openReport);
+        }
+        mainHandler.postDelayed(() -> {
+            View panel = overlayManager.currentPanel();
+            if (!(panel instanceof TextPanelView tv)) {
+                android.util.Log.e("P5IME", "panel not a TextPanelView (visible=" + wasVisible + ")");
+                return;
+            }
+            android.util.Log.i("P5IME", "tap body → " + tv.imeTapForTest());
+        }, wasVisible ? 60 : 500);
+    }
+
     private void openReport() {
         if (overlayManager.isPanelVisible()) {
             overlayManager.hidePanel();

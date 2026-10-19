@@ -75,6 +75,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P5_PANEL_CLOSE = "p5_panel_close";
     /** 量测「自检」面板（runtime-self-report 行 71）：开面板；{@code openReport()} 同时把正文整段打进 logcat，截图与日志可逐字比。 */
     public static final String EXTRA_P5_REPORT_OPEN = "p5_report_open";
+    /** 量测用：开面板 + 点正文框，配外部 dumpsys input_method 判覆盖层能否收 IME。 */
+    public static final String EXTRA_P5_IME_PROBE = "p5_ime_probe";
     /** 量测主线程抖动（runtime-self-report 行 70「心跳不扰主线程」）：值为采样秒数；跑完打一条 {@code P5JITTER}。 */
     public static final String EXTRA_P5_JITTER_SEC = "p5_jitter_sec";
     /** 量测「翻译设置」面板的存储半段（T2）：在面板里点一行，值就是语言缩写（如 {@code ja}）。走行的 OnClickListener，触摸命中仍归人。 */
@@ -366,6 +368,11 @@ public class MainActivity extends AppCompatActivity {
         if (intent.getBooleanExtra(EXTRA_P5_PANEL_CLOSE, false)) {
             svc.closePanelForTest();
             android.util.Log.i("P5PANEL", "closed");
+            return;
+        }
+        if (intent.getBooleanExtra(EXTRA_P5_IME_PROBE, false)) {
+            svc.imeProbeForTest();
+            android.util.Log.i("P5IME", "probing（随后读 dumpsys input_method）");
             return;
         }
         int jitterSec = intent.getIntExtra(EXTRA_P5_JITTER_SEC, 0);

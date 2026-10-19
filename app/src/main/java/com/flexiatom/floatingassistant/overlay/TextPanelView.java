@@ -142,6 +142,24 @@ public final class TextPanelView extends LinearLayout implements PanelView {
         return body.getText().toString();
     }
 
+    /**
+     * 量测用：走「点正文框拉起键盘」这条**真实**代码路径（{@code requestFocus} + {@code performClick}，
+     * 点击处理器自己调 showSoftInput），把 IME 侧的状态串返回给日志。缺的只有触摸命中测试——那一格归人。
+     * 临时诊断入口，结案后与 {@code P5} 族同批撤。
+     */
+    public String imeTapForTest() {
+        boolean before = body.isFocused();
+        body.requestFocus();
+        body.performClick();
+        InputMethodManager imm = (InputMethodManager)
+                body.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        return "focusBefore=" + before + " focusAfter=" + body.isFocused()
+                + " token=" + (body.getWindowToken() != null)
+                + " immActive=" + (imm != null && imm.isActive(body))
+                + " acceptingText=" + (imm != null && imm.isAcceptingText())
+                + " shown=" + body.isShown();
+    }
+
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK
