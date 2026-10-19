@@ -207,6 +207,9 @@ public class OverlayManager {
         pixelLp.gravity = Gravity.TOP | Gravity.START;
         addView(KEY_SPHERE_PIXEL, pixelView, pixelLp);
 
+        // TEMP-P5HIT：挂窗前先把初始几何钉进去，否则第一次点球的日志会读到 0x0@0,0（那是假分叉）。
+        sphereView.setProbeDispatch(sphereX, sphereY, sphereSizePx, sphereSizePx,
+                sphereX + sphereSizePx / 2, sphereY + sphereSizePx / 2);
         addView(KEY_SPHERE, sphereView, sphereWinLp);
     }
 
@@ -348,6 +351,9 @@ public class OverlayManager {
         sphereWinLp.y = newY;
         sphereWinLp.width = newW;
         sphereWinLp.height = newH;
+        // TEMP-P5HIT（ball-tap-hits-fan-zone 取证，结案删）：把这次推的几何与球真值一起钉给触点视图，
+        // 让 onTouchEvent 能把「视图布局」「推给 WMS 的」两份真值同帧打出来。
+        sphereView.setProbeDispatch(newX, newY, newW, newH, ballCx, ballCy);
         // 先叫像素层重绘、再推给 WMS：像素层画的是这对几何，跟"什么时候落地"无关；
         // 顺序在这里不再有讲究（罩那套"起罩→下一帧推窗→落地后 33ms 撤"的计时全部随罩一起删了）。
         redrawPixels();

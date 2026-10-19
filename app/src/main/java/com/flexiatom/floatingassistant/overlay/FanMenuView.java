@@ -329,6 +329,22 @@ public final class FanMenuView extends View {
     private int activeDepth = -1; // 拖动/点按当前高亮环，-1 = 无
     private int activeIndex = -1; // 当前高亮格，-1 = 无
 
+    /**
+     * 取证探针（{@code ball-tap-hits-fan-zone}）：{@link OverlayManager#applySphereWindow} 每次推窗时
+     * 顺手把「刚推给 WMS 的那对几何 + 球的屏幕真值」钉在这里，{@code ACTION_DOWN} 里和
+     * {@link #getWidth()} 一起打出来，用来判「命中的那帧两份几何是否分叉」。**结案即删**。
+     */
+    int probeLpX, probeLpY, probeLpW, probeLpH, probeTruthCx, probeTruthCy;
+
+    void setProbeDispatch(int lpX, int lpY, int lpW, int lpH, int truthCx, int truthCy) {
+        probeLpX = lpX;
+        probeLpY = lpY;
+        probeLpW = lpW;
+        probeLpH = lpH;
+        probeTruthCx = truthCx;
+        probeTruthCy = truthCy;
+    }
+
     public FanMenuView(Context context, BallGesture ballGesture) {
         super(context);
         this.ballGesture = ballGesture;
@@ -518,11 +534,41 @@ public final class FanMenuView extends View {
         return new int[]{-2, -2}; // 最外环之外
     }
 
+    /** TEMP-P5HIT 的区名（取证用，结案删）。 */
+    private static String zoneName(int[] h) {
+        if (h[0] == ZONE_BALL) {
+            return "BALL";
+        }
+        if (h[0] == -1) {
+            return "HUB";
+        }
+        if (h[0] == -2) {
+            return "OUT/背侧";
+        }
+        return "环" + h[0] + "格" + h[1];
+    }
+
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN: {
                 int[] h = hitAt(e.getX(), e.getY());
+                // TEMP-P5HIT（ball-tap-hits-fan-zone 取证，结案随 setProbeDispatch 一起删）：
+                // 同帧打「视图已布局的几何」/「上次推给 WMS 的那对几何」/「这次触摸实际的分派原点」
+                // （raw-local 反推，WMS 钳过就会与 lp 不同）三份真值，加上触点相对**球屏幕真值**的半径。
+                // 误命中帧的机读判据就是 misHit：手指在可见球上（rTruth≤ballR）却解出非球区。
+                float rHit = (float) Math.hypot(e.getX() - cx(), e.getY() - cy());
+                float rTruth = (float) Math.hypot(e.getRawX() - probeTruthCx, e.getRawY() - probeTruthCy);
+                android.util.Log.i("P5HIT", "DOWN view=" + getWidth() + "x" + getHeight()
+                        + " lp=" + probeLpW + "x" + probeLpH + "@" + probeLpX + "," + probeLpY
+                        + " disp=" + (int) (e.getRawX() - e.getX()) + "," + (int) (e.getRawY() - e.getY())
+                        + " truthC=" + probeTruthCx + "," + probeTruthCy
+                        + " local=" + (int) e.getX() + "," + (int) e.getY()
+                        + " cx=" + centerX() + "," + centerY()
+                        + " rHit=" + (int) rHit + " rTruth=" + (int) rTruth + " ballR=" + (int) ballR
+                        + " menuOpen=" + menuOpen() + " dir=" + dir + " facingLeft=" + facingLeft
+                        + " zone=" + zoneName(h)
+                        + " misHit=" + (rTruth <= ballR && h[0] != ZONE_BALL));
                 pressedBall = h[0] == ZONE_BALL;
                 if (pressedBall) {
                     ballDownRawX = e.getRawX();
@@ -550,6 +596,13 @@ public final class FanMenuView extends View {
             }
             case MotionEvent.ACTION_UP: {
                 int[] h = hitAt(e.getX(), e.getY());
+                // TEMP-P5HIT：松手那帧再解一次——DOWN/UP 两份几何若不同（中途 relayout 落地了），
+                // 这一行的 zone 就会和上一条 DOWN 不一致，那是「错在帧之间」而不是「错在帧内」的证据。
+                android.util.Log.i("P5HIT", "UP zone=" + zoneName(h) + " view=" + getWidth() + "x" + getHeight()
+                        + " lp=" + probeLpW + "x" + probeLpH + "@" + probeLpX + "," + probeLpY
+                        + " local=" + (int) e.getX() + "," + (int) e.getY()
+                        + " menuOpen=" + menuOpen()
+                        + " pressedBall=" + pressedBall + " dragged=" + ballDragging);
                 clearHighlight();
                 if (pressedBall) {
                     // 按在球上松手：拖过=一次搬窗（末了才翻朝向），没拖过=点球（展开着即枢纽，收起即入口）
