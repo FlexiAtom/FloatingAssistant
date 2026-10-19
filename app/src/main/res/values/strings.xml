@@ -26,10 +26,9 @@
     <string name="tool_translate_settings">翻译设置</string>
 
     <string name="translate_panel_title">翻译设置</string>
-    <string name="translate_label_source">原语言</string>
     <string name="translate_label_target">目标语言</string>
-    <string name="translate_pair_format">%1$s → %2$s</string>
-    <string name="translate_note_applied">语向已记住，下一次翻译即生效。官方句式只有目标语言（源语言由模型自行判定），故「原语言」仅作记录。</string>
+    <string name="translate_current_tgt">当前：%1$s</string>
+    <string name="translate_note_applied">选定后下一次翻译即生效。官方句式只有目标语言，源语言由模型自行判定。</string>
 
     <string name="region_hint">拖动框选区域 · 松手执行 · 原地轻点取消</string>
     <string name="region_result_title">框选识别</string>

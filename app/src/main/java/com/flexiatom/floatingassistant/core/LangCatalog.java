@@ -70,7 +70,6 @@ public final class LangCatalog {
             new Lang("yue", "粤语", "Cantonese"),
     };
 
-    public static final String DEFAULT_SRC = "zh";
     public static final String DEFAULT_TGT = "en";
 
     private LangCatalog() {

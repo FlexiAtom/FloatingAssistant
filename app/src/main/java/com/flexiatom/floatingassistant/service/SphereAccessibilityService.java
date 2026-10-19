@@ -189,27 +189,19 @@ public class SphereAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * 量测用：在「翻译设置」面板里点一行，{@code spec} 形如 {@code "tgt:ja"} / {@code "src:fr"}。
+     * 量测用：在「翻译设置」面板里点一行，{@code spec} 就是语言缩写（如 {@code "ja"}）。
      * 走的是行自己的 {@code OnClickListener}（见 {@link TranslatePanelView#clickRowForTest}），
      * 所以这条只证「点了→落盘→读得回」，触摸命中测试仍归人。
-     * 日志同时用 {@link SettingsStore} 的守卫读回一遍，把写路径和读路径一起量掉（T2 的存储半段）。
+     * 日志同时读回 prefs，把写路径和读路径一起量掉（T2 的存储半段）。
      */
-    public void pickTranslateRowForTest(String spec) {
+    public void pickTranslateRowForTest(String code) {
         mainHandler.post(() -> {
-            int colon = spec == null ? -1 : spec.indexOf(':');
-            if (colon < 0) {
-                android.util.Log.e("P5PANEL", "pick bad spec=" + spec + "（应为 side:code）");
-                return;
-            }
-            String side = spec.substring(0, colon);
-            String code = spec.substring(colon + 1);
-            boolean isSource = "src".equals(side);
             View panel = overlayManager.currentPanel();
-            boolean found = panel instanceof TranslatePanelView tp && tp.clickRowForTest(isSource, code);
-            android.util.Log.i("P5PANEL", "pick " + side + ":" + code
+            boolean found = panel instanceof TranslatePanelView tp && tp.clickRowForTest(code);
+            android.util.Log.i("P5PANEL", "pick tgt:" + code
                     + " panel=" + (panel == null ? "none" : panel.getClass().getSimpleName())
                     + " rowFound=" + found
-                    + " prefs=" + settings.srcLang() + "->" + settings.tgtLang()
+                    + " prefs=" + settings.tgtLang()
                     + " version=" + settings.version());
         });
     }
@@ -218,7 +210,7 @@ public class SphereAccessibilityService extends AccessibilityService {
      * 当前**目标语言**缩写（{@code LangCatalog} 的 code），供翻译路径每次取用。
      *
      * <p>源语言不在这条链上：Hy-MT2 官方所有句式都只有 {@code {target_lang}}、没有源语言槽，
-     * 源语言由模型自行判定。面板上那一列只是用户的意图记录（见 m2-translation-settings 未决项）。
+     * 源语言由模型自行判定，所以面板与 prefs 都只剩目标语言一列/一键。
      * 工作线程直接读它——SharedPreferences 是内存缓存，且 {@code settings} 在服务生命周期内不换实例。
      */
     public String targetLang() {
@@ -542,11 +534,11 @@ public class SphereAccessibilityService extends AccessibilityService {
             return;
         }
         overlayManager.showPanel(new TranslatePanelView(overlayManager.themedContext(),
-                settings.srcLang(), settings.tgtLang(),
+                settings.tgtLang(),
                 new TranslatePanelView.Listener() {
                     @Override
-                    public void onPickLang(boolean isSource, String code) {
-                        settings.setLangs(isSource ? code : null, isSource ? null : code);
+                    public void onPick(String code) {
+                        settings.setTgtLang(code);
                     }
 
                     @Override

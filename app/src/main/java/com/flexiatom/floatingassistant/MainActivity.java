@@ -73,7 +73,7 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P5_PANEL_OPEN = "p5_panel_open";
     /** 量测「翻译设置」面板的另一半：关面板。 */
     public static final String EXTRA_P5_PANEL_CLOSE = "p5_panel_close";
-    /** 量测「翻译设置」面板的存储半段（T2）：在面板里点一行，"side:code"（如 {@code tgt:ja}）。走行的 OnClickListener，触摸命中仍归人。 */
+    /** 量测「翻译设置」面板的存储半段（T2）：在面板里点一行，值就是语言缩写（如 {@code ja}）。走行的 OnClickListener，触摸命中仍归人。 */
     public static final String EXTRA_P5_PANEL_PICK = "p5_panel_pick";
     /** 「关闭切换动画」叶子的机读入口：只验写权限那条通路（三键缩放翻转），扇形里点它仍归人。 */
     public static final String EXTRA_ANIM_TOGGLE = "anim_toggle";
