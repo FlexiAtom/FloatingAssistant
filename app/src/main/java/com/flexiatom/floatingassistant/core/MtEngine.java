@@ -8,8 +8,14 @@ package com.flexiatom.floatingassistant.core;
  */
 public interface MtEngine {
 
-    /** 整屏文本翻译；未就绪、空输入或引擎异常返回 {@code null}（降级到不覆盖原文）。 */
-    String translate(String text);
+    /**
+     * 整屏文本翻译；未就绪、空输入或引擎异常返回 {@code null}（降级到不覆盖原文）。
+     *
+     * @param text      OCR 出的原文
+     * @param tgtCode   目标语言缩写（{@link LangCatalog} 的 code，如 {@code ja}）；
+     *                  不在表内时实现方按默认目标语兜底，**不抛**。源语言不传：官方句式没有源语言槽。
+     */
+    String translate(String text, String tgtCode);
 
     /** 引擎是否已加载可用；降级实现返回 false。 */
     default boolean isReady() {

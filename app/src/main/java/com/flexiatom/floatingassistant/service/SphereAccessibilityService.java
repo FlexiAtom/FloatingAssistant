@@ -41,6 +41,11 @@ public class SphereAccessibilityService extends AccessibilityService {
     private OverlayManager overlayManager;
     private ScreenCapturer screenCapturer;
     private CaptureStateRouter router;
+    /**
+     * 模型中枢（档位路由 + 单引擎驻留）。从前是 {@code onCreate} 里的局部变量、只有 router 拿得到，
+     * 于是"不截屏直接喂一句文本给模型"这类量测没有入口——提到字段，与 router 同一处建、同一生命周期。
+     */
+    private MtModelHub mtHub;
     /** 悬浮球同心环菜单的工具表（§10 M0 + #68）：注册顺序 = 环自上而下。 */
     private ToolRegistry tools;
     /** 模型档位/黑名单等设置的持久层（菜单叶子即时写 model_mode 用）。 */
@@ -209,6 +214,44 @@ public class SphereAccessibilityService extends AccessibilityService {
         });
     }
 
+    /**
+     * 当前**目标语言**缩写（{@code LangCatalog} 的 code），供翻译路径每次取用。
+     *
+     * <p>源语言不在这条链上：Hy-MT2 官方所有句式都只有 {@code {target_lang}}、没有源语言槽，
+     * 源语言由模型自行判定。面板上那一列只是用户的意图记录（见 m2-translation-settings 未决项）。
+     * 工作线程直接读它——SharedPreferences 是内存缓存，且 {@code settings} 在服务生命周期内不换实例。
+     */
+    public String targetLang() {
+        return settings.tgtLang();
+    }
+
+    /**
+     * 量测用（m2 第二步）：**不经截屏**把一句文本按指定语向喂给模型，结果打日志。
+     *
+     * <p>为什么不走 runOnce 那条：整页路径要先 MediaProjection 授权（那一按归用户），而本步要证的只是
+     * 「语向真的进了提示词、模型出的是那种语言」。绕开采集，证据链更短，也不动已验稳的截图链路。
+     * 模型加载在秒级，故另起线程，不落主线程。
+     *
+     * @param tgtCode 目标语言缩写；空串＝用当前 prefs 里存的那一个
+     */
+    public void translateTextForTest(String text, String tgtCode) {
+        new Thread(() -> {
+            String tgt = (tgtCode == null || tgtCode.isEmpty()) ? settings.tgtLang() : tgtCode;
+            long t0 = System.nanoTime();
+            try {
+                com.flexiatom.floatingassistant.core.MtEngine m = mtHub.engineFor(text);
+                boolean ready = m != null && m.isReady();
+                String out = m == null ? null : m.translate(text, tgt);
+                long ms = (System.nanoTime() - t0) / 1_000_000L;
+                android.util.Log.i("P6MT", "tgt=" + tgt + " ready=" + ready
+                        + " ms=" + ms + " in=[" + text + "] out=[" + out + "]");
+            } catch (Throwable e) {
+                android.util.Log.e("P6MT", "tgt=" + tgt + " failed after "
+                        + ((System.nanoTime() - t0) / 1_000_000L) + "ms: " + e, e);
+            }
+        }, "p6-mt").start();
+    }
+
     /** 球视图状态量测入口（用户报「收起扇形后球消失」）：回调 {@link OverlayManager#sphereProbe()}。 */
     public void probeSphereState(java.util.function.Consumer<int[]> onProbe) {
         mainHandler.post(() -> {
@@ -242,7 +285,7 @@ public class SphereAccessibilityService extends AccessibilityService {
             settings = new SettingsStore(this);
         }
         if (router == null) {
-            MtModelHub mtHub = new MtModelHub(this, settings, new BlacklistMatcher(settings));
+            mtHub = new MtModelHub(this, settings, new BlacklistMatcher(settings));
             router = new CaptureStateRouter(this, overlayManager,
                     () -> PpOcrEngineFactory.create(this), mtHub);
         }

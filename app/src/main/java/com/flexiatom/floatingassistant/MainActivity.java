@@ -77,6 +77,10 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P5_PANEL_PICK = "p5_panel_pick";
     /** 「关闭切换动画」叶子的机读入口：只验写权限那条通路（三键缩放翻转），扇形里点它仍归人。 */
     public static final String EXTRA_ANIM_TOGGLE = "anim_toggle";
+    /** m2 第二步（{@code p6_mt}＝待译文本）：**不经截屏**直接把这句喂给模型，验语向真进了提示词。 */
+    public static final String EXTRA_P6_MT = "p6_mt";
+    /** 目标语言缩写（如 {@code ja}）；不给就用 prefs 里存的那个。 */
+    public static final String EXTRA_P6_MT_TGT = "p6_mt_tgt";
 
     private TextView statusText;
 
@@ -102,6 +106,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP3InPlace(getIntent());
         maybeRunP4Region(getIntent());
         maybeRunP5Menu(getIntent());
+        maybeRunP6Mt(getIntent());
         maybeRunAnimToggle(getIntent());
     }
 
@@ -117,7 +122,25 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP3InPlace(intent);
         maybeRunP4Region(intent);
         maybeRunP5Menu(intent);
+        maybeRunP6Mt(intent);
         maybeRunAnimToggle(intent);
+    }
+
+    /**
+     * m2 第二步的量测入口：不经截屏，把一句文本按指定语向直接喂给模型（结果走 {@code P6MT} 日志）。
+     * 整页路径要 MediaProjection 授权（那一按归用户），而这里要证的只是语向进了提示词——绕开采集，证据链更短。
+     */
+    private void maybeRunP6Mt(Intent intent) {
+        String text = intent == null ? null : intent.getStringExtra(EXTRA_P6_MT);
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+        SphereAccessibilityService svc = SphereAccessibilityService.getInstance();
+        if (svc == null) {
+            android.util.Log.e("P6MT", "no accessibility service connected");
+            return;
+        }
+        svc.translateTextForTest(text, intent.getStringExtra(EXTRA_P6_MT_TGT));
     }
 
     private void maybeRunP0(Intent intent) {

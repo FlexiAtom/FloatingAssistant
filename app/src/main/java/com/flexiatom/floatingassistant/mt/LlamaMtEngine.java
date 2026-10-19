@@ -35,7 +35,9 @@ public final class LlamaMtEngine implements MtEngine {
     }
 
     private native long nativeInit(String modelPath, int nCtx, int nThreads);
-    private native byte[] nativeTranslate(long handle, String text);
+
+    /** {@code user} 已是完整 user 消息（含指令），原生层不再拼提示词。 */
+    private native byte[] nativeTranslate(long handle, String user);
     private native void nativeRelease(long handle);
 
     private long handle; // 0 = 未就绪
@@ -58,11 +60,11 @@ public final class LlamaMtEngine implements MtEngine {
     }
 
     @Override
-    public String translate(String text) {
+    public String translate(String text, String tgtCode) {
         if (handle == 0L || text == null || text.isBlank()) {
             return null;
         }
-        byte[] out = nativeTranslate(handle, text);
+        byte[] out = nativeTranslate(handle, MtPrompt.userMessage(tgtCode, text));
         if (out == null || out.length == 0) {
             return null;
         }

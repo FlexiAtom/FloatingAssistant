@@ -1,4 +1,5 @@
-// 悬浮助手 · P2-T：STQ 特化 libllama 的薄 JNI 桥（端侧整屏 MT，zh→en 切片）。
+// 悬浮助手 · P2-T：STQ 特化 libllama 的薄 JNI 桥（端侧整屏 MT）。
+// 语向不在此层：入参即完整 user 消息，提示词由 Java 侧 MtPrompt 按官方句式组装。
 // 只链引擎四库（llama/ggml/ggml-cpu/ggml-base）+ log；聊天模板走 llama_chat_apply_template
 // 内置 HUNYUAN_DENSE 渲染器，故不链 libllama-common.so。
 // API 全部按当前头文件（~/clone/llama-stq/include/llama.h），不用已废弃的
@@ -144,25 +145,26 @@ Java_com_flexiatom_floatingassistant_mt_LlamaMtEngine_nativeInit(
     return (jlong) (intptr_t) S;
 }
 
-// nativeTranslate(long handle, String text) -> byte[] (UTF-8；空=失败/降级)
+// nativeTranslate(long handle, String user) -> byte[] (UTF-8；空=失败/降级)
+//
+// **本层不再拼任何提示词**：入参就是完整的 user 消息内容，由 Java 侧（MtPrompt）组装。
+// 从前这里写死 `"Translate into English: " + text`（zh→en 切片硬编），于是换语向必须重编 .so；
+// 语言表与官方句式都在 Java 那边，把策略留在 C++ 只会让每次改句式都过一次 NDK。
 JNIEXPORT jbyteArray JNICALL
 Java_com_flexiatom_floatingassistant_mt_LlamaMtEngine_nativeTranslate(
-        JNIEnv * env, jobject /*thiz*/, jlong handle, jstring jtext) {
+        JNIEnv * env, jobject /*thiz*/, jlong handle, jstring juser) {
     MtCtx * S = (MtCtx *) (intptr_t) handle;
-    if (!S || !S->ready || !jtext) {
+    if (!S || !S->ready || !juser) {
         return env->NewByteArray(0);
     }
-    const char * ctext = env->GetStringUTFChars(jtext, nullptr);
-    if (!ctext) return env->NewByteArray(0);
-    std::string text(ctext);
-    env->ReleaseStringUTFChars(jtext, ctext);
+    const char * cuser = env->GetStringUTFChars(juser, nullptr);
+    if (!cuser) return env->NewByteArray(0);
+    std::string user(cuser);
+    env->ReleaseStringUTFChars(juser, cuser);
 
-    if (text.empty()) {
+    if (user.empty()) {
         return env->NewByteArray(0);
     }
-
-    // 组装 prompt：整屏原文 + 指令前缀（zh→en 切片硬编）。
-    std::string user = "Translate into English: " + text;
 
     // 走内置聊天模板（HUNYUAN_DENSE）；失败则退化为裸 prompt（保底）。
     std::string prompt = user;

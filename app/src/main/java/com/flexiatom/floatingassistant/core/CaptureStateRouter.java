@@ -641,6 +641,8 @@ public final class CaptureStateRouter {
      */
     private void runInPlace(MtEngine m, List<int[]> boxes, List<String> texts,
                             List<Integer> bgColors, List<List<Integer>> clusters, int w, int h) {
+        // 目标语**整轮读一次**：逐段现取的话，中途改语向会让同一屏混进两种译文。
+        final String tgt = service.targetLang();
         try {
             if (!m.isReady()) {
                 Log.i(TAG, "MT off (engine not ready) → inplace skip");
@@ -674,7 +676,7 @@ public final class CaptureStateRouter {
                         return;
                     }
                     int idx = cluster.get(j);
-                    String tr = m.translate(texts.get(idx));
+                    String tr = m.translate(texts.get(idx), tgt);
                     trs[j] = (tr == null || tr.isBlank()) ? null : tr.trim();
                     done++;
                     overlayManager.showTextOverlay(RESULT_KEY, "贴图 " + done + "/" + total + " …");
@@ -804,6 +806,8 @@ public final class CaptureStateRouter {
      * 逐段增量刷新覆盖层（显示进度 + 已译部分），避免整页等待像卡死；某段空输出则跳过、不影响其余段。
      */
     private void runTranslateSegmented(MtEngine m, String orig, List<String> lines, int w, int h) {
+        // 同 runInPlace：语向整轮读一次，别让用户中途改设置把同一页译成两种语言。
+        final String tgt = service.targetLang();
         try {
             if (!m.isReady()) {
                 Log.i(TAG, "MT off (engine not ready)");
@@ -821,7 +825,7 @@ public final class CaptureStateRouter {
                     return;
                 }
                 String seg = segs.get(i);
-                String tr = m.translate(seg);
+                String tr = m.translate(seg, tgt);
                 if (tr != null && !tr.isBlank()) {
                     if (transAll.length() > 0) {
                         transAll.append('\n');

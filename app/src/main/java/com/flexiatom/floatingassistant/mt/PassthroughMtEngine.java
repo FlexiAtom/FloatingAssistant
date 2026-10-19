@@ -9,7 +9,7 @@ import com.flexiatom.floatingassistant.core.MtEngine;
 public final class PassthroughMtEngine implements MtEngine {
 
     @Override
-    public String translate(String text) {
+    public String translate(String text, String tgtCode) {
         return null;
     }
 

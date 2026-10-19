@@ -21,9 +21,10 @@ import com.flexiatom.floatingassistant.core.LangCatalog;
  * {@link Listener#onPickLang}；语言表来自 {@link LangCatalog}（官方模型卡抄下来的 38 项），
  * 本类不硬编码任何语言名。
  *
- * <p><b>为什么面板上要有一句"当前仅中→英生效"</b>：原生层的方向仍是硬编
- * （{@code mt-jni.cpp} 里 {@code "Translate into English: "}），本步只交付"可选且不失忆"。
- * 若不写这句，用户选了日语会以为译文会变——那是 UI 骗人。人裁的两步走里，第二句要随原生改造一起撤。
+ * <p><b>底部那句话现在说什么</b>：原生层的硬编方向已在第二步撤掉（提示词改由 Java 侧
+ * {@code MtPrompt} 按官方句式组装，{@code nativeTranslate} 只收完整 user 消息），所以那句
+ * "当前仅中→英生效"已随之下线。留下的这句只讲两件事：语向会生效，以及**左列不参与提示词**
+ * ——官方所有句式都只有 {@code {target_lang}}，源语言由模型自行判定。不写后半句就是让一列摆设冒充设置。
  */
 public final class TranslatePanelView extends LinearLayout implements PanelView {
 
@@ -140,7 +141,7 @@ public final class TranslatePanelView extends LinearLayout implements PanelView 
     /** 底部那句诚实边界（见类注释）。 */
     private View buildNote(Context context) {
         TextView note = new TextView(context);
-        note.setText(R.string.translate_note_pending_native);
+        note.setText(R.string.translate_note_applied);
         note.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         note.setTextColor(M3.color(context, M3.ON_SURFACE_VARIANT));
         LinearLayout.LayoutParams lp = new LayoutParams(LayoutParams.MATCH_PARENT,

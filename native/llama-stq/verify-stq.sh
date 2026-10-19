@@ -41,7 +41,15 @@ elif [ "$mode" = jni ]; then
   NEEDS="$("$READELF" -d "$target" 2>/dev/null || true)"
   grep -q 'Shared library: \[libllama\.so\]' <<< "$NEEDS" \
     || { echo "FAIL: 未 NEEDED libllama.so"; exit 1; }
-  echo "PASS jni: aarch64 + native* 导出 + NEEDED libllama 已在 $target"
+  # 提示词已移到 Java 侧（MtPrompt），原生里**不该再有任何指令字面量**。
+  # 这道检查不是装饰：nativeTranslate 的 JNI 签名（JLjava/lang/String;)[B 在改造前后完全相同，
+  # 一份旧的 libmtjni.so 能照常链接、照常跑，只是把整条官方指令再冠一遍 "Translate into English: "
+  # ——不崩，只是译文悄悄坏掉。故按"不该出现的字符串"当场拦。
+  if grep -a -q 'Translate into English' "$target"; then
+    echo "FAIL: libmtjni.so 仍含已退役的硬编提示词（陈旧 .so 混入：签名相同不会报错，只会悄悄译坏）"
+    exit 1
+  fi
+  echo "PASS jni: aarch64 + native* 导出 + NEEDED libllama + 无退役硬编提示词，已在 $target"
 else
   echo "未知模式: $mode"; exit 2
 fi
