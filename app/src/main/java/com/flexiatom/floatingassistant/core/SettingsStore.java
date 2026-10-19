@@ -9,8 +9,9 @@ import java.util.List;
 /**
  * 应用设置的持久层（SharedPreferences，项目此前无任何 prefs）。
  *
- * <p>存两样：{@link #mode() 模型选择模式} 与 {@link #blacklist() 黑名单}。每次写自增
- * {@link #version()}，供 {@link BlacklistMatcher} 判断已编译 Pattern 缓存是否失效。
+ * <p>存三样：{@link #mode() 模型选择模式}、{@link #blacklist() 黑名单}、
+ * {@link #srcLang()}/{@link #tgtLang() 语向}。每次写自增 {@link #version()}，供
+ * {@link BlacklistMatcher} 判断已编译 Pattern 缓存是否失效。
  *
  * <p>黑名单序列化：prefs 存单 String，每条一行，前缀 {@code kw:}=字面关键词、{@code re:}=正则；
  * pattern 内不得含换行（含则该行按字面截断处理，避免破坏格式）。
@@ -24,6 +25,8 @@ public final class SettingsStore {
     private static final String PREFS = "mt_settings";
     private static final String KEY_MODE = "model_mode";
     private static final String KEY_BLACKLIST = "blacklist";
+    private static final String KEY_SRC_LANG = "src_lang";
+    private static final String KEY_TGT_LANG = "tgt_lang";
     private static final String KEY_VERSION = "version";
 
     /** 一条黑名单规则：{@code regex=false} 按字面关键词匹配，{@code true} 按正则匹配。 */
@@ -54,6 +57,31 @@ public final class SettingsStore {
 
     public int version() {
         return prefs.getInt(KEY_VERSION, 0);
+    }
+
+    /** 原语言缩写（m2-translation-settings）；prefs 里的值不在 {@link LangCatalog} 内则回默认。 */
+    public String srcLang() {
+        return guardedLang(KEY_SRC_LANG, LangCatalog.DEFAULT_SRC);
+    }
+
+    public String tgtLang() {
+        return guardedLang(KEY_TGT_LANG, LangCatalog.DEFAULT_TGT);
+    }
+
+    /**
+     * 写语向。{@code src}/{@code tgt} 任一传 {@code null} 表示"这一侧不改"。
+     * 同一次 edit 写两键 + bump version（与 {@link #setMode} 一个口径），避免读到半套新值。
+     */
+    public void setLangs(String src, String tgt) {
+        SharedPreferences.Editor e = prefs.edit();
+        e.putString(KEY_SRC_LANG, src != null ? src : srcLang());
+        e.putString(KEY_TGT_LANG, tgt != null ? tgt : tgtLang());
+        e.putInt(KEY_VERSION, version() + 1).apply();
+    }
+
+    private String guardedLang(String key, String fallback) {
+        String raw = prefs.getString(key, fallback);
+        return LangCatalog.find(raw) != null ? raw : fallback;
     }
 
     public List<Entry> blacklist() {

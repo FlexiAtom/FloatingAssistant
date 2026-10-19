@@ -21,6 +21,7 @@ import com.flexiatom.floatingassistant.overlay.FanMenuView;
 import com.flexiatom.floatingassistant.overlay.OverlayManager;
 import com.flexiatom.floatingassistant.overlay.RegionSelectView;
 import com.flexiatom.floatingassistant.overlay.TextPanelView;
+import com.flexiatom.floatingassistant.overlay.TranslatePanelView;
 import com.flexiatom.floatingassistant.tool.ContainerTool;
 import com.flexiatom.floatingassistant.tool.SimpleTool;
 import com.flexiatom.floatingassistant.tool.Tool;
@@ -217,7 +218,7 @@ public class SphereAccessibilityService extends AccessibilityService {
 
     /**
      * 构建工具树（§10 M0 + #68 径向树）：注册顺序 = 最内环自上而下。
-     * 第1页 = [全屏翻译(叶子), 框选(叶子), 开发者选项(容器)]；
+     * 第1页 = [全屏翻译(叶子), 框选(容器), 翻译设置(叶子→悬浮窗), 开发者选项(容器)]；
      * 开发者选项 → [整页OCR(叶子), 模型档位(容器), 黑名单(叶子→悬浮窗), 自检(叶子→悬浮窗), 关闭切换动画(叶子→悬浮窗反馈)]；
      * 模型档位 → [自动, 轻量, 重量](叶子→即时设 model_mode)。
      */
@@ -243,6 +244,8 @@ public class SphereAccessibilityService extends AccessibilityService {
                                 svc -> setModelMode(SettingsStore.MODE_FORCE_HEAVY))));
         Tool blacklist = new SimpleTool("blacklist",
                 getString(R.string.tool_blacklist), svc -> openBlacklist());
+        Tool translateSettings = new SimpleTool("translate_settings",
+                getString(R.string.tool_translate_settings), svc -> openTranslateSettings());
         Tool report = new SimpleTool("runtime_report",
                 getString(R.string.tool_runtime_report), svc -> openReport());
         Tool closeAnim = new SimpleTool("close_anim",
@@ -252,6 +255,7 @@ public class SphereAccessibilityService extends AccessibilityService {
                 List.of(pageOcr, modelTier, blacklist, report, closeAnim));
         tools.register(fullscreen);
         tools.register(region);
+        tools.register(translateSettings);
         tools.register(devOptions);
     }
 
@@ -444,6 +448,36 @@ public class SphereAccessibilityService extends AccessibilityService {
     }
 
     /** 自检报告（runtime-self-report 的人读出口）：同一份 {@code report()} 既喂面板也喂 logcat，两处真值同源。 */
+    /**
+     * 语向面板（m2-translation-settings 第一步）：形状照 {@link #openBlacklist()}——同一张模态面板窗，
+     * 内容视图用 {@code themedContext()} 构造（服务上下文读不到 M3 角色属性）。
+     * 点一行即刻落盘，不设「保存」按钮（与黑名单面板同一取向：改了就存）。
+     */
+    private void openTranslateSettings() {
+        if (overlayManager.isPanelVisible()) {
+            overlayManager.hidePanel();
+            return;
+        }
+        overlayManager.showPanel(new TranslatePanelView(overlayManager.themedContext(),
+                settings.srcLang(), settings.tgtLang(),
+                new TranslatePanelView.Listener() {
+                    @Override
+                    public void onPickLang(boolean isSource, String code) {
+                        settings.setLangs(isSource ? code : null, isSource ? null : code);
+                    }
+
+                    @Override
+                    public void onClose() {
+                        overlayManager.hidePanel();
+                    }
+
+                    @Override
+                    public void onMove(int dx, int dy) {
+                        overlayManager.movePanel(dx, dy);
+                    }
+                }));
+    }
+
     private void openReport() {
         if (overlayManager.isPanelVisible()) {
             overlayManager.hidePanel();
