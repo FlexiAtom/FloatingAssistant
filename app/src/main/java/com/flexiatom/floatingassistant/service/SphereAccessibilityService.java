@@ -553,6 +553,17 @@ public class SphereAccessibilityService extends AccessibilityService {
                 }));
     }
 
+    /** 量测用：开「自检」面板（runtime-self-report 行 71 要判"面板正文与 logcat 同一出口"）。临时诊断入口，与 {@code P5} 族同批撤。 */
+    public void openReportPanelForTest() {
+        mainHandler.post(this::openReport);
+        // 正文区可滚动，截图只看得到首屏；把整串另打一行，比对就不依赖手指滚动
+        mainHandler.postDelayed(() -> {
+            View panel = overlayManager.currentPanel();
+            android.util.Log.i("P5PANEL", "report body=["
+                    + (panel instanceof TextPanelView tv ? tv.bodyText() : "n/a") + "]");
+        }, 400);
+    }
+
     private void openReport() {
         if (overlayManager.isPanelVisible()) {
             overlayManager.hidePanel();

@@ -73,6 +73,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P5_PANEL_OPEN = "p5_panel_open";
     /** 量测「翻译设置」面板的另一半：关面板。 */
     public static final String EXTRA_P5_PANEL_CLOSE = "p5_panel_close";
+    /** 量测「自检」面板（runtime-self-report 行 71）：开面板；{@code openReport()} 同时把正文整段打进 logcat，截图与日志可逐字比。 */
+    public static final String EXTRA_P5_REPORT_OPEN = "p5_report_open";
     /** 量测「翻译设置」面板的存储半段（T2）：在面板里点一行，值就是语言缩写（如 {@code ja}）。走行的 OnClickListener，触摸命中仍归人。 */
     public static final String EXTRA_P5_PANEL_PICK = "p5_panel_pick";
     /** 「关闭切换动画」叶子的机读入口：只验写权限那条通路（三键缩放翻转），扇形里点它仍归人。 */
@@ -362,6 +364,11 @@ public class MainActivity extends AppCompatActivity {
         if (intent.getBooleanExtra(EXTRA_P5_PANEL_CLOSE, false)) {
             svc.closePanelForTest();
             android.util.Log.i("P5PANEL", "closed");
+            return;
+        }
+        if (intent.getBooleanExtra(EXTRA_P5_REPORT_OPEN, false)) {
+            svc.openReportPanelForTest();
+            android.util.Log.i("P5PANEL", "report opened");
             return;
         }
         if (intent.getBooleanExtra(EXTRA_P5_PANEL_OPEN, false)) {

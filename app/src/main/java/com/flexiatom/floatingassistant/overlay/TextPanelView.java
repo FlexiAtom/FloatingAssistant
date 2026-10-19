@@ -133,7 +133,11 @@ public final class TextPanelView extends LinearLayout implements PanelView {
         offsetDescendantRectToMyCoords(handle, out);
     }
 
-    /** 正文**当前**文本：用户改过就是改后的，复制必须以它为准（面板初值会过期）。 */
+    /**
+     * 正文**当前**文本：用户改过就是改后的，复制必须以它为准（面板初值会过期）。
+     * 也是机读入口（runtime-self-report 行 71）：正文区高 240dp 可滚动，截图只看得到首屏，
+     * 拿这条读出的整串与 {@code RuntimeReport} 那几行比，就不必靠手指滚到底。
+     */
     public String bodyText() {
         return body.getText().toString();
     }
