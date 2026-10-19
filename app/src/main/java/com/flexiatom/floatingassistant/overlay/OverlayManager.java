@@ -651,6 +651,11 @@ public class OverlayManager {
         return v instanceof TextPanelView text ? text.bodyText() : fallback;
     }
 
+    /** 当前面板视图本体；面板未开时 {@code null}。供机读探针按类型取用。 */
+    public View currentPanel() {
+        return views.get(KEY_PANEL);
+    }
+
     /** 展示型文本浮层：不拦截下层触摸/焦点。同一 key 重复调用即原位更新内容；**常驻**（无超时，靠调用方移除）。 */
     public void showTextOverlay(String key, String text) {
         mainHandler.post(() -> applyTextOverlay(key, text));

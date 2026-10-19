@@ -164,6 +164,7 @@ public final class TranslatePanelView extends LinearLayout implements PanelView 
     private View buildRow(Context context, final int side, LangCatalog.Lang lang) {
         TextView row = new TextView(context);
         row.setText(lang.name);
+        row.setTag(lang.code);
         row.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         row.setPadding(dp(8), dp(6), dp(8), dp(6));
         boolean picked = selected[side].equals(lang.code);
@@ -184,6 +185,28 @@ public final class TranslatePanelView extends LinearLayout implements PanelView 
     private void refreshPair(Context context) {
         pair.setText(context.getString(R.string.translate_pair_format,
                 LangCatalog.nameOf(selected[0]), LangCatalog.nameOf(selected[1])));
+    }
+
+    /**
+     * 机读入口（照 {@code EXTRA_ANIM_TOGGLE} 的先例）：对某列里 {@code code} 那行执行
+     * {@link View#performClick()}——走的是手指点击<b>同一条</b> OnClickListener，唯独不经过触摸命中测试。
+     * 这样能把 T2 的两件事拆开证：「写了没有」由这里验，「点得中点不中」仍归人。
+     *
+     * @return 该列里找到 {@code code} 这一行（{@code performClick} 的返回值只表示挂了监听器，
+     *         点中同一项时监听器按设计直接 return，不写 prefs）
+     */
+    public boolean clickRowForTest(boolean isSource, String code) {
+        if (code == null) {
+            return false;
+        }
+        LinearLayout column = columns[isSource ? 0 : 1];
+        for (int i = 0; i < column.getChildCount(); i++) {
+            if (code.equals(column.getChildAt(i).getTag())) {
+                column.getChildAt(i).performClick();
+                return true;
+            }
+        }
+        return false;
     }
 
     private LayoutParams weighted(float weight) {

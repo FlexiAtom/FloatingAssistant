@@ -69,6 +69,12 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P5_MENU_HIDE = "p5_menu_hide";
     /** 量测球本体子视图状态（用户报「收起扇形后球消失」）：窗在但看不见时，得把 visibility/margin/尺寸量出来。 */
     public static final String EXTRA_P5_BALL_STATE = "p5_ball_state";
+    /** 量测「翻译设置」面板（m2-translation-settings T1/T4）：开面板；开时另打一条球/像素层状态，判模态有没有吞掉像素层。 */
+    public static final String EXTRA_P5_PANEL_OPEN = "p5_panel_open";
+    /** 量测「翻译设置」面板的另一半：关面板。 */
+    public static final String EXTRA_P5_PANEL_CLOSE = "p5_panel_close";
+    /** 量测「翻译设置」面板的存储半段（T2）：在面板里点一行，"side:code"（如 {@code tgt:ja}）。走行的 OnClickListener，触摸命中仍归人。 */
+    public static final String EXTRA_P5_PANEL_PICK = "p5_panel_pick";
     /** 「关闭切换动画」叶子的机读入口：只验写权限那条通路（三键缩放翻转），扇形里点它仍归人。 */
     public static final String EXTRA_ANIM_TOGGLE = "anim_toggle";
 
@@ -328,6 +334,43 @@ public class MainActivity extends AppCompatActivity {
                             + " view=" + Integer.toHexString(st[17]));
                 });
             }, "p5-ball").start();
+            return;
+        }
+        if (intent.getBooleanExtra(EXTRA_P5_PANEL_CLOSE, false)) {
+            svc.closePanelForTest();
+            android.util.Log.i("P5PANEL", "closed");
+            return;
+        }
+        if (intent.getBooleanExtra(EXTRA_P5_PANEL_OPEN, false)) {
+            svc.openTranslatePanelForTest();
+            long waitMs = (long) intent.getIntExtra(EXTRA_P3_DEMO_DELAY_MS, 600);
+            new Thread(() -> {
+                try {
+                    Thread.sleep(waitMs);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                svc.probeSphereState(st -> {
+                    if (st.length == 0) {
+                        android.util.Log.e("P5PANEL", "no sphere view at all");
+                        return;
+                    }
+                    // 面板是**另一扇窗**，球窗与像素层窗都该还在原处：pixelWin 恒 (0,0,屏宽×屏高)
+                    // 且 onTruth 仍成立 ⇒ 模态面板没有把像素层挤走（甲-1 的不变量在面板态也要真）。
+                    android.util.Log.i("P5PANEL", "opened; sphere menuOpen=" + st[15]
+                            + " attached=" + st[16]
+                            + " pixelC=" + st[18] + "," + st[19]
+                            + " truthC=" + (st[5] + st[24] / 2) + "," + (st[6] + st[24] / 2)
+                            + " onTruth=" + (st[18] == st[5] + st[24] / 2 && st[19] == st[6] + st[24] / 2)
+                            + " pixelWin=" + st[20] + "," + st[21] + " " + st[22] + "x" + st[23]);
+                });
+            }, "p5-panel").start();
+            return;
+        }
+        String pick = intent.getStringExtra(EXTRA_P5_PANEL_PICK);
+        if (pick != null && !pick.isEmpty()) {
+            svc.pickTranslateRowForTest(pick);
             return;
         }
         final int[] ball = parsePair(intent.getStringExtra(EXTRA_P5_BALL), 0, 0);

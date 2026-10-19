@@ -6,6 +6,7 @@ import android.content.ClipboardManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.provider.Settings;
+import android.view.View;
 import android.view.accessibility.AccessibilityEvent;
 
 import com.flexiatom.floatingassistant.R;
@@ -167,6 +168,45 @@ public class SphereAccessibilityService extends AccessibilityService {
     /** 与 {@link #probeMenuGeometryAt} 配套：收扇形并把球窗缩回。 */
     public void hideMenuForTest() {
         mainHandler.post(overlayManager::hideToolMenu);
+    }
+
+    /**
+     * 量测用：直接开/关「翻译设置」面板（m2-translation-settings T1/T4 要判"面板能不能开"与
+     * "开着的模态后果"，而这条不该依赖人手点）。临时诊断入口，结案后可撤——与 {@code P5} 族同一处置。
+     */
+    public void openTranslatePanelForTest() {
+        mainHandler.post(this::openTranslateSettings);
+    }
+
+    /** 量测用：关掉当前面板（{@link #openTranslatePanelForTest} 的另一半）。 */
+    public void closePanelForTest() {
+        mainHandler.post(overlayManager::hidePanel);
+    }
+
+    /**
+     * 量测用：在「翻译设置」面板里点一行，{@code spec} 形如 {@code "tgt:ja"} / {@code "src:fr"}。
+     * 走的是行自己的 {@code OnClickListener}（见 {@link TranslatePanelView#clickRowForTest}），
+     * 所以这条只证「点了→落盘→读得回」，触摸命中测试仍归人。
+     * 日志同时用 {@link SettingsStore} 的守卫读回一遍，把写路径和读路径一起量掉（T2 的存储半段）。
+     */
+    public void pickTranslateRowForTest(String spec) {
+        mainHandler.post(() -> {
+            int colon = spec == null ? -1 : spec.indexOf(':');
+            if (colon < 0) {
+                android.util.Log.e("P5PANEL", "pick bad spec=" + spec + "（应为 side:code）");
+                return;
+            }
+            String side = spec.substring(0, colon);
+            String code = spec.substring(colon + 1);
+            boolean isSource = "src".equals(side);
+            View panel = overlayManager.currentPanel();
+            boolean found = panel instanceof TranslatePanelView tp && tp.clickRowForTest(isSource, code);
+            android.util.Log.i("P5PANEL", "pick " + side + ":" + code
+                    + " panel=" + (panel == null ? "none" : panel.getClass().getSimpleName())
+                    + " rowFound=" + found
+                    + " prefs=" + settings.srcLang() + "->" + settings.tgtLang()
+                    + " version=" + settings.version());
+        });
     }
 
     /** 球视图状态量测入口（用户报「收起扇形后球消失」）：回调 {@link OverlayManager#sphereProbe()}。 */
