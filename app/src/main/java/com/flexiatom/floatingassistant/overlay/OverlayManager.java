@@ -562,6 +562,11 @@ public class OverlayManager {
      * 面板内 {@code EditText} 必须拿到窗口焦点才拉得起软键盘（项目此前所有窗体都不带焦点，此为第一例）。
      * 代价：该窗是触摸模态的，面板开着时下层 App（含悬浮球）收不到触摸，只能由面板自己的「关闭」按钮或返回键退出。
      * 已存在则先替换。必须在主线程调用。
+     *
+     * <p>可用配方（overlay-ime-input-failure 结案，10-20 机读正证 {@code a928e91}）：本窗型 + 焦点
+     * + {@code EditText}，且**点击时要自己调 {@code showSoftInput}**——HyperOS 不会因为获焦就自动弹键盘
+     * （见 {@link TextPanelView#imeTapForTest} 那条路径；实测点框后 {@code mInputShown=true}、
+     * {@code mCurClient} 的 pid 就是本服务进程）。窗收起后键盘自行消失，不需要额外 hide。
      */
     public void showPanel(View content) {
         hidePanel();
