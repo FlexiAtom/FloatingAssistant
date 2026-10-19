@@ -26,8 +26,8 @@ import java.util.List;
  * 且点击时要显式 {@code showSoftInput} —— 两条都抄 {@link BlacklistPanelView} 的实测结论。
  *
  * <p>关闭有三条：动作按钮里自带的「关闭」（由调用方放进 actions）、手柄双击、返回键
- * （{@link #dispatchKeyEvent} 拦 {@code KEYCODE_BACK}）。面板窗带焦点（{@link OverlayManager#showPanel}），
- * 故打开期间下层 App 收不到触摸，与黑名单面板同性质。
+ * （{@link #dispatchKeyEvent} 拦 {@code KEYCODE_BACK}）。面板窗带焦点只为收字（{@link OverlayManager#showPanel}），
+ * 不独占触摸：窗带 {@code FLAG_NOT_TOUCH_MODAL}，打开期间球与下层 App 照旧点得动。
  */
 public final class TextPanelView extends LinearLayout implements PanelView {
 
@@ -167,6 +167,10 @@ public final class TextPanelView extends LinearLayout implements PanelView {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        // P5KEY 取证探针（panel-touch-modal-back-key）：判 BACK 到底有没有送达本窗，结案后随其余 P5* 一起退。
+        android.util.Log.i("P5KEY", "TextPanel act=" + event.getAction()
+                + " code=" + event.getKeyCode() + " focused=" + isFocused()
+                + " attached=" + isAttachedToWindow());
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK
                 && event.getAction() == KeyEvent.ACTION_UP) {
             listener.onClose();

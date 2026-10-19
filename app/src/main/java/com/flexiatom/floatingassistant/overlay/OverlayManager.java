@@ -560,7 +560,8 @@ public class OverlayManager {
      * 就地编辑面板（#68-T8b）：居中一扇**可获焦**的 {@code TYPE_ACCESSIBILITY_OVERLAY}，承载
      * {@link BlacklistPanelView}。与球/菜单/贴图的关键差别是**不带** {@code FLAG_NOT_FOCUSABLE}——
      * 面板内 {@code EditText} 必须拿到窗口焦点才拉得起软键盘（项目此前所有窗体都不带焦点，此为第一例）。
-     * 代价：该窗是触摸模态的，面板开着时下层 App（含悬浮球）收不到触摸，只能由面板自己的「关闭」按钮或返回键退出。
+     * 焦点只带来**按键**归属，不带来触摸独占：本窗另带 {@code FLAG_NOT_TOUCH_MODAL}，面板开着时球与下层 App
+     * 照旧点得动（人测卡片 2 判"点不动"后补，见 panel-touch-modal-back-key）。
      * 已存在则先替换。必须在主线程调用。
      *
      * <p>可用配方（overlay-ime-input-failure 结案，10-20 机读正证 {@code a928e91}）：本窗型 + 焦点
@@ -578,7 +579,10 @@ public class OverlayManager {
                 // 钳回显示区域内，导致面板拖到边沿就停（跟手不回＝用户报的抽搐），且浅灰条永远越不出屏、
                 // 也就永远触发不了「拖出即关闭」。加它之后屏内与否完全由 movePanel 自己判。
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+                        // 焦点与触摸模态是正交的两件事（人测卡片 2 判「球不能展开扇形、下层图标点不动」
+                        // 后补）：不加它，一扇 600x838 的焦点窗会按模态窗收走**全屏**指针。
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 PixelFormat.TRANSLUCENT);
         // 顶部锚定（不是居中）：居中时卡片下半张正好被软键盘盖住（T8b 真机复验的残留缺陷）。
         // 键盘高度约屏高 1/3，卡片贴顶后输入行始终在键盘之上；仍可被顶部手柄拖到任意位置。

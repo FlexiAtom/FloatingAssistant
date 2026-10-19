@@ -183,6 +183,10 @@ public final class TranslatePanelView extends LinearLayout implements PanelView 
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        // P5KEY 取证探针（panel-touch-modal-back-key）：判 BACK 到底有没有送达本窗，结案后随其余 P5* 一起退。
+        android.util.Log.i("P5KEY", "TranslatePanel act=" + event.getAction()
+                + " code=" + event.getKeyCode() + " focused=" + isFocused()
+                + " rootFocused=" + (getRootView() != null && getRootView().hasFocus()));
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK
                 && event.getAction() == KeyEvent.ACTION_UP) {
             listener.onClose();
