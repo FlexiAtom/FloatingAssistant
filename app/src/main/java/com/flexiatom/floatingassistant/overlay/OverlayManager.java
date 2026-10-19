@@ -44,6 +44,14 @@ public class OverlayManager {
      * 于是「开合改尺寸时旧 buffer 被钉在新 frame 左上角」那一族症状的产生条件被删掉（不是被盖住）。
      * 球与扇形都在这一层画；{@link #KEY_SPHERE} 那扇反过来降级成**透明触点层**——它照旧改尺寸改原点，
      * 但它没有像素，所以位移再大也不可见。窗数与升级前的"罩"相同（2 扇），没有新增第三扇。
+     *
+     * <p>**它改原点这件事并没有因此变得无害**（{@code ball-tap-hits-fan-zone} 正证，10-20 装机 216 个
+     * 可对齐的 DOWN + {@code getevent} 外证）：本机在开合之后把触摸送进这扇窗时，窗内坐标是按一个
+     * **滞后的旧原点**换算的，残差 {@code (raw−local)−lp} 实测最大 236px＝收起→展开的那次
+     * {@code Δorigin}，且手指不动、每次按下取的进度还不一样。所以 Δorigin 这一族没被甲-1 消掉，
+     * 只是从"画错位置"搬到了"换算错坐标"。对策不是再想办法让它不动（那是同一条 delay 路线的第二次），
+     * 而是**命中判定不吃窗内坐标**：{@link FanMenuView#hitAtScreen} 用屏幕坐标对球的屏幕真值算，
+     * 与像素层同一空间。
      */
     private static final String KEY_SPHERE_PIXEL = "sphere_pixel";
 
@@ -207,8 +215,8 @@ public class OverlayManager {
         pixelLp.gravity = Gravity.TOP | Gravity.START;
         addView(KEY_SPHERE_PIXEL, pixelView, pixelLp);
 
-        // TEMP-P5HIT：挂窗前先把初始几何钉进去，否则第一次点球的日志会读到 0x0@0,0（那是假分叉）。
-        sphereView.setProbeDispatch(sphereX, sphereY, sphereSizePx, sphereSizePx,
+        // 先把球的屏幕圆心与初始窗几何交给视图：不交的话第一次点击会拿 (0,0) 当圆心（假误命中）。
+        sphereView.setDispatchGeometry(sphereX, sphereY, sphereSizePx, sphereSizePx,
                 sphereX + sphereSizePx / 2, sphereY + sphereSizePx / 2);
         addView(KEY_SPHERE, sphereView, sphereWinLp);
     }
@@ -313,10 +321,13 @@ public class OverlayManager {
     /**
      * 把「球在哪」换算成「触点窗在哪/多大」：收起＝窗＝球；展开＝窗为扇形外接盒，窗原点 = 球心 − 扇形圆心。
      *
-     * <p>这是全类**唯一**一处几何推导，而且它同时是像素层的绘制锚点——「画在哪」与「点在哪」读同一个
-     * {@link #sphereWinLp}（{@code PixelLayerView.onDraw} 直接把这对几何交给 {@link FanMenuView#drawContent}），
-     * 所以两层的同心不是"两条式子碰巧一致"，而是同一个整数。恒原点像素层不吃这一换算（它 frame 恒定），
-     * 于是 {@code Δorigin} 那一族位移**没有能产生它的窗**了：会画像素的那层从不重排。
+     * <p>这是全类**唯一**一处几何推导，而它算出的**球屏幕圆心** {@code (ballCx,ballCy)} 就是绘制与命中共用的
+     * 那一个整数：像素层按它画（{@code PixelLayerView.onDraw} 拿窗几何换算到它），触点层按它判
+     * （{@link FanMenuView#hitAtScreen} 吃屏幕坐标）。所以两层的同心不是"两条式子碰巧一致"。
+     * 窗几何那对（{@link #sphereWinLp}）只决定**分派矩形**——它随开合变，但不再参与"这一下算哪一区"，
+     * 因为本机送进来的窗内坐标带着滞后原点的残差（见 {@link #KEY_SPHERE_PIXEL} 的注释与
+     * {@code ball-tap-hits-fan-zone} 的正证）。恒原点像素层不吃这一换算（它 frame 恒定），
+     * 于是 {@code Δorigin} 那一族**画面上的**位移没有能产生它的窗了：会画像素的那层从不重排。
      */
     private void applySphereWindow() {
         if (sphereView == null || sphereWinLp == null) {
@@ -351,9 +362,10 @@ public class OverlayManager {
         sphereWinLp.y = newY;
         sphereWinLp.width = newW;
         sphereWinLp.height = newH;
-        // TEMP-P5HIT（ball-tap-hits-fan-zone 取证，结案删）：把这次推的几何与球真值一起钉给触点视图，
-        // 让 onTouchEvent 能把「视图布局」「推给 WMS 的」两份真值同帧打出来。
-        sphereView.setProbeDispatch(newX, newY, newW, newH, ballCx, ballCy);
+        // 球的屏幕圆心是**命中判定的唯一锚点**（`hitAtScreen` 吃屏幕坐标，见 FanMenuView.ballTruthCx），
+        // 所以它必须和这次推的窗几何同批交给视图——这里就是那唯一的一批。后四个参数里 lp 那对只供
+        // TEMP-P5HIT 打残差用，结案删；truth 那两个是常驻的。
+        sphereView.setDispatchGeometry(newX, newY, newW, newH, ballCx, ballCy);
         // 先叫像素层重绘、再推给 WMS：像素层画的是这对几何，跟"什么时候落地"无关；
         // 顺序在这里不再有讲究（罩那套"起罩→下一帧推窗→落地后 33ms 撤"的计时全部随罩一起删了）。
         redrawPixels();

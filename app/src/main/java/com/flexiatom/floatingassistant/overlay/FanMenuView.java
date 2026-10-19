@@ -30,9 +30,12 @@ import java.util.List;
  * 落最外环之外或背侧半圆 = 关闭整个菜单。可点按即选，也可按住拖动实时高亮、松手提交。
  *
  * <p>本视图放在一个**矩形** overlay 窗里，窗尺寸随菜单开合由 {@link OverlayManager} 换算：
- * **收起**时窗就是球那么大、球心＝窗心（{@code cx=宽/2, cy=高/2}）；**展开**时窗为扇形外接盒，
- * 向右侧展开球心对齐窗**左**边缘中点（cx=0, cy=高/2），向左侧展开（{@code facingLeft}，球被拖到屏幕右半边时）
- * 则球心对齐窗**右**边缘中点（cx=宽, cy=高/2）——圆心一律由 {@link #cx()}/{@link #cy()} 现算，不缓存。
+ * **收起**时窗就是球那么大、球心＝窗心；**展开**时窗为扇形外接盒，向右侧展开球心对齐窗**左**边缘中点，
+ * 向左侧展开（{@code facingLeft}，球被拖到屏幕右半边时）则球心对齐窗**右**边缘中点——窗内的绘制锚点
+ * 由 {@link #centerFor(int)} 现算，不缓存。
+ * <p>**命中判定不走窗内坐标**：{@link #hitAtScreen} 拿屏幕坐标（{@code getRawX/getRawY}）对球的屏幕圆心
+ * 算方位，理由与实测数字见那里的注释（本机开合后送进来的窗内坐标带滞后原点的残差，实测最大 236px）。
+ * 窗几何只决定"哪些触摸会分派到这扇窗"。
  * 出屏的那一半不接收触摸，只留环带那一侧。角度一律以「正上方」为 0°、向**开口侧**增大到 180°。
  * **每环宽度按内容独立解算**（{@link #fitRingWidths}）：第 k 环只量**自己页内最长的标签**在固定字号
  * {@code LABEL_TEXT_SP} 下所需宽度，与他环无关、也不凑任何统一尺寸；总外沿仅受上限 {@code OUTER_MAX_DP} 约束，
@@ -330,19 +333,31 @@ public final class FanMenuView extends View {
     private int activeIndex = -1; // 当前高亮格，-1 = 无
 
     /**
-     * 取证探针（{@code ball-tap-hits-fan-zone}）：{@link OverlayManager#applySphereWindow} 每次推窗时
-     * 顺手把「刚推给 WMS 的那对几何 + 球的屏幕真值」钉在这里，{@code ACTION_DOWN} 里和
-     * {@link #getWidth()} 一起打出来，用来判「命中的那帧两份几何是否分叉」。**结案即删**。
+     * 球的**屏幕**圆心（px）——{@link OverlayManager#applySphereWindow} 每次推窗时给的最新真值。
+     * 命中判定用它、不用 {@link #getWidth()} 换算的窗内圆心（{@code ball-tap-hits-fan-zone} 的正证）：
+     * 本机实测（2026-10-20，{@code P5HIT} 216 个可对齐的 DOWN + {@code getevent} 触摸板绝对坐标做外证）
+     * 触摸送进这扇窗时，**窗内坐标是按一个滞后的旧原点换算的**——{@code raw−local} 与刚推给 WMS 的
+     * {@code lp.x,y} 差可达 236px（正好是收起→展开的那次 {@code Δorigin}），且手指不动、每次按下都不同。
+     * 于是命中判定拿着对的圆心、错的触点，整个命中图被平移 ⇒ 可见球上落到环区。
+     * {@code getRawX/getRawY} 与外证的偏差中位 **1px** ⇒ 屏幕坐标这一路是可信的，命中就改在它上面算。
      */
-    int probeLpX, probeLpY, probeLpW, probeLpH, probeTruthCx, probeTruthCy;
+    private int ballTruthCx;
+    private int ballTruthCy;
 
-    void setProbeDispatch(int lpX, int lpY, int lpW, int lpH, int truthCx, int truthCy) {
+    /**
+     * 取证探针（{@code ball-tap-hits-fan-zone}）：{@link OverlayManager#applySphereWindow} 每次推窗时
+     * 顺手把「刚推给 WMS 的那对几何」钉在这里，{@code ACTION_DOWN} 里与 {@link #getWidth()}、
+     * {@code raw−local}（触摸实际用的原点）一起打出来。**结案即删**。
+     */
+    int probeLpX, probeLpY, probeLpW, probeLpH;
+
+    void setDispatchGeometry(int lpX, int lpY, int lpW, int lpH, int truthCx, int truthCy) {
         probeLpX = lpX;
         probeLpY = lpY;
         probeLpW = lpW;
         probeLpH = lpH;
-        probeTruthCx = truthCx;
-        probeTruthCy = truthCy;
+        ballTruthCx = truthCx;
+        ballTruthCy = truthCy;
     }
 
     public FanMenuView(Context context, BallGesture ballGesture) {
@@ -433,9 +448,13 @@ public final class FanMenuView extends View {
      * 收起时窗即球、圆心在窗心。现算不缓存。
      *
      * <p>分母是**本窗此刻的实际宽度**，不是 {@link #menuOpen()}：WMS 先把新 frame 变成触摸的分派范围，
-     * 而"菜单已清、窗还是展开宽"的那一两帧里按状态算会得到 {@code 288/2=144} 而不是展开态的 60，
-     * 命中区就与触摸实际落进来的那块矩形错位（2026-10-19 录屏实测 17/245 帧，其中 2 帧原位还透出下层 App）。
-     * 绘制不再受这一条牵连：像素层走 {@link #centerFor(int)}，用的是刚推给 WMS 的那对几何。
+     * 而"菜单已清、窗还是展开宽"的那一两帧里按状态算会得到 {@code 288/2=144} 而不是展开态的 60
+     * （2026-10-19 录屏实测 17/245 帧，其中 2 帧原位还透出下层 App）。
+     * <p>但**命中判定已经不吃这个量了**（{@code ball-tap-hits-fan-zone}，10-20 正证：触摸送进来的窗内
+     * 坐标带着一个滞后的旧原点，残差实测最大 236px）——{@link #hitAtScreen} 改用屏幕坐标对
+     * {@link #ballTruthCx} 算。这一对 {@code centerX/centerY} 现在的职责是**机读判据**：
+     * {@code p5_ball_state} 的 {@code concentric} 拿它跟「球屏幕真值换算回窗内的点」比，
+     * 也就是"我们的窗几何与真值是否还自洽"，画错的闸仍在这里。
      */
     public int centerX() {
         return centerFor(getWidth());
@@ -460,14 +479,6 @@ public final class FanMenuView extends View {
 
     public int centerForY(int h) {
         return h / 2;
-    }
-
-    private float cx() {
-        return centerX();
-    }
-
-    private float cy() {
-        return centerY();
     }
 
     private void resetTouchState() {
@@ -499,10 +510,17 @@ public final class FanMenuView extends View {
      * 触点命中结果：{@code h[0] >= 0} = 第 {@code h[0]} 环第 {@code h[1]} 格；{@code -1} = 枢纽（球外圈，返回上层）；
      * {@code -2} = 环外/背侧（关闭）；{@code ZONE_BALL} = 球体本身（拖或点）。
      * <p>菜单收起时整扇窗就是球 ⇒ 任何触点都算按球（窗是方的、球是圆的，窗角也得应答，否则点角落失灵）。
+     *
+     * <p>**入参是屏幕坐标**（{@code MotionEvent.getRawX/getRawY}），圆心是球的屏幕真值——不是窗内坐标
+     * 与 {@link #centerX()}。理由见 {@link #ballTruthCx}：本机在开合后送进来的窗内坐标带着一个滞后的
+     * 旧原点（实测残差最大 236px），拿它算命中会把整个命中图平移，于是**看得见的位置点不到、
+     * 看得见的球落进环区**（人报「狂点圆球有概率点到扇形」）。屏幕坐标与触摸板外证差中位 1px，
+     * 且像素层本来就画在屏幕真值上 ⇒ 这一改让「画在哪」与「点在哪」真的共用同一个整数。
+     * 触点落在窗的哪块矩形由 WMS 的分派决定，与本函数无关（它只回答"这一下算哪一区"）。
      */
-    private int[] hitAt(float px, float py) {
-        float dx = px - cx();
-        float dy = py - cy();
+    private int[] hitAtScreen(float sx, float sy) {
+        float dx = sx - ballTruthCx;
+        float dy = sy - ballTruthCy;
         float r = (float) Math.hypot(dx, dy);
         if (!menuOpen() || r <= ballR) {
             return new int[]{ZONE_BALL, -1}; // 球体（环 N=0）
@@ -552,20 +570,22 @@ public final class FanMenuView extends View {
     public boolean onTouchEvent(MotionEvent e) {
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN: {
-                int[] h = hitAt(e.getX(), e.getY());
-                // TEMP-P5HIT（ball-tap-hits-fan-zone 取证，结案随 setProbeDispatch 一起删）：
-                // 同帧打「视图已布局的几何」/「上次推给 WMS 的那对几何」/「这次触摸实际的分派原点」
-                // （raw-local 反推，WMS 钳过就会与 lp 不同）三份真值，加上触点相对**球屏幕真值**的半径。
-                // 误命中帧的机读判据就是 misHit：手指在可见球上（rTruth≤ballR）却解出非球区。
-                float rHit = (float) Math.hypot(e.getX() - cx(), e.getY() - cy());
-                float rTruth = (float) Math.hypot(e.getRawX() - probeTruthCx, e.getRawY() - probeTruthCy);
+                int[] h = hitAtScreen(e.getRawX(), e.getRawY());
+                // TEMP-P5HIT（ball-tap-hits-fan-zone 取证，结案随 setDispatchGeometry 的 probeLp* 一起删）：
+                // resid＝这次触摸实际用的原点 − 刚推给 WMS 的原点（病因量，修复后它照样非零，因为那是
+                // 本机输入管线的事）；rHitWin＝按旧算法（窗内坐标 vs 窗内圆心）会算出的半径，用来对照
+                // 「resid 仍大但命中已经对」。misHit＝手指在可见球上（rTruth≤ballR）却解出非球区，应为 0。
+                float rTruth = (float) Math.hypot(e.getRawX() - ballTruthCx, e.getRawY() - ballTruthCy);
+                float rHitWin = (float) Math.hypot(e.getX() - centerX(), e.getY() - centerY());
                 android.util.Log.i("P5HIT", "DOWN view=" + getWidth() + "x" + getHeight()
                         + " lp=" + probeLpW + "x" + probeLpH + "@" + probeLpX + "," + probeLpY
                         + " disp=" + (int) (e.getRawX() - e.getX()) + "," + (int) (e.getRawY() - e.getY())
-                        + " truthC=" + probeTruthCx + "," + probeTruthCy
-                        + " local=" + (int) e.getX() + "," + (int) e.getY()
-                        + " cx=" + centerX() + "," + centerY()
-                        + " rHit=" + (int) rHit + " rTruth=" + (int) rTruth + " ballR=" + (int) ballR
+                        + " resid=" + ((int) (e.getRawX() - e.getX()) - probeLpX) + ","
+                        + ((int) (e.getRawY() - e.getY()) - probeLpY)
+                        + " raw=" + (int) e.getRawX() + "," + (int) e.getRawY()
+                        + " truthC=" + ballTruthCx + "," + ballTruthCy
+                        + " rHit=" + (int) rTruth + " rHitWin=" + (int) rHitWin
+                        + " ballR=" + (int) ballR + " innerR=" + (int) innerR
                         + " menuOpen=" + menuOpen() + " dir=" + dir + " facingLeft=" + facingLeft
                         + " zone=" + zoneName(h)
                         + " misHit=" + (rTruth <= ballR && h[0] != ZONE_BALL));
@@ -590,17 +610,18 @@ public final class FanMenuView extends View {
                     ballDragging = true;
                     ballGesture.onBallDrag(dx, dy);
                 } else {
-                    highlight(hitAt(e.getX(), e.getY()));
+                    highlight(hitAtScreen(e.getRawX(), e.getRawY()));
                 }
                 return true;
             }
             case MotionEvent.ACTION_UP: {
-                int[] h = hitAt(e.getX(), e.getY());
-                // TEMP-P5HIT：松手那帧再解一次——DOWN/UP 两份几何若不同（中途 relayout 落地了），
-                // 这一行的 zone 就会和上一条 DOWN 不一致，那是「错在帧之间」而不是「错在帧内」的证据。
-                android.util.Log.i("P5HIT", "UP zone=" + zoneName(h) + " view=" + getWidth() + "x" + getHeight()
-                        + " lp=" + probeLpW + "x" + probeLpH + "@" + probeLpX + "," + probeLpY
-                        + " local=" + (int) e.getX() + "," + (int) e.getY()
+                int[] h = hitAtScreen(e.getRawX(), e.getRawY());
+                // TEMP-P5HIT：松手那帧按屏幕坐标再解一次，与 DOWN 同一空间。
+                android.util.Log.i("P5HIT", "UP zone=" + zoneName(h)
+                        + " raw=" + (int) e.getRawX() + "," + (int) e.getRawY()
+                        + " truthC=" + ballTruthCx + "," + ballTruthCy
+                        + " resid=" + ((int) (e.getRawX() - e.getX()) - probeLpX) + ","
+                        + ((int) (e.getRawY() - e.getY()) - probeLpY)
                         + " menuOpen=" + menuOpen()
                         + " pressedBall=" + pressedBall + " dragged=" + ballDragging);
                 clearHighlight();
@@ -668,10 +689,10 @@ public final class FanMenuView extends View {
      * 把球与扇形画到**屏幕绝对坐标**上：由恒原点像素层在自己的全屏 canvas 上调用。
      *
      * <p>{@code (winX, winY, winW, winH)} 必须是调用方**刚推给 WMS 的那对触点窗几何**（唯一真值，
-     * 见 {@code OverlayManager.applySphereWindow}），于是"画在哪"与"点在哪"共用一条式子：
-     * 圆心 {@code = (winX + centerFor(winW), winY + centerForY(winH)) = (球心)}，同心由构造保证。
-     * 内部仍然按窗内局部坐标算（{@code canvas.translate} 一次），所以页栈、环宽、标签这些
-     * 与触点层命中判定同源的算术一个字都不用改。
+     * 见 {@code OverlayManager.applySphereWindow}），于是画出来的圆心 {@code = (winX + centerFor(winW),
+     * winY + centerForY(winH)) = (球屏幕真值)}，同心由构造保证。命中判定现在直接锚那个真值
+     * （{@link #hitAtScreen} 吃屏幕坐标），所以"画在哪"与"点在哪"共用的是**同一个球心整数**，
+     * 不再依赖窗内坐标那一路换算。半径/环带/角度的算术与这里同源，没改；改的只是坐标系。
      */
     public void drawContent(Canvas canvas, int winX, int winY, int winW, int winH) {
         float cx = centerFor(winW);
