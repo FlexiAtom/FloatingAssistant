@@ -215,9 +215,8 @@ public class OverlayManager {
         pixelLp.gravity = Gravity.TOP | Gravity.START;
         addView(KEY_SPHERE_PIXEL, pixelView, pixelLp);
 
-        // 先把球的屏幕圆心与初始窗几何交给视图：不交的话第一次点击会拿 (0,0) 当圆心（假误命中）。
-        sphereView.setDispatchGeometry(sphereX, sphereY, sphereSizePx, sphereSizePx,
-                sphereX + sphereSizePx / 2, sphereY + sphereSizePx / 2);
+        // 先把球的屏幕圆心交给视图：不交的话第一次点击会拿 (0,0) 当圆心（假误命中）。
+        sphereView.setBallCenterInScreen(sphereX + sphereSizePx / 2, sphereY + sphereSizePx / 2);
         addView(KEY_SPHERE, sphereView, sphereWinLp);
     }
 
@@ -363,9 +362,8 @@ public class OverlayManager {
         sphereWinLp.width = newW;
         sphereWinLp.height = newH;
         // 球的屏幕圆心是**命中判定的唯一锚点**（`hitAtScreen` 吃屏幕坐标，见 FanMenuView.ballTruthCx），
-        // 所以它必须和这次推的窗几何同批交给视图——这里就是那唯一的一批。后四个参数里 lp 那对只供
-        // TEMP-P5HIT 打残差用，结案删；truth 那两个是常驻的。
-        sphereView.setDispatchGeometry(newX, newY, newW, newH, ballCx, ballCy);
+        // 所以它必须和这次推的窗几何同批交给视图——这里就是那唯一的一批。
+        sphereView.setBallCenterInScreen(ballCx, ballCy);
         // 先叫像素层重绘、再推给 WMS：像素层画的是这对几何，跟"什么时候落地"无关；
         // 顺序在这里不再有讲究（罩那套"起罩→下一帧推窗→落地后 33ms 撤"的计时全部随罩一起删了）。
         redrawPixels();

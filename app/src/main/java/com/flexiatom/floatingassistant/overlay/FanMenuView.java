@@ -345,17 +345,13 @@ public final class FanMenuView extends View {
     private int ballTruthCy;
 
     /**
-     * 取证探针（{@code ball-tap-hits-fan-zone}）：{@link OverlayManager#applySphereWindow} 每次推窗时
-     * 顺手把「刚推给 WMS 的那对几何」钉在这里，{@code ACTION_DOWN} 里与 {@link #getWidth()}、
-     * {@code raw−local}（触摸实际用的原点）一起打出来。**结案即删**。
+     * 推窗的同帧把球的屏幕圆心交给命中判定（{@code Δorigin} 那一族错位的唯一收口点）。
+     *
+     * <p>参数只有圆心：触点窗自己的矩形**不参与**命中算术——它只决定哪块屏幕区域把事件派进这扇窗，
+     * 而派进来的事件一律先换算到屏幕坐标再解。所以这里没有 {@code lp.x/y/w/h} 可缓存，也就没有
+     * 「视图布局与刚推给 WMS 的那对几何谁追上了谁」这种需要按帧去猜的东西。
      */
-    int probeLpX, probeLpY, probeLpW, probeLpH;
-
-    void setDispatchGeometry(int lpX, int lpY, int lpW, int lpH, int truthCx, int truthCy) {
-        probeLpX = lpX;
-        probeLpY = lpY;
-        probeLpW = lpW;
-        probeLpH = lpH;
+    void setBallCenterInScreen(int truthCx, int truthCy) {
         ballTruthCx = truthCx;
         ballTruthCy = truthCy;
     }
@@ -552,43 +548,11 @@ public final class FanMenuView extends View {
         return new int[]{-2, -2}; // 最外环之外
     }
 
-    /** TEMP-P5HIT 的区名（取证用，结案删）。 */
-    private static String zoneName(int[] h) {
-        if (h[0] == ZONE_BALL) {
-            return "BALL";
-        }
-        if (h[0] == -1) {
-            return "HUB";
-        }
-        if (h[0] == -2) {
-            return "OUT/背侧";
-        }
-        return "环" + h[0] + "格" + h[1];
-    }
-
     @Override
     public boolean onTouchEvent(MotionEvent e) {
         switch (e.getActionMasked()) {
             case MotionEvent.ACTION_DOWN: {
                 int[] h = hitAtScreen(e.getRawX(), e.getRawY());
-                // TEMP-P5HIT（ball-tap-hits-fan-zone 取证，结案随 setDispatchGeometry 的 probeLp* 一起删）：
-                // resid＝这次触摸实际用的原点 − 刚推给 WMS 的原点（病因量，修复后它照样非零，因为那是
-                // 本机输入管线的事）；rHitWin＝按旧算法（窗内坐标 vs 窗内圆心）会算出的半径，用来对照
-                // 「resid 仍大但命中已经对」。misHit＝手指在可见球上（rTruth≤ballR）却解出非球区，应为 0。
-                float rTruth = (float) Math.hypot(e.getRawX() - ballTruthCx, e.getRawY() - ballTruthCy);
-                float rHitWin = (float) Math.hypot(e.getX() - centerX(), e.getY() - centerY());
-                android.util.Log.i("P5HIT", "DOWN view=" + getWidth() + "x" + getHeight()
-                        + " lp=" + probeLpW + "x" + probeLpH + "@" + probeLpX + "," + probeLpY
-                        + " disp=" + (int) (e.getRawX() - e.getX()) + "," + (int) (e.getRawY() - e.getY())
-                        + " resid=" + ((int) (e.getRawX() - e.getX()) - probeLpX) + ","
-                        + ((int) (e.getRawY() - e.getY()) - probeLpY)
-                        + " raw=" + (int) e.getRawX() + "," + (int) e.getRawY()
-                        + " truthC=" + ballTruthCx + "," + ballTruthCy
-                        + " rHit=" + (int) rTruth + " rHitWin=" + (int) rHitWin
-                        + " ballR=" + (int) ballR + " innerR=" + (int) innerR
-                        + " menuOpen=" + menuOpen() + " dir=" + dir + " facingLeft=" + facingLeft
-                        + " zone=" + zoneName(h)
-                        + " misHit=" + (rTruth <= ballR && h[0] != ZONE_BALL));
                 pressedBall = h[0] == ZONE_BALL;
                 if (pressedBall) {
                     ballDownRawX = e.getRawX();
@@ -616,14 +580,6 @@ public final class FanMenuView extends View {
             }
             case MotionEvent.ACTION_UP: {
                 int[] h = hitAtScreen(e.getRawX(), e.getRawY());
-                // TEMP-P5HIT：松手那帧按屏幕坐标再解一次，与 DOWN 同一空间。
-                android.util.Log.i("P5HIT", "UP zone=" + zoneName(h)
-                        + " raw=" + (int) e.getRawX() + "," + (int) e.getRawY()
-                        + " truthC=" + ballTruthCx + "," + ballTruthCy
-                        + " resid=" + ((int) (e.getRawX() - e.getX()) - probeLpX) + ","
-                        + ((int) (e.getRawY() - e.getY()) - probeLpY)
-                        + " menuOpen=" + menuOpen()
-                        + " pressedBall=" + pressedBall + " dragged=" + ballDragging);
                 clearHighlight();
                 if (pressedBall) {
                     // 按在球上松手：拖过=一次搬窗（末了才翻朝向），没拖过=点球（展开着即枢纽，收起即入口）
