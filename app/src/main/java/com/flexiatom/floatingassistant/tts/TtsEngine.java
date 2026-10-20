@@ -127,7 +127,12 @@ public final class TtsEngine {
         if (speaking) {
             return;
         }
-        worker.execute(this::releaseEngine);
+        worker.execute(() -> {
+            if (engine != null) {
+                Log.i(TAG, "foreground left, release idle engine");
+            }
+            releaseEngine();
+        });
     }
 
     public void shutdown() {
