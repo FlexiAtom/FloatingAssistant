@@ -149,6 +149,7 @@ E P5TTS: kind=aishell3 load failed: java.lang.UnsatisfiedLinkError: dlopen faile
 - RTF = 合成墙钟 / 音频时长。aishell3 **0.10 ⇒ 比实时快 10 倍**；melo **1.4~1.5 ⇒ 比实时慢**，且 2→4 线程只从 1.51 降到 1.36
   （那 170 MB 的模型是访存受限，不是核数受限；本机 8 核仅 2 大核）。整屏朗读按 30 句估：aishell3 量级在十秒内，melo 要分钟级。
 - `release()` 后 native 堆回到 ~30 MB ⇒ **没泄漏**，模型可随开随关（这条直接支持"按需加载、不做常驻"的实现取向）。
+- **换 AAR 后 OCR 通路未退化**（同一 APK、同一次开机，`run_ort` 探针）：`RESULT model=ch_PP-OCRv4_det_infer.onnx input=1x3x448x960 threads=4 loadMs=147 outShape=1x1x448x960 inferMs[min=280 p50=286 avg=283 max=286]` ⇒ static-link 那份 sherpa 与 Maven `libonnxruntime.so` 1.29.0 在同进程里互不干扰（OCR 走 4j_jni，sherpa 走自带静态 ORT）。
 - 内存读数的坑：**PSS 量不出加载增量**——`getProcessMemoryInfo().getTotalPss()` 在加载 30 MB 模型后报
   `62.21 MB → 62.21 MB`（delta 0.00），改用 `Debug.getNativeHeapAllocatedSize()` + `/proc/self/statm` 才有响应。
   ⇒ 以后在这台机器上量原生内存别看 PSS 那条。
