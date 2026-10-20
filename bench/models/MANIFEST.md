@@ -83,38 +83,89 @@ NDK r29、`armv8.2-a+dotprod+fp16`（**不含 i8mm**——天玑6100 无 ARMv8.6
 
 # TTS（tts-engine-replacement，读法①）依赖与模型
 
-## 依赖：sherpa-onnx Android AAR —— 构建用的那份是**派生物**
-Maven Central 上**没有** sherpa-onnx（`repo1.maven.org/maven2/com/k2fsa/sherpa/onnx/` → 404，实测）。
-官方发布物只有 GitHub release 的 fat AAR。
+## 依赖：用 sherpa-onnx 的 **static-link-onnxruntime** AAR（常规 fat AAR 在本项目里不可用）
+Maven Central 上**没有** sherpa-onnx（`repo1.maven.org/maven2/com/k2fsa/sherpa/onnx/` → 404，实测）；
+官方 Android 发布物只有 GitHub release 里的两个 AAR：**常规 fat AAR**（带 `libonnxruntime.so`）与
+**static-link AAR**（ORT 编进 JNI 库）。本项目只能用后者，理由见下。
 
 | 文件 | 角色 | sha256 | 来源 / 改法 |
 |---|---|---|---|
-| `sherpa-onnx-1.13.8.aar`（50,129,134 B，现存 `~/Downloads/`） | 原始发布物 | `633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96` | https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar |
-| `app/libs/sherpa-onnx-1.13.8-arm64-noort.aar`（4,218,574 B，`.gitignore` 排除） | **构建实际用的那份** | `36bae3a1734cb87a1d3b58ada19916f94fda8c03d21a600d1e73caf1417cacd9` | 解包上一行 → `rm -rf jni/{armeabi-v7a,x86,x86_64} jni/arm64-v8a/libonnxruntime.so` → 原样重打包。**只删不改**，不注入任何代码。 |
+| `sherpa-onnx-1.13.8.aar`（50,129,134 B，现存 `~/Downloads/`） | 常规 fat AAR | `633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96` | github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar |
+| `sherpa-onnx-static-link-onnxruntime-1.13.8.aar`（38,691,998 B，现存 `~/Downloads/`） | **构建的输入** | `b22c3fc1b6a45666d28892bb2f7694beeb77a8362d7ebd77c1a5431ec9435471` | 同 release 的 `sherpa-onnx-static-link-onnxruntime-1.13.8.aar` |
+| `app/libs/sherpa-onnx-1.13.8-arm64-static.aar`（9,208,854 B，`.gitignore` 排除） | **构建实际用的那份** | `c3505d66b267d2934341b45b11c70292d784b208f9ee544ece6aef10d6bb32b5` | 上一行 `cp` 后 `zip -d … 'jni/armeabi-v7a/*' 'jni/x86/*' 'jni/x86_64/*'`。**只删不改**；剩 `AndroidManifest.xml` + `classes.jar`（238,706 B，类集合与常规 AAR 逐字节同一：122 个 class，`diff` 空）+ `jni/arm64-v8a/libsherpa-onnx-jni.so`（24,169,352 B）。 |
 
-**为什么必须删那份 `libonnxruntime.so`**（本地集成里唯一会咬人的地方）：AAR 自带 ORT **1.28.2**（`strings` 读出），
-而本项目 OCR 走 Maven `onnxruntime-android:1.29.0`。两者 **SONAME 同名** ⇒ 不删就两份同名 lib 撞进同一个
-APK（AGP merge 直接报错），而 `pickFirst` 赢哪份不确定。删掉 AAR 那份后实测 APK 里只剩一份、
-`strings` → `1.29.0`（32,120,992 B），`libsherpa-onnx-jni.so` 的 `DT_NEEDED libonnxruntime.so` 由它满足。
-⇒ 这是 **sherpa 跑在比其构建时更新的 ORT 上**（C API 向后兼容的方向，安全）；反过来让 1.28.2 赢，等于把
-1.29.0 的 `libonnxruntime4j_jni.so` 接到旧原生上——那是会炸的那一侧。此假设由 `p5_tts` 装机探针证伪：
-若加载/初始化失败，回退方案＝保留 AAR 自带 ORT 并把 OCR 换成同一份 1.28.2。
-（`ndk.abiFilters` 已限 `arm64-v8a`，删其余 ABI 只是让派生物从 47.8 MiB 缩到 4.0 MiB。）
+### 「删掉 AAR 自带 ORT、让 Maven 1.29.0 赢」——已证伪（2026-10-20）
+先记这条**错**的推理，免得下次再走一遍：以为 C API 向后兼容 ⇒ sherpa 跑在比构建时更新的 ORT 上是安全方向。
+装机探针的原文（`adb logcat -s P5TTS`，Redmi 13R 5G）：
+
+```
+E P5TTS: kind=aishell3 load failed: java.lang.UnsatisfiedLinkError: dlopen failed:
+         cannot locate symbol "OrtGetApiBase" referenced by "…/base.apk!/lib/arm64-v8a/libsherpa-onnx-jni.so"
+```
+
+拦路的是 **ELF 符号版本**，不是 API 兼容性。`readelf` 三份库的实际出入：
+
+| 库 | 需要的版本节点（`.gnu.version_r`） | 提供的版本节点（`.gnu.version_d`） |
+|---|---|---|
+| sherpa fat AAR 的 `libsherpa-onnx-jni.so` | `libonnxruntime.so` → `VERS_1.28.2`（未定义符号写作 `OrtGetApiBase@VERS_1.28.2`） | — |
+| Maven 1.29.0 的 `libonnxruntime.so` | — | `VERS_1.29.0`（导出 `OrtGetApiBase@@VERS_1.29.0`） |
+| Maven 1.29.0 的 `libonnxruntime4j_jni.so`（OCR 用） | `VERS_1.29.0`（另需 `OrtSessionOptionsAppendExecutionProvider_{CPU,Nnapi}@VERS_1.29.0`） | — |
+
+⇒ 两个消费方钉在**同一个 SONAME** 的**不同版本节点**上，一份 `libonnxruntime.so` 不可能同时满足；
+`pickFirst` 或"删一份留一份"怎么选都必然打断另一条路。而**对齐版本也走不通**：Maven 的
+`onnxruntime-android` 只有 1.28.0 / 1.29.0 / 1.30.0 / 1.31.0，**没有 1.28.2**（maven-metadata.xml 实测；
+`…/1.28.2/…aar` → HTTP 404），而版本节点字符串精确到 patch 位；sherpa 最新发布 v1.13.8 又正是链 1.28.2 的那份。
+⇒ 剩下的三条里：改 ORT 版本=无解，自行重编 sherpa=一次完整 NDK 交叉编译（不进成本账），
+**用上游已经提供的 static-link 版=零戏法**，故选第三条：OCR 那条已量测的路一个字节不动，
+代价是 APK 原生 +24,169,352 B（`unzip -l` 复核：APK 里仍只有一份 `libonnxruntime.so`，32,120,992 B＝Maven 1.29.0）。
 
 ## 模型（放 `~/Downloads/`；不入 git、不放 `/tmp`——RAM 盘会被清，人 2026-10-20 明确过）
-| 文件 | 下载体积 | sha256 | 来源 |
-|---|---|---|---|
-| `vits-icefall-zh-aishell3.tar.bz2` | 31,559,701 B | `ab468db3a3308cdd861495e0db2f25d79418a0c00639f74944c7cdf5dd8c6ec1` | https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-icefall-zh-aishell3.tar.bz2 |
-| `vits-melo-tts-zh_en.tar.bz2` | 167,006,755 B | 待回填（GitHub 限速，仍在下） | https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-melo-tts-zh_en.tar.bz2 |
+| 文件 | 下载体积 | sha256 | 解包后目录字节 | 来源 |
+|---|---|---|---|---|
+| `vits-icefall-zh-aishell3.tar.bz2` | 31,559,701 B | `ab468db3a3308cdd861495e0db2f25d79418a0c00639f74944c7cdf5dd8c6ec1` | **32,762,508**（不含 `rule.far`）／含 `rule.far` 为 213,479,522 | github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-icefall-zh-aishell3.tar.bz2 |
+| `vits-melo-tts-zh_en.tar.bz2` | 167,006,755 B | `e58351ed7149f290a54534538badd4077cdbe6fddc964b24d0bee870415d1514` | **191,246,123**（`model.onnx` 170,429,550 + `lexicon.txt` 6,837,671 + `dict/` 13,742,697 + 四个 `.fst`） | github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-melo-tts-zh_en.tar.bz2 |
 
-> 🔧 **实测打脸提案 §3.2 的体积账**：AISHELL3 包内 `model.onnx` 确实是 30,482,262 B（≈29 MiB，提案写的那个数），
-> 但同包还有一件 **`rule.far` = 180,717,014 B ≈ 172 MiB**（文本规整规则归档）。所以**按发布包整体算，
-> "轻量备选档"实为 ~213 MiB，比它要替换的 MeloTTS 下载包（159 MiB）还大**。提案 §3.2 那句
-> 「model.onnx 29 MB（已确认）」只量了模型本身，没量分发面。
-> 非 `rule.far` 的其余件合计 ~2.5 MiB（`lexicon.txt` 2.0 MiB + 四个 `.fst` + `tokens.txt` + `speakers.txt`）。
-> ⇒ 端上到底需不需要 `rule.far` 是**功能问题不是体积问题**（它管"二零二六年十月"这类读法），
-> 由 `p5_tts` 先在不带它的配置下跑通、再单测数字/日期读法，不靠猜。
+- Melo 包里那个 `model.int8.onnx` 只有 **133 B**，内容是 git-lfs 指针（`oid sha256:f085f507…`，真身 53,517,430 B）
+  ⇒ 想要 int8 档得单独从 LFS 取，别把指针当模型。包内 `LICENSE` 实测是 **MIT（MyShell.ai）**，README 写明 zh+en 只有**一个女声**。
+- AISHELL3 包里**没有 LICENSE 文件** ⇒ R9（权重许可逐项核实）仍未做，核实前不作默认分发档。
 
-设备侧落点沿用现行约定：`getExternalFilesDir(null)` 根（与 OCR 的 `ch_PP-OCRv4_*.onnx`、MT 的 `*.gguf` 同一处）。
+> **体积账的两次打脸**：① 提案 §3.2 说 AISHELL3「model.onnx 29 MB（已确认）」只量了模型本身——同包
+> `rule.far` = **180,717,014 B ≈ 172 MiB**，整包 ~213 MiB 比它要替换的 Melo 下载包还大；② 真装机后发现
+> 小体积那一档的代价在别处：**AISHELL3 是 8 kHz 采样**（Melo 44.1 kHz），33 MB 换来的是电话音质。
+> ⇒ 端上到底需不需要 `rule.far` 是**功能问题不是体积问题**（它管数字/日期读法），而读法对不对由**人耳**裁
+> （见下方听感待测项），不靠猜。
 
+## 装机实测（2026-10-20，Redmi 13R 5G，`p5_tts` 探针，`am start` 触发、无触摸）
+`ruleFsts` = 四个 `.fst`（`phone,date,number,new_heteronym`），`ruleFars` 一律不带，`sid=0`，`speed=1.0`：
 
+| 档 | 线程 | loadMs | sampleRate | 音色 | avgRTF | worstRTF | native 峰值 | release 后 native |
+|---|---|---|---|---|---|---|---|---|
+| aishell3 | 2 | 2093 | **8000** | 174 | **0.10** | 0.11 | 213.6 MB | 30.6 MB |
+| aishell3 | 4 | 2235 | 8000 | 174 | 0.11 | 0.13 | 213.6 MB | 30.4 MB |
+| melo | 2 | 7171 | **44100** | 1 | 1.51 | 2.04 | 401.0 MB | 30.4 MB |
+| melo | 4 | 7236 | 44100 | 1 | **1.36** | 1.47 | 401.1 MB | 30.4 MB |
+
+- **合成 5/5 + 7/7 全成功**，无一格空跑（`wav` 全部落盘并可 `adb pull` 复核）。
+- RTF = 合成墙钟 / 音频时长。aishell3 **0.10 ⇒ 比实时快 10 倍**；melo **1.4~1.5 ⇒ 比实时慢**，且 2→4 线程只从 1.51 降到 1.36
+  （那 170 MB 的模型是访存受限，不是核数受限；本机 8 核仅 2 大核）。整屏朗读按 30 句估：aishell3 量级在十秒内，melo 要分钟级。
+- `release()` 后 native 堆回到 ~30 MB ⇒ **没泄漏**，模型可随开随关（这条直接支持"按需加载、不做常驻"的实现取向）。
+- 内存读数的坑：**PSS 量不出加载增量**——`getProcessMemoryInfo().getTotalPss()` 在加载 30 MB 模型后报
+  `62.21 MB → 62.21 MB`（delta 0.00），改用 `Debug.getNativeHeapAllocatedSize()` + `/proc/self/statm` 才有响应。
+  ⇒ 以后在这台机器上量原生内存别看 PSS 那条。
+- 目录权限的坑：模型目录是 `adb shell mkdir` 建的（`drwxrws--- shell:ext_data_rw`），app 侧读成**空目录**
+  （探针报 `exists=true files=0 bytes=0`），`chmod 755` 后才可见。⇒ 以后 push 出**子目录**都要补一次 chmod；
+  OCR/MT 的模型平铺在 files 根（app 自己建的目录）才一直没撞上这条。
+- 触发方式的坑：冷启动一次 `am start` 会把同一 intent 交**两遍**（`onCreate` 后 2.6 s 又走一次 `onNewIntent`），
+  而进程已在前台时 `am start` 又**一个回调都不走**（`Warning: Activity not started, intent has been delivered to
+  currently running top-most instance`）。⇒ 探针按参数串做 20 s 去重，后续档位用 `am start -f 0x20000000`（SINGLE_TOP）触发。
+
+## 设备侧落点
+沿用现行约定：`getExternalFilesDir(null)` 根（与 OCR 的 `ch_PP-OCRv4_*.onnx`、MT 的 `*.gguf` 同一处）。
+模型各占一个子目录（`vits-icefall-zh-aishell3/`、`vits-melo-tts-zh_en/`），合成产物落 `files/tts_out/`。
+
+## 听感待测（机器量不出来的一格，归人）
+按上表，**速度/内存/音质三项里机器只能定前两项**，裁决要看耳朵：
+1. `aishell3-nf_*.wav` 5 句——重点是 8 kHz 这层"电话音质"能否接受（自用朗读场景）。
+2. `melo-nf_1..5.wav`（中文）与 `melo-nf_6/7.wav`（英文）——是否值得为音质付出 RTF 1.4 与 191 MB。
+3. 两档的 `*_4.wav` 都是同一句带数字/日期的「会议定在2026年10月20日14时30分，预算3.5万元」——
+   **不带 `rule.far`** 时数字/日期读法对不对，直接决定端上 footprint 是 33 MB 还是 213 MB。

@@ -42,11 +42,14 @@ dependencies {
     implementation(libs.constraintlayout)
     implementation(libs.lifecycle.runtime)
     implementation(libs.onnxruntime.android)
-    // TTS（tts-engine-replacement 读法①）：sherpa-onnx 官方 AAR 的**派生物**——只留 arm64-v8a，
-    // 并删掉它自带的 libonnxruntime.so（1.28.2）。不删就有两份同名 lib 撞进同一个 APK；而 OCR 那条
-    // 已定档的路用 Maven 1.29.0 的 Java 绑定，赢的必须是 1.29.0 —— sherpa-jni 跑在比构建时**更新**
-    // 的 ORT 上是安全方向，反过来（1.29 的 4j JNI 接 1.28 原生）才是会炸的那一侧。来源/哈希/改法见
-    // bench/models/MANIFEST.md 的 TTS 段；原始 AAR 在 ~/Downloads（不进 git、也不在 /tmp）。
+    // TTS（tts-engine-replacement 读法①）：sherpa-onnx **static-link-onnxruntime** AAR 的派生物——
+    // 只删掉非 arm64 的 ABI，其余字节不动。选这一版发布物而不是常规 fat AAR，是装机证伪出来的：
+    // 常规版的 libsherpa-onnx-jni.so 引用 `OrtGetApiBase@VERS_1.28.2`，而 OCR 那条已定档的路用 Maven
+    // onnxruntime-android:1.29.0，它的 libonnxruntime.so 只定义 `VERS_1.29.0` ⇒ 同一个 SONAME 给不出
+    // 两个版本节点，共享注定 dlopen 失败（readelf 证据与日志原文见 bench/models/MANIFEST.md 的 TTS 段）。
+    // 静态链接版的 arm64 JNI 库 DT_NEEDED 里**根本没有 libonnxruntime.so**，冲突从根上不存在，OCR 那侧
+    // 一个字节都不用改（代价：APK 原生 +24,169,352 B）。来源/哈希/改法同见 MANIFEST；原始 AAR 在
+    // ~/Downloads（不进 git、也不在 /tmp）。
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
 }
 

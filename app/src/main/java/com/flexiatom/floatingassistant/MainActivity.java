@@ -90,7 +90,24 @@ public class MainActivity extends AppCompatActivity {
     /** 目标语言缩写（如 {@code ja}）；不给就用 prefs 里存的那个。 */
     public static final String EXTRA_P6_MT_TGT = "p6_mt_tgt";
 
+    /**
+     * 端侧 TTS 取证入口（{@code p5_tts}）：不经任何手势地加载模型、逐句合成、把 wav 落盘并打量测。
+     * 与 {@code p4_region} 同性质——合成不需要手指，但**听感**要人耳，所以机器只交付数字与音频文件。
+     */
+    public static final String EXTRA_P5_TTS = "p5_tts";
+    /** {@code aishell3} | {@code melo} | {@code both}（默认 both）。 */
+    public static final String EXTRA_TTS_VARIANT = "tts_variant";
+    /** 是否挂 172 MB 的 {@code rule.far}——footprint 断崖由这一格定，默认不挂（不挂才是候选常态）。 */
+    public static final String EXTRA_TTS_RULES_FAR = "tts_rules_far";
+    public static final String EXTRA_TTS_THREADS = "tts_threads";
+    /** 音色下标（aishell3 多音色）；默认 0。 */
+    public static final String EXTRA_TTS_SID = "tts_sid";
+    public static final String EXTRA_TTS_SPEED = "tts_speed";
+
     private TextView statusText;
+
+    private static String sLastTtsKey;
+    private static long sLastTtsAtMs;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -114,6 +131,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP3InPlace(getIntent());
         maybeRunP4Region(getIntent());
         maybeRunP5Menu(getIntent());
+        maybeRunP5Tts(getIntent());
         maybeRunP6Mt(getIntent());
         maybeRunAnimToggle(getIntent());
     }
@@ -130,8 +148,39 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP3InPlace(intent);
         maybeRunP4Region(intent);
         maybeRunP5Menu(intent);
+        maybeRunP5Tts(intent);
         maybeRunP6Mt(intent);
         maybeRunAnimToggle(intent);
+    }
+
+    /**
+     * 端侧 TTS 的量测入口：整段在后台线程跑（加载 + 合成是秒级的 CPU 活，压主线程会假报卡顿）。
+     * 结果只进 {@code P5TTS} 日志与 {@code files/tts_out/} 的 wav，不碰覆盖层，也不需要无障碍服务在连。
+     */
+    private void maybeRunP5Tts(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_P5_TTS, false)) {
+            return;
+        }
+        String variant = intent.getStringExtra(EXTRA_TTS_VARIANT);
+        boolean far = intent.getBooleanExtra(EXTRA_TTS_RULES_FAR, false);
+        int threads = intent.getIntExtra(EXTRA_TTS_THREADS, 2);
+        int sid = intent.getIntExtra(EXTRA_TTS_SID, 0);
+        float speed = intent.getFloatExtra(EXTRA_TTS_SPEED, 1.0f);
+        // 本机实测（2026-10-20）：冷启动的一次 `am start` 会把同一个 intent 交两遍（onCreate 后
+        // 2.6s 又走一次 onNewIntent），探针是几十秒的活，重复跑等于把量测翻倍还盖住前一次的 wav。
+        // 按参数串去重：20s 内同参数只认第一次，参数不同（换档/换 far）随时放行。
+        String key = variant + '|' + far + '|' + threads + '|' + sid + '|' + speed;
+        long now = System.currentTimeMillis();
+        synchronized (MainActivity.class) {
+            if (key.equals(sLastTtsKey) && now - sLastTtsAtMs < 20_000L) {
+                android.util.Log.i("P5TTS", "重复投递已忽略（同参数 20s 内只跑一次）key=" + key);
+                return;
+            }
+            sLastTtsKey = key;
+            sLastTtsAtMs = now;
+        }
+        new Thread(() -> com.flexiatom.floatingassistant.tts.TtsProbe.run(
+                this, variant, far, threads, sid, speed), "p5-tts").start();
     }
 
     /**
