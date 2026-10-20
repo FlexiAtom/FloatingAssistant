@@ -168,8 +168,10 @@ E P5TTS: kind=aishell3 load failed: java.lang.UnsatisfiedLinkError: dlopen faile
 机器只能定速度/内存；可懂度由人听，**结论已回**（原话入 `~/.Athena` 台账）：
 1. **「aishell3-nf* 无法听清，melo-nf* 能听清」** ⇒ aishell3 不是"低音质快档"，是**不可懂**，整档出局；
    默认档定为 **melo**（RTF 1.36–1.51 / 191 MB / native 峰值 401 MB 这三笔代价照付）。
-2. `rule.far` 那一格随 aishell3 归零：melo 目录不带任何 `.fst`/`.far`，探针的 `_nf` 就是它的唯一配置；
-   含数字/日期的 `melo-nf_4` 落在"能听清"组里，故端上 footprint = **191,246,123 B**，不挂规则文件。
+2. `rule.far` 那一格随 aishell3 归零：melo 目录带四个 `.fst`（`phone/date/number/new_heteronym`，合计
+   234,240 B）但**不带 `rule.far`**；探针与生产加载时都自动挂上这四个 `.fst`（生产日志 `ruleFsts=` 已证），
+   `_nf` 仅表示"不带 rule.far"。含数字/日期的 `melo-nf_4` 落在"能听清"组里，故端上 footprint =
+   **191,246,123 B**（文件字节和），不挂 `rule.far`。
 3. 机器指标不能替代可懂度预设档位——这是本轮最大的一条教训（已记项目 pitfall）。
 
 ## 生产管线实测（2026-10-21，`TtsEngine` 播放链路，`am start --es tts_speak …`）
