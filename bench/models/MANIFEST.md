@@ -127,7 +127,7 @@ E P5TTS: kind=aishell3 load failed: java.lang.UnsatisfiedLinkError: dlopen faile
 
 - Melo 包里那个 `model.int8.onnx` 只有 **133 B**，内容是 git-lfs 指针（`oid sha256:f085f507…`，真身 53,517,430 B）
   ⇒ 想要 int8 档得单独从 LFS 取，别把指针当模型。包内 `LICENSE` 实测是 **MIT（MyShell.ai）**，README 写明 zh+en 只有**一个女声**。
-- AISHELL3 包里**没有 LICENSE 文件** ⇒ R9（权重许可逐项核实）仍未做，核实前不作默认分发档。
+- AISHELL3 包里**没有 LICENSE 文件** ⇒ R9（权重许可逐项核实）仍未做，核实前不作默认分发档。**2026-10-21 补**：该档已因人耳「无法听清」出局、不再分发，故此项核实不再阻塞 TTS 发布。
 
 > **体积账的两次打脸**：① 提案 §3.2 说 AISHELL3「model.onnx 29 MB（已确认）」只量了模型本身——同包
 > `rule.far` = **180,717,014 B ≈ 172 MiB**，整包 ~213 MiB 比它要替换的 Melo 下载包还大；② 真装机后发现
