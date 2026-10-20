@@ -42,6 +42,12 @@ dependencies {
     implementation(libs.constraintlayout)
     implementation(libs.lifecycle.runtime)
     implementation(libs.onnxruntime.android)
+    // TTS（tts-engine-replacement 读法①）：sherpa-onnx 官方 AAR 的**派生物**——只留 arm64-v8a，
+    // 并删掉它自带的 libonnxruntime.so（1.28.2）。不删就有两份同名 lib 撞进同一个 APK；而 OCR 那条
+    // 已定档的路用 Maven 1.29.0 的 Java 绑定，赢的必须是 1.29.0 —— sherpa-jni 跑在比构建时**更新**
+    // 的 ORT 上是安全方向，反过来（1.29 的 4j JNI 接 1.28 原生）才是会炸的那一侧。来源/哈希/改法见
+    // bench/models/MANIFEST.md 的 TTS 段；原始 AAR 在 ~/Downloads（不进 git、也不在 /tmp）。
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
 }
 
 // §3.1b：构建时校验端侧 MT 原生库（jniLibs 里的 .so 由 native/llama-stq/build-android.sh 重建）。

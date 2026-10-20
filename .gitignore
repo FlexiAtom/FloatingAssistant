@@ -14,3 +14,6 @@ bench/models/*.txt
 
 # P2-T 端侧 MT 原生库（体积；由 native/llama-stq/build-android.sh 从 PR head+重编号补丁重建，哈希见 MANIFEST.md）
 app/src/main/jniLibs/**/*.so
+
+# TTS 依赖（sherpa-onnx 派生 AAR，体积；来源/哈希/改法见 bench/models/MANIFEST.md）
+app/libs/*.aar

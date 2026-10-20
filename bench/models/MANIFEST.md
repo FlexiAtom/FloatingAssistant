@@ -79,3 +79,42 @@ NDK r29、`armv8.2-a+dotprod+fp16`（**不含 i8mm**——天玑6100 无 ARMv8.6
 - 本 app：GPLv3。llama.cpp/ggml：MIT。Hy-MT2 模型：Apache-2.0（LICENSE.txt 实测纯 Apache-2.0，无附加限制）。
 - MIT/Apache-2.0 组件静态/动态链入 GPLv3 产物合法（许可证兼容）；分发 APK 须随附第三方许可声明（见 assets/THIRD-PARTY-NOTICES）。
 
+---
+
+# TTS（tts-engine-replacement，读法①）依赖与模型
+
+## 依赖：sherpa-onnx Android AAR —— 构建用的那份是**派生物**
+Maven Central 上**没有** sherpa-onnx（`repo1.maven.org/maven2/com/k2fsa/sherpa/onnx/` → 404，实测）。
+官方发布物只有 GitHub release 的 fat AAR。
+
+| 文件 | 角色 | sha256 | 来源 / 改法 |
+|---|---|---|---|
+| `sherpa-onnx-1.13.8.aar`（50,129,134 B，现存 `~/Downloads/`） | 原始发布物 | `633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96` | https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar |
+| `app/libs/sherpa-onnx-1.13.8-arm64-noort.aar`（4,218,574 B，`.gitignore` 排除） | **构建实际用的那份** | `36bae3a1734cb87a1d3b58ada19916f94fda8c03d21a600d1e73caf1417cacd9` | 解包上一行 → `rm -rf jni/{armeabi-v7a,x86,x86_64} jni/arm64-v8a/libonnxruntime.so` → 原样重打包。**只删不改**，不注入任何代码。 |
+
+**为什么必须删那份 `libonnxruntime.so`**（本地集成里唯一会咬人的地方）：AAR 自带 ORT **1.28.2**（`strings` 读出），
+而本项目 OCR 走 Maven `onnxruntime-android:1.29.0`。两者 **SONAME 同名** ⇒ 不删就两份同名 lib 撞进同一个
+APK（AGP merge 直接报错），而 `pickFirst` 赢哪份不确定。删掉 AAR 那份后实测 APK 里只剩一份、
+`strings` → `1.29.0`（32,120,992 B），`libsherpa-onnx-jni.so` 的 `DT_NEEDED libonnxruntime.so` 由它满足。
+⇒ 这是 **sherpa 跑在比其构建时更新的 ORT 上**（C API 向后兼容的方向，安全）；反过来让 1.28.2 赢，等于把
+1.29.0 的 `libonnxruntime4j_jni.so` 接到旧原生上——那是会炸的那一侧。此假设由 `p5_tts` 装机探针证伪：
+若加载/初始化失败，回退方案＝保留 AAR 自带 ORT 并把 OCR 换成同一份 1.28.2。
+（`ndk.abiFilters` 已限 `arm64-v8a`，删其余 ABI 只是让派生物从 47.8 MiB 缩到 4.0 MiB。）
+
+## 模型（放 `~/Downloads/`；不入 git、不放 `/tmp`——RAM 盘会被清，人 2026-10-20 明确过）
+| 文件 | 下载体积 | sha256 | 来源 |
+|---|---|---|---|
+| `vits-icefall-zh-aishell3.tar.bz2` | 31,559,701 B | `ab468db3a3308cdd861495e0db2f25d79418a0c00639f74944c7cdf5dd8c6ec1` | https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-icefall-zh-aishell3.tar.bz2 |
+| `vits-melo-tts-zh_en.tar.bz2` | 167,006,755 B | 待回填（GitHub 限速，仍在下） | https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-melo-tts-zh_en.tar.bz2 |
+
+> 🔧 **实测打脸提案 §3.2 的体积账**：AISHELL3 包内 `model.onnx` 确实是 30,482,262 B（≈29 MiB，提案写的那个数），
+> 但同包还有一件 **`rule.far` = 180,717,014 B ≈ 172 MiB**（文本规整规则归档）。所以**按发布包整体算，
+> "轻量备选档"实为 ~213 MiB，比它要替换的 MeloTTS 下载包（159 MiB）还大**。提案 §3.2 那句
+> 「model.onnx 29 MB（已确认）」只量了模型本身，没量分发面。
+> 非 `rule.far` 的其余件合计 ~2.5 MiB（`lexicon.txt` 2.0 MiB + 四个 `.fst` + `tokens.txt` + `speakers.txt`）。
+> ⇒ 端上到底需不需要 `rule.far` 是**功能问题不是体积问题**（它管"二零二六年十月"这类读法），
+> 由 `p5_tts` 先在不带它的配置下跑通、再单测数字/日期读法，不靠猜。
+
+设备侧落点沿用现行约定：`getExternalFilesDir(null)` 根（与 OCR 的 `ch_PP-OCRv4_*.onnx`、MT 的 `*.gguf` 同一处）。
+
+
