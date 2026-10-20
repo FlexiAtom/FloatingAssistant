@@ -9,6 +9,7 @@ import android.os.Looper;
 import android.util.Log;
 
 import com.flexiatom.floatingassistant.core.RuntimeStats;
+import com.flexiatom.floatingassistant.core.SettingsStore;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -54,6 +55,7 @@ public final class TtsEngine {
     }
 
     private final Context appContext;
+    private final SettingsStore settings;
     private final Listener listener;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
@@ -70,8 +72,9 @@ public final class TtsEngine {
     private volatile AudioTrack track;
     private volatile long lastFinishAt;
 
-    public TtsEngine(Context context, Listener listener) {
+    public TtsEngine(Context context, SettingsStore settings, Listener listener) {
         this.appContext = context.getApplicationContext();
+        this.settings = settings;
         this.listener = listener;
     }
 
@@ -84,6 +87,10 @@ public final class TtsEngine {
         String clean = normalize(text);
         if (clean.isEmpty()) {
             notice("朗读：没有可读文本");
+            return;
+        }
+        if (!settings.ttsEnabled()) {
+            notice("朗读已关闭（在应用设置中开启）");
             return;
         }
         stop();
@@ -106,9 +113,20 @@ public final class TtsEngine {
         }
     }
 
-    /** 前台切走/面板关闭：先停，再释放引擎（401 MB 峰值决定它不常驻）。 */
+    /** 面板关闭/服务解绑：先停，再释放引擎（401 MB 峰值决定它不常驻）。 */
     public void unload() {
         stop();
+        worker.execute(this::releaseEngine);
+    }
+
+    /**
+     * 前台切走：只在空闲时释放引擎，朗读中不打断（与 MT 的 {@code unloadIfIdle} 同语义）——
+     * 读一半被切走是用户主动换 App，停声比省内存更难受；读完由空闲计时兜底。
+     */
+    public void unloadIfIdle() {
+        if (speaking) {
+            return;
+        }
         worker.execute(this::releaseEngine);
     }
 
@@ -136,8 +154,14 @@ public final class TtsEngine {
                 if (!isCurrent(gen)) {
                     return;
                 }
+                // 设置页可能在读一半时关掉朗读或改语速：每句边界现读，当前句读完再执行
+                if (!settings.ttsEnabled()) {
+                    Log.i(TAG, "tts disabled mid-read, stop at chunk boundary");
+                    notice("朗读已关闭，已停止");
+                    return;
+                }
                 long tSynth = System.nanoTime();
-                float[] samples = e.generateSamples(chunk, SPEAKER_ID, 1.0f);
+                float[] samples = e.generateSamples(chunk, SPEAKER_ID, settings.ttsSpeed());
                 long synthMs = (System.nanoTime() - tSynth) / 1_000_000L;
                 if (samples == null) {
                     fail(gen, "朗读失败：合成出错（见 TTS 日志）");

@@ -17,6 +17,8 @@ import androidx.appcompat.app.AppCompatActivity;
 import com.flexiatom.floatingassistant.R;
 import com.flexiatom.floatingassistant.core.BlacklistMatcher;
 import com.flexiatom.floatingassistant.core.SettingsStore;
+import com.google.android.material.materialswitch.MaterialSwitch;
+import com.google.android.material.slider.Slider;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -24,10 +26,10 @@ import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 /**
- * 翻译设置页：模型选择模式（人工优先）+ 黑名单（关键词/正则，自动模式下命中升 Q4）+ 试匹配。
+ * 应用设置页：翻译侧（模型选择模式 + 黑名单 + 试匹配）与朗读侧（启用开关 + 语速）。
  *
- * <p>全部即时落 {@link SettingsStore}；采集端（{@code MtModelHub}）每页重读 mode + version，
- * 故改完下一次采集即生效，无需重启服务。
+ * <p>全部即时落 {@link SettingsStore}；采集端（{@code MtModelHub}）每页重读 mode + version、
+ * 朗读端每句重读开关与语速，故改完下一次使用即生效，无需重启服务。
  */
 public class SettingsActivity extends AppCompatActivity {
 
@@ -40,6 +42,9 @@ public class SettingsActivity extends AppCompatActivity {
     private RadioGroup entryType;
     private EditText testInput;
     private TextView testResult;
+    private MaterialSwitch ttsEnabled;
+    private TextView ttsSpeedLabel;
+    private Slider ttsSpeed;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -56,7 +61,11 @@ public class SettingsActivity extends AppCompatActivity {
         entryType = findViewById(R.id.settings_entry_type);
         testInput = findViewById(R.id.settings_test_input);
         testResult = findViewById(R.id.settings_test_result);
+        ttsEnabled = findViewById(R.id.settings_tts_enabled);
+        ttsSpeedLabel = findViewById(R.id.settings_tts_speed_label);
+        ttsSpeed = findViewById(R.id.settings_tts_speed);
 
+        initTts();
         initMode();
         modeGroup.setOnCheckedChangeListener((g, id) -> settings.setMode(modeFromCheckedId(id)));
 
@@ -64,6 +73,36 @@ public class SettingsActivity extends AppCompatActivity {
         findViewById(R.id.settings_test_btn).setOnClickListener(v -> runTest());
 
         rebuildList();
+    }
+
+    private void initTts() {
+        boolean enabled = settings.ttsEnabled();
+        ttsEnabled.setChecked(enabled);
+        // Slider 初值须对齐 stepSize（SettingsStore 读取时已取整到 0.1）
+        ttsSpeed.setValue(settings.ttsSpeed());
+        setSpeedEnabled(enabled);
+        showSpeed(settings.ttsSpeed());
+
+        ttsEnabled.setOnCheckedChangeListener((btn, checked) -> {
+            settings.setTtsEnabled(checked);
+            setSpeedEnabled(checked);
+        });
+        ttsSpeed.addOnChangeListener((slider, value, fromUser) -> {
+            if (!fromUser) {
+                return;
+            }
+            settings.setTtsSpeed(value);
+            showSpeed(settings.ttsSpeed());
+        });
+    }
+
+    private void setSpeedEnabled(boolean enabled) {
+        ttsSpeed.setEnabled(enabled);
+        ttsSpeedLabel.setEnabled(enabled);
+    }
+
+    private void showSpeed(float speed) {
+        ttsSpeedLabel.setText(getString(R.string.settings_tts_speed_value, speed));
     }
 
     private void initMode() {

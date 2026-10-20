@@ -213,7 +213,8 @@ public class MainActivity extends AppCompatActivity {
             android.util.Log.w("TTS", "无障碍服务未连接，改用进程内引擎量播放管线");
             if (localTtsEngine == null) {
                 localTtsEngine = new com.flexiatom.floatingassistant.tts.TtsEngine(
-                        this, text1 -> android.util.Log.i("TTS", "notice=" + text1));
+                        this, new com.flexiatom.floatingassistant.core.SettingsStore(this),
+                        text1 -> android.util.Log.i("TTS", "notice=" + text1));
             }
             localTtsEngine.speak(text);
             return;

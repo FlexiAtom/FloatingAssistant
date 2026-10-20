@@ -702,7 +702,7 @@ public class SphereAccessibilityService extends AccessibilityService {
     private void showTextPanel(String title, String body, boolean speakable) {
         panelText = body;
         List<TextPanelView.Action> actions = new ArrayList<>();
-        if (speakable) {
+        if (speakable && settings.ttsEnabled()) {
             boolean speakingNow = ttsEngine != null && ttsEngine.isSpeaking();
             TextPanelView.Action speak = new TextPanelView.Action(
                     getString(speakingNow ? R.string.action_cancel : R.string.action_speak), () -> {
@@ -750,7 +750,7 @@ public class SphereAccessibilityService extends AccessibilityService {
     /** 面板朗读开关的引擎入口：`tts_feedback` 用带超时的反馈浮层，否则 2 s 后自收（项目惯例）。 */
     private TtsEngine ttsEngine() {
         if (ttsEngine == null) {
-            ttsEngine = new TtsEngine(this, new TtsEngine.Listener() {
+            ttsEngine = new TtsEngine(this, settings, new TtsEngine.Listener() {
                 @Override
                 public void onNotice(String text) {
                     if (overlayManager != null) {
@@ -811,6 +811,7 @@ public class SphereAccessibilityService extends AccessibilityService {
         if (pkg == null || pkg.isEmpty() || pkg.equals(getPackageName())) {
             return;
         }
+        String prevPkg = lastTopPkg;
         lastTopPkg = pkg;
         // 页面变化自动清除（§5.2-4）：外部 App 窗口状态变化（导航/换页）→ 上一轮原位贴图已错位，整组移除。
         // 只认 WINDOW_STATE_CHANGED（内容级 CONTENT_CHANGED 太噪：光标闪/列表动画会误清，留给软过期兜底）。
@@ -826,6 +827,10 @@ public class SphereAccessibilityService extends AccessibilityService {
             if (r != null && r.unloadIfIdle()) {
                 translatedPkg = null;
             }
+        }
+        // 朗读同一条内存纪律：真的换了前台 App 才卸（同包内的窗口变化不算），朗读中不打断。
+        if (prevPkg != null && !prevPkg.equals(pkg) && ttsEngine != null) {
+            ttsEngine.unloadIfIdle();
         }
     }
 

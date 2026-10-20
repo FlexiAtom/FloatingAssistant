@@ -8,7 +8,7 @@
     <string name="main_status_connected">已连接</string>
     <string name="main_status_disconnected">未连接</string>
     <string name="main_disclaimer_hint">本软件按「现状」提供，不担保（GPLv3 §15/§16）。仅在 Redmi 13R 5G / HyperOS 2.0.208 / Android 15 / 安全补丁 2026-03-01 上验证过。</string>
-    <string name="main_open_settings">翻译设置</string>
+    <string name="main_open_settings">设置</string>
 
     <string name="tool_fullscreen_translate">全屏翻译</string>
     <string name="tool_developer_options">开发者选项</string>
@@ -41,7 +41,7 @@
     <string name="tts_stopped_feedback">已停止朗读</string>
     <string name="copied_to_clipboard">已复制到剪贴板</string>
 
-    <string name="settings_title">翻译设置</string>
+    <string name="settings_title">设置</string>
     <string name="settings_model_title">模型选择</string>
     <string name="settings_mode_auto">自动（按黑名单，默认轻量）</string>
     <string name="settings_mode_light">强制轻量（1.25-bit）</string>
@@ -62,4 +62,9 @@
     <string name="settings_test_miss">未命中 → 走轻量模型</string>
     <string name="settings_test_empty">黑名单为空 → 全部走轻量</string>
     <string name="settings_bad_regex">（含无效正则，已跳过）</string>
+
+    <string name="settings_tts_title">朗读</string>
+    <string name="settings_tts_hint">仅框选结果面板提供「朗读」。关闭后按钮不再出现；开启时模型按需加载，空闲 60 秒或前台切走（未在朗读时）即释放。</string>
+    <string name="settings_tts_enabled">启用朗读</string>
+    <string name="settings_tts_speed_value">语速 %1$.1f×</string>
 </resources>

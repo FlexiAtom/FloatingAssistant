@@ -163,6 +163,8 @@ E P5TTS: kind=aishell3 load failed: java.lang.UnsatisfiedLinkError: dlopen faile
 ## 设备侧落点
 沿用现行约定：`getExternalFilesDir(null)` 根（与 OCR 的 `ch_PP-OCRv4_*.onnx`、MT 的 `*.gguf` 同一处）。
 模型各占一个子目录（`vits-icefall-zh-aishell3/`、`vits-melo-tts-zh_en/`），合成产物落 `files/tts_out/`。
+**2026-10-21 清理**：生产只加载 `vits-melo-tts-zh_en`，AISHELL3 仅测试探针 `p5_tts` 引用；经用户授权，设备上的
+`vits-icefall-zh-aishell3/`（31 MB）已删除。`~/Downloads/` 的原始 tar.bz2 与哈希行仍保留，重测时重新解包即可。
 
 ## 听感裁决（2026-10-21，人耳）
 机器只能定速度/内存；可懂度由人听，**结论已回**（原话入 `~/.Athena` 台账）：

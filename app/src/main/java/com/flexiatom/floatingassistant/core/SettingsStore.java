@@ -9,9 +9,10 @@ import java.util.List;
 /**
  * 应用设置的持久层（SharedPreferences，项目此前无任何 prefs）。
  *
- * <p>存三样：{@link #mode() 模型选择模式}、{@link #blacklist() 黑名单}、
- * {@link #tgtLang() 目标语言}。每次写自增 {@link #version()}，供
- * {@link BlacklistMatcher} 判断已编译 Pattern 缓存是否失效。
+ * <p>存翻译三样（{@link #mode() 模型选择模式}、{@link #blacklist() 黑名单}、
+ * {@link #tgtLang() 目标语言}）与朗读两样（{@link #ttsEnabled() 启用开关}、
+ * {@link #ttsSpeed() 语速}）。翻译侧每次写自增 {@link #version()}，供
+ * {@link BlacklistMatcher} 判断已编译 Pattern 缓存是否失效；朗读侧每次朗读时现读，不参与版本号。
  *
  * <p>黑名单序列化：prefs 存单 String，每条一行，前缀 {@code kw:}=字面关键词、{@code re:}=正则；
  * pattern 内不得含换行（含则该行按字面截断处理，避免破坏格式）。
@@ -27,6 +28,13 @@ public final class SettingsStore {
     private static final String KEY_BLACKLIST = "blacklist";
     private static final String KEY_TGT_LANG = "tgt_lang";
     private static final String KEY_VERSION = "version";
+    private static final String KEY_TTS_ENABLED = "tts_enabled";
+    private static final String KEY_TTS_SPEED = "tts_speed";
+
+    /** 语速上下界与默认值；步进 0.1 在设置页的 Slider 上体现。 */
+    public static final float TTS_SPEED_MIN = 0.5f;
+    public static final float TTS_SPEED_MAX = 2.0f;
+    public static final float TTS_SPEED_DEFAULT = 1.0f;
 
     /** 一条黑名单规则：{@code regex=false} 按字面关键词匹配，{@code true} 按正则匹配。 */
     public static final class Entry {
@@ -68,6 +76,29 @@ public final class SettingsStore {
     public void setTgtLang(String code) {
         prefs.edit().putString(KEY_TGT_LANG, code)
                 .putInt(KEY_VERSION, version() + 1).apply();
+    }
+
+    public boolean ttsEnabled() {
+        return prefs.getBoolean(KEY_TTS_ENABLED, true);
+    }
+
+    public void setTtsEnabled(boolean enabled) {
+        prefs.edit().putBoolean(KEY_TTS_ENABLED, enabled).apply();
+    }
+
+    /** 读语速；越界/损坏的值按上下界夹取并对齐到 0.1（Slider 的 stepSize 要求）。 */
+    public float ttsSpeed() {
+        float raw = prefs.getFloat(KEY_TTS_SPEED, TTS_SPEED_DEFAULT);
+        if (Float.isNaN(raw)) {
+            return TTS_SPEED_DEFAULT;
+        }
+        float clamped = Math.max(TTS_SPEED_MIN, Math.min(TTS_SPEED_MAX, raw));
+        return Math.round(clamped * 10f) / 10f;
+    }
+
+    public void setTtsSpeed(float speed) {
+        float v = Math.max(TTS_SPEED_MIN, Math.min(TTS_SPEED_MAX, speed));
+        prefs.edit().putFloat(KEY_TTS_SPEED, Math.round(v * 10f) / 10f).apply();
     }
 
     public List<Entry> blacklist() {
