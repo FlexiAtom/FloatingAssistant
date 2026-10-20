@@ -42,12 +42,26 @@ public final class TextPanelView extends LinearLayout implements PanelView {
 
     /** 底部动作：标签 + 点击后做什么（是否顺带收起面板由调用方在自己的 Runnable 里决定，视图不猜）。 */
     public static final class Action {
-        public final String label;
+        private String label;
         public final Runnable run;
+        private Button button;
 
         public Action(String label, Runnable run) {
             this.label = label;
             this.run = run;
+        }
+
+        /** 绑定按钮后标签可随状态原地变化（朗读 ↔ 取消），不重建面板、不丢正文滚动位置。 */
+        private void bind(Button target) {
+            button = target;
+            target.setText(label);
+        }
+
+        public void setLabel(String text) {
+            label = text;
+            if (button != null) {
+                button.setText(text);
+            }
         }
     }
 
@@ -118,6 +132,7 @@ public final class TextPanelView extends LinearLayout implements PanelView {
             row.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
             for (Action action : actions) {
                 Button button = PanelStyles.tonalButton(context, action.label);
+                action.bind(button);
                 button.setOnClickListener(v -> action.run.run());
                 LayoutParams lp = new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT);
                 lp.leftMargin = dp(6);

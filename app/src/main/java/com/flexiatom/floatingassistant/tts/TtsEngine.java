@@ -47,6 +47,10 @@ public final class TtsEngine {
     public interface Listener {
         /** 必须让用户看见的失败/提示（主线程回调）；调用方决定怎么显示。 */
         void onNotice(String text);
+
+        /** 朗读状态变化（主线程回调）：true＝合成/播放进行中，false＝结束/停止/失败。 */
+        default void onSpeakingChanged(boolean speaking) {
+        }
     }
 
     private final Context appContext;
@@ -83,7 +87,7 @@ public final class TtsEngine {
             return;
         }
         stop();
-        speaking = true;
+        setSpeakingState(true);
         int gen = generation.incrementAndGet();
         worker.execute(() -> doSpeak(clean, gen));
     }
@@ -91,7 +95,7 @@ public final class TtsEngine {
     /** 停止当前朗读；已停下时是 no-op（幂等，关闭面板/切前台都可直接调）。 */
     public void stop() {
         generation.incrementAndGet();
-        speaking = false;
+        setSpeakingState(false);
         AudioTrack t = track;
         if (t != null) {
             try {
@@ -170,10 +174,14 @@ public final class TtsEngine {
             fail(gen, "朗读失败：" + err.getClass().getSimpleName());
         } finally {
             boolean current = generation.get() == gen;
-            boolean wasCurrent = current && speaking;
             if (current) {
-                speaking = false;
+                setSpeakingState(false);
                 track = null;
+                RuntimeStats.of(appContext).run("tts", System.currentTimeMillis() - t0, ok);
+                scheduleIdleUnload();
+            } else if (!speaking) {
+                // 被 stop() 打断：stop 在主线程、不碰工作线程私有的 engine，在这里补一次空闲卸载。
+                scheduleIdleUnload();
             }
             if (local != null) {
                 try {
@@ -183,10 +191,6 @@ public final class TtsEngine {
                 } catch (Throwable err) {
                     Log.w(TAG, "track release threw " + err.getClass().getSimpleName());
                 }
-            }
-            if (wasCurrent) {
-                RuntimeStats.of(appContext).run("tts", System.currentTimeMillis() - t0, ok);
-                scheduleIdleUnload();
             }
         }
     }
@@ -207,6 +211,22 @@ public final class TtsEngine {
 
     private boolean isCurrent(int gen) {
         return speaking && generation.get() == gen;
+    }
+
+    /** 状态切换只在主线程通知一次；UI 侧不必再自己 post。 */
+    private void setSpeakingState(boolean value) {
+        boolean changed = speaking != value;
+        speaking = value;
+        if (!changed) {
+            return;
+        }
+        main.post(() -> {
+            try {
+                listener.onSpeakingChanged(value);
+            } catch (Throwable err) {
+                Log.w(TAG, "speaking listener threw " + err.getClass().getSimpleName());
+            }
+        });
     }
 
     private void fail(int gen, String reason) {

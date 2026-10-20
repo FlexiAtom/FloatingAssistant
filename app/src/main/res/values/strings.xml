@@ -36,6 +36,7 @@
     <string name="action_copy">复制</string>
     <string name="action_close">关闭</string>
     <string name="action_speak">朗读</string>
+    <string name="action_cancel">取消</string>
     <string name="tts_synth_feedback">朗读：合成中…</string>
     <string name="tts_stopped_feedback">已停止朗读</string>
     <string name="copied_to_clipboard">已复制到剪贴板</string>

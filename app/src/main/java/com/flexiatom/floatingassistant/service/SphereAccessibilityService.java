@@ -92,6 +92,8 @@ public class SphereAccessibilityService extends AccessibilityService {
 
     /** 生产朗读通道（tts-engine-replacement 裁二）：懒建；空闲 60 s / 服务解绑即卸载（峰值 401 MB，不常驻）。 */
     private TtsEngine ttsEngine;
+    /** 当前面板的「朗读」动作：合成/播放期间把它原地改成「取消」，结束后恢复。 */
+    private TextPanelView.Action speakAction;
 
     /** 最近一次窗口状态变化看到的顶层外部 App 包名（忽略自身覆盖层）。用于"切走即卸载"判定。 */
     private volatile String lastTopPkg;
@@ -701,22 +703,31 @@ public class SphereAccessibilityService extends AccessibilityService {
         panelText = body;
         List<TextPanelView.Action> actions = new ArrayList<>();
         if (speakable) {
-            actions.add(new TextPanelView.Action(getString(R.string.action_speak), () -> {
+            boolean speakingNow = ttsEngine != null && ttsEngine.isSpeaking();
+            TextPanelView.Action speak = new TextPanelView.Action(
+                    getString(speakingNow ? R.string.action_cancel : R.string.action_speak), () -> {
                 TtsEngine te = ttsEngine();
                 if (te.isSpeaking()) {
                     te.stop();
+                    updateSpeakActionLabel(false);
                     overlayManager.showTextOverlay("tts_feedback",
                             getString(R.string.tts_stopped_feedback), FEEDBACK_MS);
                 } else {
+                    updateSpeakActionLabel(true);
                     te.speak(overlayManager.panelBodyText(panelText));
                     overlayManager.showTextOverlay("tts_feedback",
                             getString(R.string.tts_synth_feedback), FEEDBACK_MS);
                 }
-            }));
+            });
+            speakAction = speak;
+            actions.add(speak);
+        } else {
+            speakAction = null;
         }
         actions.add(new TextPanelView.Action(getString(R.string.action_copy), this::copyPanelText));
         actions.add(new TextPanelView.Action(getString(R.string.action_close), () -> {
             stopSpeaking();
+            speakAction = null;
             overlayManager.hidePanel();
         }));
         overlayManager.showPanel(new TextPanelView(overlayManager.themedContext(), title, body,
@@ -725,6 +736,7 @@ public class SphereAccessibilityService extends AccessibilityService {
                     @Override
                     public void onClose() {
                         stopSpeaking();
+                        speakAction = null;
                         overlayManager.hidePanel();
                     }
 
@@ -738,13 +750,29 @@ public class SphereAccessibilityService extends AccessibilityService {
     /** 面板朗读开关的引擎入口：`tts_feedback` 用带超时的反馈浮层，否则 2 s 后自收（项目惯例）。 */
     private TtsEngine ttsEngine() {
         if (ttsEngine == null) {
-            ttsEngine = new TtsEngine(this, text -> {
-                if (overlayManager != null) {
-                    overlayManager.showTextOverlay("tts_feedback", text, FEEDBACK_MS);
+            ttsEngine = new TtsEngine(this, new TtsEngine.Listener() {
+                @Override
+                public void onNotice(String text) {
+                    if (overlayManager != null) {
+                        overlayManager.showTextOverlay("tts_feedback", text, FEEDBACK_MS);
+                    }
+                }
+
+                @Override
+                public void onSpeakingChanged(boolean speaking) {
+                    updateSpeakActionLabel(speaking);
                 }
             });
         }
         return ttsEngine;
+    }
+
+    /** 按钮是状态开关：合成/播放全程「取消」，结束、停止或失败后恢复「朗读」。 */
+    private void updateSpeakActionLabel(boolean speaking) {
+        TextPanelView.Action action = speakAction;
+        if (action != null) {
+            action.setLabel(getString(speaking ? R.string.action_cancel : R.string.action_speak));
+        }
     }
 
     private void stopSpeaking() {
