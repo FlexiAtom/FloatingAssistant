@@ -154,6 +154,29 @@ public final class SherpaTtsEngine {
         }
     }
 
+    /**
+     * 合成一句并返回原始浮点采样（生产播放用，不落盘）；失败返回 {@code null}，原因进日志。
+     * 与 {@link #synthesize} 共用同一条「不静默」约定：空文本、空音频、异常都各打一行。
+     */
+    public float[] generateSamples(String text, int sid, float speed) {
+        if (text == null || text.isEmpty()) {
+            Log.e(TAG, "generateSamples empty text kind=" + kind.alias);
+            return null;
+        }
+        try {
+            GeneratedAudio audio = tts.generate(text, sid, speed);
+            if (audio == null || audio.getSamples() == null || audio.getSamples().length == 0) {
+                Log.e(TAG, "generate samples empty kind=" + kind.alias + " text=[" + text + "]");
+                return null;
+            }
+            return audio.getSamples();
+        } catch (Throwable err) {
+            Log.e(TAG, "generate samples failed kind=" + kind.alias + " text=[" + text + "] "
+                    + err.getClass().getName() + ": " + err.getMessage(), err);
+            return null;
+        }
+    }
+
     /** 合成一句并落 wav；失败返回 {@code null}（异常进日志，不吞）。 */
     public Synthesis synthesize(String text, int sid, float speed, File wavOut) {
         GeneratedAudio audio;

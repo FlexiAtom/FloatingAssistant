@@ -104,10 +104,20 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_TTS_SID = "tts_sid";
     public static final String EXTRA_TTS_SPEED = "tts_speed";
 
+    /**
+     * 生产朗读链路的机读入口：把这句文本交给 {@code TtsEngine.speak}（懒加载 → 分句 → 合成 → AudioTrack）。
+     * 与 {@code p5_tts} 的分工：那条量模型与 wav（无播放），这条量**播放管线**；声音本身仍归人耳。
+     */
+    public static final String EXTRA_TTS_SPEAK = "tts_speak";
+
     private TextView statusText;
 
     private static String sLastTtsKey;
     private static long sLastTtsAtMs;
+    private static String sLastSpeakKey;
+    private static long sLastSpeakAtMs;
+    /** 服务未连接时的量测用引擎（`install -r` 后无障碍服务可能长时间不回绑，管线取证不能干等）。 */
+    private com.flexiatom.floatingassistant.tts.TtsEngine localTtsEngine;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -133,6 +143,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP5Menu(getIntent());
         maybeRunP5Tts(getIntent());
         maybeRunP6Mt(getIntent());
+        maybeRunTtsSpeak(getIntent());
         maybeRunAnimToggle(getIntent());
     }
 
@@ -150,6 +161,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP5Menu(intent);
         maybeRunP5Tts(intent);
         maybeRunP6Mt(intent);
+        maybeRunTtsSpeak(intent);
         maybeRunAnimToggle(intent);
     }
 
@@ -181,6 +193,41 @@ public class MainActivity extends AppCompatActivity {
         }
         new Thread(() -> com.flexiatom.floatingassistant.tts.TtsProbe.run(
                 this, variant, far, threads, sid, speed), "p5-tts").start();
+    }
+
+    /**
+     * 生产朗读的机读入口：文本直接交给服务里的 {@code TtsEngine}（与面板「朗读」同一条路径）。
+     * 冷启动一次 {@code am start} 会把同一 intent 交两遍（见 {@code maybeRunP5Tts} 的同一条实测），
+     * 这条会出声，重复投递会被听成"读了两遍"，故同样按参数串去重。
+     */
+    private void maybeRunTtsSpeak(Intent intent) {
+        String text = intent == null ? null : intent.getStringExtra(EXTRA_TTS_SPEAK);
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+        SphereAccessibilityService svc = SphereAccessibilityService.getInstance();
+        if (svc == null) {
+            // 实测：`adb install -r` 顶掉进程后，无障碍服务在系统侧的绑定不会立刻回来
+            // （`dumpsys accessibility` 的 Bound services 为空）。播放管线的取证不该被这一格卡住，
+            // 故退化到进程内引擎——与生产用的是同一个 TtsEngine/SherpaTtsEngine，只是不经过球。
+            android.util.Log.w("TTS", "无障碍服务未连接，改用进程内引擎量播放管线");
+            if (localTtsEngine == null) {
+                localTtsEngine = new com.flexiatom.floatingassistant.tts.TtsEngine(
+                        this, text1 -> android.util.Log.i("TTS", "notice=" + text1));
+            }
+            localTtsEngine.speak(text);
+            return;
+        }
+        long now = System.currentTimeMillis();
+        synchronized (MainActivity.class) {
+            if (text.equals(sLastSpeakKey) && now - sLastSpeakAtMs < 20_000L) {
+                android.util.Log.i("TTS", "重复投递已忽略（同文本 20s 内只读一次）");
+                return;
+            }
+            sLastSpeakKey = text;
+            sLastSpeakAtMs = now;
+        }
+        svc.speakTextForTest(text);
     }
 
     /**

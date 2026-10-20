@@ -28,6 +28,7 @@ import com.flexiatom.floatingassistant.tool.ContainerTool;
 import com.flexiatom.floatingassistant.tool.SimpleTool;
 import com.flexiatom.floatingassistant.tool.Tool;
 import com.flexiatom.floatingassistant.tool.ToolRegistry;
+import com.flexiatom.floatingassistant.tts.TtsEngine;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -88,6 +89,9 @@ public class SphereAccessibilityService extends AccessibilityService {
 
     /** 文本面板当前正文（复制动作取它）：面板一屏只放一份文本，故单字段足够，不开列表管理。 */
     private String panelText = "";
+
+    /** 生产朗读通道（tts-engine-replacement 裁二）：懒建；空闲 60 s / 服务解绑即卸载（峰值 401 MB，不常驻）。 */
+    private TtsEngine ttsEngine;
 
     /** 最近一次窗口状态变化看到的顶层外部 App 包名（忽略自身覆盖层）。用于"切走即卸载"判定。 */
     private volatile String lastTopPkg;
@@ -286,6 +290,20 @@ public class SphereAccessibilityService extends AccessibilityService {
                         + ((System.nanoTime() - t0) / 1_000_000L) + "ms: " + e, e);
             }
         }, "p6-mt").start();
+    }
+
+    /**
+     * 量测用：走生产 {@link TtsEngine#speak} 全链路（懒加载 → 分句 → 合成 → AudioTrack）。
+     *
+     * <p>存在的理由与 {@code p6_mt} 同：听感归人耳（长期约定），但"管线通不通"不该混在触摸测试里一起判。
+     * 这条只证明加载/合成/播放状态机跑通；按钮命中与声音本身仍由人测。
+     */
+    public void speakTextForTest(String text) {
+        mainHandler.post(() -> {
+            android.util.Log.i("TTS", "speakForTest chars=" + text.length()
+                    + " engine=" + (ttsEngine == null ? "cold" : "warm"));
+            ttsEngine().speak(text);
+        });
     }
 
     /** 球视图状态量测入口（用户报「收起扇形后球消失」）：回调 {@link OverlayManager#sphereProbe()}。 */
@@ -555,7 +573,8 @@ public class SphereAccessibilityService extends AccessibilityService {
                                     text -> overlayManager.showTextOverlay("shot_feedback", text, FEEDBACK_MS));
                         } else {
                             r.runOnceRegion(rect,
-                                    text -> showTextPanel(getString(R.string.region_result_title), text));
+                                    text -> showTextPanel(getString(R.string.region_result_title),
+                                            text, true));
                         }
                     }
 
@@ -670,14 +689,42 @@ public class SphereAccessibilityService extends AccessibilityService {
 
     /** 文本面板（框选结果 / 自检报告共用一扇）：正文留一份初值，供面板已收起时「复制」兜底取用。 */
     private void showTextPanel(String title, String body) {
+        showTextPanel(title, body, false);
+    }
+
+    /**
+     * @param speakable 是否带「朗读」（框选结果带；自检报告不带——报告不是朗读对象，且 melo RTF&gt;1，
+     *                  把 40 行报告交给它是分钟级等待，不在裁二划定的"朗读这一框"里）。按钮是**开关**：
+     *                  正在读时再按＝停；朗读取面板**当前**正文，用户就地改过的字也会读到。
+     */
+    private void showTextPanel(String title, String body, boolean speakable) {
         panelText = body;
+        List<TextPanelView.Action> actions = new ArrayList<>();
+        if (speakable) {
+            actions.add(new TextPanelView.Action(getString(R.string.action_speak), () -> {
+                TtsEngine te = ttsEngine();
+                if (te.isSpeaking()) {
+                    te.stop();
+                    overlayManager.showTextOverlay("tts_feedback",
+                            getString(R.string.tts_stopped_feedback), FEEDBACK_MS);
+                } else {
+                    te.speak(overlayManager.panelBodyText(panelText));
+                    overlayManager.showTextOverlay("tts_feedback",
+                            getString(R.string.tts_synth_feedback), FEEDBACK_MS);
+                }
+            }));
+        }
+        actions.add(new TextPanelView.Action(getString(R.string.action_copy), this::copyPanelText));
+        actions.add(new TextPanelView.Action(getString(R.string.action_close), () -> {
+            stopSpeaking();
+            overlayManager.hidePanel();
+        }));
         overlayManager.showPanel(new TextPanelView(overlayManager.themedContext(), title, body,
-                List.of(new TextPanelView.Action(getString(R.string.action_copy), this::copyPanelText),
-                        new TextPanelView.Action(getString(R.string.action_close),
-                                overlayManager::hidePanel)),
+                actions,
                 new TextPanelView.Listener() {
                     @Override
                     public void onClose() {
+                        stopSpeaking();
                         overlayManager.hidePanel();
                     }
 
@@ -686,6 +733,24 @@ public class SphereAccessibilityService extends AccessibilityService {
                         overlayManager.movePanel(dx, dy);
                     }
                 }));
+    }
+
+    /** 面板朗读开关的引擎入口：`tts_feedback` 用带超时的反馈浮层，否则 2 s 后自收（项目惯例）。 */
+    private TtsEngine ttsEngine() {
+        if (ttsEngine == null) {
+            ttsEngine = new TtsEngine(this, text -> {
+                if (overlayManager != null) {
+                    overlayManager.showTextOverlay("tts_feedback", text, FEEDBACK_MS);
+                }
+            });
+        }
+        return ttsEngine;
+    }
+
+    private void stopSpeaking() {
+        if (ttsEngine != null) {
+            ttsEngine.stop();
+        }
     }
 
     /**
@@ -751,6 +816,9 @@ public class SphereAccessibilityService extends AccessibilityService {
         connected = false;
         instance = null;
         stopReporting();
+        if (ttsEngine != null) {
+            ttsEngine.unload();
+        }
         if (overlayManager != null) {
             overlayManager.removeAllImmediate();
         }
@@ -781,6 +849,10 @@ public class SphereAccessibilityService extends AccessibilityService {
         if (screenCapturer != null) {
             screenCapturer.shutdown();
             screenCapturer = null;
+        }
+        if (ttsEngine != null) {
+            ttsEngine.shutdown();
+            ttsEngine = null;
         }
         if (overlayManager != null) {
             overlayManager.removeAllImmediate();

@@ -164,9 +164,24 @@ E P5TTS: kind=aishell3 load failed: java.lang.UnsatisfiedLinkError: dlopen faile
 沿用现行约定：`getExternalFilesDir(null)` 根（与 OCR 的 `ch_PP-OCRv4_*.onnx`、MT 的 `*.gguf` 同一处）。
 模型各占一个子目录（`vits-icefall-zh-aishell3/`、`vits-melo-tts-zh_en/`），合成产物落 `files/tts_out/`。
 
-## 听感待测（机器量不出来的一格，归人）
-按上表，**速度/内存/音质三项里机器只能定前两项**，裁决要看耳朵：
-1. `aishell3-nf_*.wav` 5 句——重点是 8 kHz 这层"电话音质"能否接受（自用朗读场景）。
-2. `melo-nf_1..5.wav`（中文）与 `melo-nf_6/7.wav`（英文）——是否值得为音质付出 RTF 1.4 与 191 MB。
-3. 两档的 `*_4.wav` 都是同一句带数字/日期的「会议定在2026年10月20日14时30分，预算3.5万元」——
-   **不带 `rule.far`** 时数字/日期读法对不对，直接决定端上 footprint 是 33 MB 还是 213 MB。
+## 听感裁决（2026-10-21，人耳）
+机器只能定速度/内存；可懂度由人听，**结论已回**（原话入 `~/.Athena` 台账）：
+1. **「aishell3-nf* 无法听清，melo-nf* 能听清」** ⇒ aishell3 不是"低音质快档"，是**不可懂**，整档出局；
+   默认档定为 **melo**（RTF 1.36–1.51 / 191 MB / native 峰值 401 MB 这三笔代价照付）。
+2. `rule.far` 那一格随 aishell3 归零：melo 目录不带任何 `.fst`/`.far`，探针的 `_nf` 就是它的唯一配置；
+   含数字/日期的 `melo-nf_4` 落在"能听清"组里，故端上 footprint = **191,246,123 B**，不挂规则文件。
+3. 机器指标不能替代可懂度预设档位——这是本轮最大的一条教训（已记项目 pitfall）。
+
+## 生产管线实测（2026-10-21，`TtsEngine` 播放链路，`am start --es tts_speak …`）
+无障碍服务当时未连接（`install -r` 后系统未回绑），走进程内引擎、与生产同一个类；声音本身仍归人耳。
+```
+TTS: 无障碍服务未连接，改用进程内引擎量播放管线
+TTS: synth chars=16 synthMs=4128 audioMs=2751 queuedSamples=121344
+TTS: synth chars=13 synthMs=3839 audioMs=2368 queuedSamples=225792
+TTS: speak done chars=29 chunks=2 samples=225792 wallMs=21963
+TTS: engine unloaded (idle/foreground left)        # 完成 60 s 后
+RuntimeStats: tts|1|0|21970|21970|21970
+```
+⇒ AudioTrack 写满并由 drain 等到播完（无 timeout 警告）；29 字 / 5.1 s 音频墙钟 22 s（冷加载 7 s + 两段合成 8 s + 播放 5 s）。
+⇒ **RTF>1 的断流在真机上落地了**：第 1 段 2.75 s 音频播完时第 2 段还没合成完（3.84 s），两句之间有约 3.7 s 空隙。
+这正是 `working/tts-engine-replacement.md` §4 记的那笔账——朗读按"一框/一段"交付，整屏朗读不做。
