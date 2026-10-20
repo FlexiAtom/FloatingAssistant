@@ -17,7 +17,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 生产朗读通道：默认档 {@link TtsModelKind#MELO}（裁二，依据见 {@code working/tts-engine-replacement.md}）。
+ * 生产朗读通道：默认档 {@link TtsModelKind#MELO}（裁二，依据见 {@code finished/tts-engine-replacement.md}）。
  *
  * <p>三条实测读数把设计钉死：
  * <ul>

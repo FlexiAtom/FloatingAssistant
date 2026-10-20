@@ -186,4 +186,4 @@ RuntimeStats: tts|1|0|21970|21970|21970
 ```
 ⇒ AudioTrack 写满并由 drain 等到播完（无 timeout 警告）；29 字 / 5.1 s 音频墙钟 22 s（冷加载 7 s + 两段合成 8 s + 播放 5 s）。
 ⇒ **RTF>1 的断流在真机上落地了**：第 1 段 2.75 s 音频播完时第 2 段还没合成完（3.84 s），两句之间有约 3.7 s 空隙。
-这正是 `working/tts-engine-replacement.md` §4 记的那笔账——朗读按"一框/一段"交付，整屏朗读不做。
+这正是 `finished/tts-engine-replacement.md` §4 记的那笔账——朗读按"一框/一段"交付，整屏朗读不做。
