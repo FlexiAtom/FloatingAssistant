@@ -784,8 +784,8 @@ public class SphereAccessibilityService extends AccessibilityService {
     /**
      * 复制面板正文到系统剪贴板——M1 框选的主输出。取**当前**正文而非灌入时的快照：面板可编辑，
      * 用户改过的字必须能复制走，否则「就地改错字」这条流程是断的。
-     * 无障碍服务不是前台 App，而 Android 10+ 对剪贴板有前台限制；**写**是否真生效须真机验
-     * （见 working/m1-region-select.md 反证表第 3 行）。
+     * 无障碍服务不是前台 App，而 Android 10+ 对剪贴板有前台限制；**写**已真机验证可跨 App 粘贴
+     * （2026-10-21 人测，见 working/m1-region-select.md 反证表第 3 行）。
      */
     private void copyPanelText() {
         ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
