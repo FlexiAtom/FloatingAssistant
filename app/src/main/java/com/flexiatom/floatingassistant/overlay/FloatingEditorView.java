@@ -19,6 +19,7 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
+import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -30,9 +31,11 @@ import android.widget.Space;
 import android.widget.TextView;
 
 import com.flexiatom.floatingassistant.R;
+import com.flexiatom.floatingassistant.core.EditorPrefs;
 import com.flexiatom.floatingassistant.core.NotesCodec;
 import com.flexiatom.floatingassistant.core.NotesStore;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -50,7 +53,8 @@ import java.util.Locale;
  * 信息带：文档名（左）+ 编码（右）。{@code /}＝**行级与全文级**工具（走 {@link DrawerContent}），
  * 选区级动作一律走**选择气泡**（复制/剪切/粘贴/全选/朗读/翻译）；无选区时长按正文唤起同一只气泡的
  * 行级五项（复制行/剪切行/粘贴/朗读/翻译），作用光标所在行——两套内容的分法皆人裁 2026-10-22；
- * 💾 已随 E5 点亮（落库走 {@link NotesStore}），⋮ 随 E6 点亮，仍为禁用占位。
+ * 💾 已随 E5 点亮（落库走 {@link NotesStore}）；⋮ 已随 E6 点亮（人 2026-10-22 定终版清单十二项，
+ * E6a 这一档实装统计／自动换行／流畅模式三格，其余在同一格里置灰看全）。
  *
  * <p>图标：除人供 SVG 的两件几何件（软盘 {@code ic_floppy.xml}、新建纸笔 {@code ic_paper_pen.xml}）
  * 外全部 {@link SketchIcons} 运行时现绘。
@@ -130,6 +134,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     /** 搜索框输入合并窗口：比落库短，边打边看结果要跟得上手。 */
     private static final long DOC_SEARCH_DEBOUNCE_MS = 220L;
     private final NotesStore notes;
+    private final EditorPrefs prefs;
     private final TextView docName;
     private final Runnable autosaveTick = this::persistCurrent;
     /** 写成方法引用而不是就地 lambda：字段初始化期 {@code drawerSearch} 还没赋值，javac 按 definite assignment 会拒。 */
@@ -151,6 +156,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         super(context);
         this.listener = listener;
         this.notes = NotesStore.of(context);
+        this.prefs = new EditorPrefs(context);
 
         float density = getResources().getDisplayMetrics().density;
         int onSurface = M3.color(context, M3.ON_SURFACE);
@@ -199,8 +205,9 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 R.string.editor_cd_save, v -> persistCurrent()));
         toolbar.addView(toolButton(context, SketchIcons.of(SketchIcons.SLASH, onSurface, density),
                 R.string.editor_cd_tools, v -> openDrawer(editToolsContent(context))));
-        toolbar.addView(disabledToolButton(context, SketchIcons.of(SketchIcons.DOTS, onSurface, density),
-                R.string.editor_cd_more));
+        // ⋮ 随 E6 点亮（人 2026-10-22 定终版清单）：E6a 这一档实装三格，其余在同一格里置灰看全。
+        toolbar.addView(toolButton(context, SketchIcons.of(SketchIcons.DOTS, onSurface, density),
+                R.string.editor_cd_more, v -> openDrawer(overflowContent(context))));
         syncEditState();
         editor.addView(toolbar, new LinearLayout.LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
@@ -233,6 +240,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         body.setBackground(null);
         body.setGravity(Gravity.TOP | Gravity.START);
         body.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        applyDisplayFlags();   // 自动换行／流畅模式两档（E6a）按持久档现读，开局就得刷一遍
         // 手柄球垂在行下方，最后那一行的球会被 ScrollView 的下边缘切掉——给正文垫出这一颗的位子。
         // 只动 bottom：气泡定位那套算法用的是 layout 行顶，paddingTop 一变它整个跟着上浮，别碰。
         body.setPadding(body.getPaddingLeft(), body.getPaddingTop(),
@@ -442,6 +450,10 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      * 所以上边放不下时翻到选区下方，而正文滚动也不重算位置（人裁：跟了反而可能滚出窗口）。
      */
     private void updateBubbleForSelection() {
+        if (prefs.smooth()) {
+            bubble.setVisibility(GONE); // 流畅模式连气泡一起关（人裁「屏蔽…以提升性能」的第三条口径）
+            return;
+        }
         int start = body.getSelectionStart();
         int end = body.getSelectionEnd();
         android.text.Layout layout = body.getLayout();
@@ -506,14 +518,6 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         b.setPadding(dp(8), dp(8), dp(8), dp(8));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(side, side);
         b.setLayoutParams(lp);
-        return b;
-    }
-
-    private ImageButton disabledToolButton(Context context, android.graphics.drawable.Drawable icon,
-                                           int descRes) {
-        ImageButton b = toolButton(context, icon, descRes, null);
-        b.setEnabled(false);
-        b.setAlpha(0.38f);
         return b;
     }
 
@@ -798,6 +802,111 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
     private DrawerContent.Item toolItem(int labelRes, Runnable action) {
         return new DrawerContent.Item(getContext().getString(labelRes), action);
+    }
+
+    // ---------- ⋮＝溢出菜单（E6）：人 2026-10-22 定终版清单＝动作八项＋开关四项，按人给的原始次序排 ----------
+
+    /**
+     * E6a 这一档实装三格＝统计、自动换行、流畅模式；余下传 null 置灰（与 {@code /} 同一口径：整眼菜单
+     * 先看全，缺的档期一眼可见）。「只读模式」要按篇存，等 E5 索引续列那一格；末尾的「翻译全文」**不在**
+     * 人这份清单里，是原提案留下的格子，占位等待裁。
+     */
+    private DrawerContent overflowContent(Context context) {
+        List<DrawerContent.Item> items = new ArrayList<>(13);
+        items.add(toolItem(R.string.editor_more_save_as, null));
+        items.add(toolItem(R.string.editor_more_reload, null));
+        items.add(toolItem(R.string.editor_more_reload_charset, null));
+        items.add(toolItem(R.string.editor_more_save_charset, null));
+        items.add(toolItem(R.string.editor_more_stats, this::openStats));
+        items.add(toolItem(R.string.editor_more_find, null));
+        items.add(toolItem(R.string.editor_more_syntax, null));
+        items.add(toolItem(R.string.editor_more_goto_line, null));
+        items.add(checkItem(R.string.editor_more_word_wrap, prefs.wrap(), this::toggleWrap));
+        items.add(checkItem(R.string.editor_more_read_only, false, null));
+        items.add(checkItem(R.string.editor_more_smooth, prefs.smooth(), this::toggleSmooth));
+        items.add(checkItem(R.string.editor_more_complete, false, null));
+        items.add(toolItem(R.string.editor_more_translate_all, null));
+        return new DrawerContent(context.getString(R.string.editor_cd_more),
+                null, null, false, items);
+    }
+
+    /** 勾选类条目＝前缀一枚勾或空框（人原话「以下是是否勾选类的」）；行首对齐已有 START 重力，符号不会飘。 */
+    private DrawerContent.Item checkItem(int labelRes, boolean checked, Runnable action) {
+        Context context = getContext();
+        return new DrawerContent.Item(context.getString(
+                checked ? R.string.editor_check_on : R.string.editor_check_off,
+                context.getString(labelRes)), action);
+    }
+
+    private DrawerContent.Item greyRow(String label) {
+        return new DrawerContent.Item(label, null);
+    }
+
+    private void toggleWrap() {
+        prefs.setWrap(!prefs.wrap());
+        applyDisplayFlags();
+        bindDrawer(overflowContent(getContext())); // 原地换内容刷新勾选态，不重走展开流程
+    }
+
+    private void toggleSmooth() {
+        prefs.setSmooth(!prefs.smooth());
+        applyDisplayFlags();
+        if (prefs.smooth()) {
+            bubble.setVisibility(GONE); // 已经弹着的气泡得收掉，否则它从此不再更新却留在屏上
+            lineBubblePinned = false;
+        }
+        bindDrawer(overflowContent(getContext()));
+    }
+
+    /**
+     * 两档显示开关都落在正文的输入标志上，必须集中在这一处写：{@code setInputType} 是**整体替换**，
+     * 两处各写一半会互相吃掉对方的档。
+     */
+    private void applyDisplayFlags() {
+        int type = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE;
+        boolean smooth = prefs.smooth();
+        if (smooth) {
+            type |= InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS; // 联想候选＝输入法自带的那一路
+        }
+        body.setInputType(type);
+        // 提取窗也是输入法自带的一路：某些输入法在窄窗上会另起一整屏重写整段文本，性能与焦点双输。
+        body.setImeOptions(smooth ? EditorInfo.IME_FLAG_NO_EXTRACT_UI : 0);
+        body.setHorizontallyScrolling(!prefs.wrap());
+        body.suppressHandles = smooth;
+        body.invalidate(); // 开关一翻，已经画在屏上的手柄得立刻消失/回来
+    }
+
+    /** 统计（E6a）：整屏都是置灰行——这一格只给人看一眼，不该有任何可点的东西。 */
+    private void openStats() {
+        String text = body.getText().toString();
+        int lines = 1;
+        int glyphs = 0;
+        int caret = Math.max(0, Math.min(body.getSelectionStart(), text.length()));
+        int caretLine = 1;
+        int lineStart = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '\n') {
+                lines++;
+                if (i < caret) {
+                    caretLine++;
+                    lineStart = i + 1;
+                }
+            } else if (!Character.isWhitespace(c)) {
+                glyphs++;
+            }
+        }
+        Context context = getContext();
+        List<DrawerContent.Item> items = new ArrayList<>(6);
+        items.add(greyRow(context.getString(R.string.editor_stat_lines, lines)));
+        items.add(greyRow(context.getString(R.string.editor_stat_glyphs, glyphs)));
+        items.add(greyRow(context.getString(R.string.editor_stat_chars, text.length())));
+        items.add(greyRow(context.getString(R.string.editor_stat_bytes,
+                text.getBytes(StandardCharsets.UTF_8).length)));
+        items.add(greyRow(context.getString(R.string.editor_stat_caret, caretLine, caret - lineStart + 1)));
+        items.add(greyRow(context.getString(R.string.editor_stat_encoding)));
+        openDrawer(new DrawerContent(context.getString(R.string.editor_more_stats),
+                null, null, false, items));
     }
 
     // ---------- 编辑内核：E1 交付物 + E1b 补重做；全选/复制/粘贴留作 E8「/」菜单的接线件 ----------
@@ -1216,6 +1325,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     static final class BodyEditText extends EditText {
         Runnable onSelectionChanged;
         Runnable onLongPressForLine;
+        /** 流畅模式（E6a ⋮ 的开关）：本类是 static 嵌套，读不到外层的档，由 {@code applyDisplayFlags} 写进来。 */
+        boolean suppressHandles;
         /** 按下落点：带坐标的长按自带，无参那次（无障碍）用它兜底，行气泡按它算光标该落哪。 */
         float lastDownX;
         float lastDownY;
@@ -1357,6 +1468,9 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         @Override
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
+            if (suppressHandles) {
+                return; // 流畅模式：手柄是每帧重绘件，这一档要的就是把它连同气泡一起省掉
+            }
             for (int which = 0; which < 2; which++) {
                 if (!handleGeom(which)) {
                     continue;

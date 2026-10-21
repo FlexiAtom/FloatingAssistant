@@ -59,6 +59,29 @@
     <string name="editor_comment_toggle">切换注释</string>
     <string name="editor_compress_code">压缩代码</string>
 
+    <!-- ⋮ 溢出菜单（E6）：人 2026-10-22 定的终版清单，动作八项＋勾选四项，逐字照录 -->
+    <string name="editor_more_save_as">另存为</string>
+    <string name="editor_more_reload">重新加载文件</string>
+    <string name="editor_more_reload_charset">以指定编码重新加载文件</string>
+    <string name="editor_more_save_charset">指定保存的编码</string>
+    <string name="editor_more_stats">统计</string>
+    <string name="editor_more_find">全文搜索</string>
+    <string name="editor_more_syntax">语法</string>
+    <string name="editor_more_goto_line">转到指定行</string>
+    <string name="editor_more_word_wrap">自动换行</string>
+    <string name="editor_more_read_only">只读模式</string>
+    <string name="editor_more_smooth">流畅模式</string>
+    <string name="editor_more_complete">代码补全</string>
+    <string name="editor_more_translate_all">翻译全文</string>
+    <string name="editor_check_on">✓ %1$s</string>
+    <string name="editor_check_off">□ %1$s</string>
+    <string name="editor_stat_lines">行数 %1$d</string>
+    <string name="editor_stat_glyphs">字数 %1$d（非空白字符）</string>
+    <string name="editor_stat_chars">字符数 %1$d</string>
+    <string name="editor_stat_bytes">字节数 %1$d（UTF-8）</string>
+    <string name="editor_stat_caret">光标 第%1$d行 第%2$d列</string>
+    <string name="editor_stat_encoding">编码 UTF-8</string>
+
     <string name="translate_panel_title">翻译设置</string>
     <string name="translate_label_target">目标语言</string>
     <string name="translate_current_tgt">当前：%1$s</string>
