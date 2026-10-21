@@ -15,6 +15,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.inputmethod.InputMethodManager;
+import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
@@ -26,7 +27,10 @@ import android.widget.TextView;
 import com.flexiatom.floatingassistant.R;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
+import java.util.List;
 
 /**
  * 统一悬浮文本编辑器（§4.4，m5-editor-asr-notes E1b 终稿壳）。复用面板系那扇全 app 唯一焦点窗。
@@ -35,7 +39,8 @@ import java.util.Deque;
  * 文档列表＝同窗左栏抽屉，盖住编辑器左半**（b 案·遮挡），展开时非抽屉区加半透明遮罩变暗，
  * 遮罩吃掉编辑器一切点击——含顶栏钮——**只用于收起**（防误触）。
  * 顶栏：{@code ≡  ︶  / ⋮} ＝ 列表、撤销、重做、保存、编辑工具、溢出；
- * 信息带：文档名（左）+ 编码（右）。💾 随 E5、/ 随 E8、⋮ 随 E6 点亮，现为禁用占位。
+ * 信息带：文档名（左）+ 编码（右）。{@code /} 已接「xx行」一族（{@link DrawerContent}），
+ * 💾 随 E5、⋮ 随 E6 点亮，现为禁用占位。
  *
  * <p>图标：除软盘（人供 SVG 几何件，{@code ic_floppy.xml}）外全部 {@link SketchIcons} 运行时现绘。
  * 落库（E5）、ASR 插入口（§4.4-3）与输出出口（E3）都不在内——本视图只认「打开时给初值、关闭时由调用方决定去留」。
@@ -63,7 +68,11 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private final PanelDragHandle handle;
     private final EditText body;
     private final View scrim;
-    private final View drawer;
+    private final LinearLayout drawer;
+    private final TextView drawerTitle;
+    private final ImageButton drawerHeaderAction;
+    private final EditText drawerSearch;
+    private final LinearLayout drawerList;
     private final ImageButton undoButton;
     private final ImageButton redoButton;
 
@@ -117,7 +126,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         toolbar.setOrientation(LinearLayout.HORIZONTAL);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
         ImageButton listButton = toolButton(context, SketchIcons.of(SketchIcons.HAMBURGER, onSurface, density),
-                R.string.editor_cd_list, v -> openDrawer());
+                R.string.editor_cd_list, v -> openDrawer(docListContent(context, onSurface, density)));
         toolbar.addView(listButton);
         toolbar.addView(new Space(context), new LinearLayout.LayoutParams(0, 1, 1f));
         undoButton = toolButton(context, SketchIcons.of(SketchIcons.UNDO, onSurface, density),
@@ -128,8 +137,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         toolbar.addView(redoButton);
         toolbar.addView(disabledToolButton(context, icon(context, R.drawable.ic_floppy, onSurface),
                 R.string.editor_cd_save));
-        toolbar.addView(disabledToolButton(context, SketchIcons.of(SketchIcons.SLASH, onSurface, density),
-                R.string.editor_cd_tools));
+        toolbar.addView(toolButton(context, SketchIcons.of(SketchIcons.SLASH, onSurface, density),
+                R.string.editor_cd_tools, v -> openDrawer(editToolsContent(context))));
         toolbar.addView(disabledToolButton(context, SketchIcons.of(SketchIcons.DOTS, onSurface, density),
                 R.string.editor_cd_more));
         syncEditState();
@@ -209,9 +218,9 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         scrim.setVisibility(GONE);
         addView(scrim, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
 
-        // ---------- 抽屉层：左栏文档列表，压在遮罩之上 ----------
+        // ---------- 抽屉层：一个抽屉位、N 种内容——外壳固定，栏头与条目由按键传入（bindDrawer） ----------
         drawer = new LinearLayout(context);
-        ((LinearLayout) drawer).setOrientation(LinearLayout.VERTICAL);
+        drawer.setOrientation(LinearLayout.VERTICAL);
         GradientDrawable drawerBg = new GradientDrawable();
         drawerBg.setColor(M3.color(context, M3.SURFACE_CONTAINER_HIGH) | 0xFF000000);
         float r = dp(12);
@@ -223,40 +232,42 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         LinearLayout drawerHeader = new LinearLayout(context);
         drawerHeader.setOrientation(LinearLayout.HORIZONTAL);
         drawerHeader.setGravity(Gravity.CENTER_VERTICAL | Gravity.END);
-        TextView drawerTitle = new TextView(context);
-        drawerTitle.setText(R.string.editor_drawer_title);
+        drawerTitle = new TextView(context);
         drawerTitle.setTextColor(onSurface);
         drawerTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10);
         drawerHeader.addView(drawerTitle, new LinearLayout.LayoutParams(
                 0, LayoutParams.WRAP_CONTENT, 1f));
-        drawerHeader.addView(toolButton(context,
-                SketchIcons.of(SketchIcons.SQUARE, onSurface, density),
-                R.string.editor_cd_new, v -> { /* E5：新建文档 */ }));
-        ((LinearLayout) drawer).addView(drawerHeader, new LinearLayout.LayoutParams(
+        drawerHeaderAction = toolButton(context,
+                SketchIcons.of(SketchIcons.SQUARE, onSurface, density), R.string.editor_cd_new, null);
+        drawerHeader.addView(drawerHeaderAction);
+        drawer.addView(drawerHeader, new LinearLayout.LayoutParams(
                 LayoutParams.MATCH_PARENT, dp(40)));
-        ((LinearLayout) drawer).addView(divider(context), dividerLp());
+        drawer.addView(divider(context), dividerLp());
 
-        EditText search = new EditText(context);
-        search.setHint(R.string.editor_search_hint);
-        search.setTextColor(onSurface);
-        search.setHintTextColor(onVariant);
-        search.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        search.setSingleLine(true);
-        search.setInputType(InputType.TYPE_CLASS_TEXT);
-        search.setPadding(dp(6), dp(4), dp(6), dp(4));
+        drawerSearch = new EditText(context);
+        drawerSearch.setHint(R.string.editor_search_hint);
+        drawerSearch.setTextColor(onSurface);
+        drawerSearch.setHintTextColor(onVariant);
+        drawerSearch.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        drawerSearch.setSingleLine(true);
+        drawerSearch.setInputType(InputType.TYPE_CLASS_TEXT);
+        drawerSearch.setPadding(dp(6), dp(4), dp(6), dp(4));
         GradientDrawable searchBg = new GradientDrawable();
         searchBg.setColor(0);
         searchBg.setCornerRadius(dp(6));
         searchBg.setStroke(dp(1), M3.color(context, M3.OUTLINE_VARIANT));
-        search.setBackground(searchBg);
+        drawerSearch.setBackground(searchBg);
         LinearLayout.LayoutParams searchLp = new LinearLayout.LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT);
         searchLp.setMargins(dp(6), dp(6), 0, dp(6));
-        ((LinearLayout) drawer).addView(search, searchLp);
+        drawer.addView(drawerSearch, searchLp);
 
-        // 列表区：E5 换 RecyclerView，今天占位直通到底。
-        ((LinearLayout) drawer).addView(new Space(context), new LinearLayout.LayoutParams(
-                LayoutParams.MATCH_PARENT, 0, 1f));
+        drawerList = new LinearLayout(context);
+        drawerList.setOrientation(LinearLayout.VERTICAL);
+        ScrollView listScroll = new ScrollView(context);
+        listScroll.addView(drawerList, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
+        drawer.addView(listScroll, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f));
         addView(drawer, new LayoutParams(dp(DRAWER_WIDTH_DP), LayoutParams.MATCH_PARENT));
     }
 
@@ -306,14 +317,92 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         return drawer.getVisibility() == VISIBLE;
     }
 
-    private void openDrawer() {
+    /** 展开抽屉位并装入这份内容；已展开时＝原地换内容（N 种内容共用一格，人裁 2026-10-22）。 */
+    private void openDrawer(DrawerContent content) {
+        bindDrawer(content);
         scrim.setVisibility(VISIBLE);
         drawer.setVisibility(VISIBLE);
+    }
+
+    private void bindDrawer(DrawerContent content) {
+        drawerTitle.setText(content.title);
+        if (content.headerIcon == null) {
+            drawerHeaderAction.setVisibility(GONE);
+        } else {
+            drawerHeaderAction.setVisibility(VISIBLE);
+            drawerHeaderAction.setImageDrawable(content.headerIcon);
+            drawerHeaderAction.setOnClickListener(v -> content.headerAction.run());
+        }
+        drawerSearch.setVisibility(content.searchable ? VISIBLE : GONE);
+        drawerList.removeAllViews();
+        for (DrawerContent.Item item : content.items) {
+            drawerList.addView(drawerRow(item));
+        }
     }
 
     private void closeDrawer() {
         scrim.setVisibility(GONE);
         drawer.setVisibility(GONE);
+    }
+
+    /** 条目＝整行宽的扁平菜单项。**不吃焦点**，否则点一次就把正文光标与键盘让出去（收起后没法连打）。 */
+    private View drawerRow(DrawerContent.Item item) {
+        Button b = new Button(getContext());
+        b.setText(item.label);
+        b.setAllCaps(false);
+        b.setFocusable(false);
+        b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        b.setTextColor(M3.color(getContext(), M3.ON_SURFACE));
+        b.setBackgroundColor(0);
+        b.setStateListAnimator(null);
+        int rowHeight = dp(30);
+        b.setMinHeight(rowHeight);
+        b.setMinimumHeight(rowHeight);
+        b.setPadding(dp(6), 0, dp(6), 0);
+        if (item.action == null) {
+            b.setEnabled(false);
+            b.setAlpha(0.38f);
+        } else {
+            b.setOnClickListener(v -> item.action.run());
+        }
+        return b;
+    }
+
+    /** ≡＝文档列表：落库与新建随 E5，今天栏内空着，先把外壳与形态跑通。 */
+    private static DrawerContent docListContent(Context context, int onSurface, float density) {
+        return new DrawerContent(context.getString(R.string.editor_drawer_title),
+                SketchIcons.of(SketchIcons.SQUARE, onSurface, density),
+                () -> { /* E5：新建文档 */ },
+                true,
+                Collections.emptyList());
+    }
+
+    /**
+     * /＝编辑工具：人裁先做「xx行」一族（作用于**光标所在行**，显示沿用 MT 的短名），
+     * 其余七项按人给的原始次序传 null 置灰占位——整眼菜单先看全，缺的档期一眼可见。
+     */
+    private DrawerContent editToolsContent(Context context) {
+        List<DrawerContent.Item> items = new ArrayList<>(13);
+        items.add(toolItem(R.string.editor_line_copy, this::copyLine));
+        items.add(toolItem(R.string.editor_line_cut, this::cutLine));
+        items.add(toolItem(R.string.editor_line_delete, this::deleteLine));
+        items.add(toolItem(R.string.editor_line_clear, this::clearLine));
+        items.add(toolItem(R.string.editor_line_replace, this::replaceLineWithClipboard));
+        items.add(toolItem(R.string.editor_line_duplicate, this::duplicateLine));
+        items.add(toolItem(R.string.editor_case_upper, null));
+        items.add(toolItem(R.string.editor_case_lower, null));
+        items.add(toolItem(R.string.editor_indent_add, null));
+        items.add(toolItem(R.string.editor_indent_remove, null));
+        items.add(toolItem(R.string.editor_format_code, null));
+        items.add(toolItem(R.string.editor_comment_toggle, null));
+        items.add(toolItem(R.string.editor_compress_code, null));
+        return new DrawerContent(context.getString(R.string.editor_cd_tools),
+                null, null, false, items);
+    }
+
+    private DrawerContent.Item toolItem(int labelRes, Runnable action) {
+        return new DrawerContent.Item(getContext().getString(labelRes), action);
     }
 
     // ---------- 编辑内核：E1 交付物 + E1b 补重做；全选/复制/粘贴留作 E8「/」菜单的接线件 ----------
@@ -354,6 +443,99 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         int start = Math.max(body.getSelectionStart(), 0);
         int end = Math.max(body.getSelectionEnd(), start);
         editable.replace(start, end, pasted);
+    }
+
+    // ---------- 「xx行」一族：一律作用于光标所在行（人裁 2026-10-22），显示沿用 MT 的短名 ----------
+
+    private static final class Line {
+        final String text;
+        final int start;
+        final int end;
+
+        Line(String text, int start, int end) {
+            this.text = text;
+            this.start = start;
+            this.end = end;
+        }
+    }
+
+    /** 光标所在行，行首/行尾偏移不含行尾换行符。 */
+    private Line cursorLine() {
+        String text = body.getText().toString();
+        int caret = Math.max(0, Math.min(body.getSelectionStart(), text.length()));
+        int lineStart = text.lastIndexOf('\n', caret - 1) + 1;
+        int nextBreak = text.indexOf('\n', lineStart);
+        int lineEnd = nextBreak < 0 ? text.length() : nextBreak;
+        return new Line(text.substring(lineStart, lineEnd), lineStart, lineEnd);
+    }
+
+    private void copyLine() {
+        ClipboardManager cm = (ClipboardManager)
+                getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm != null) {
+            cm.setPrimaryClip(ClipData.newPlainText("editor", cursorLine().text));
+        }
+    }
+
+    private void cutLine() {
+        copyLine();
+        deleteLine();
+    }
+
+    /** 删整行连同其换行；删的若是没有行尾换行的末行，改吃**前一个**换行，免得留下一条空行。 */
+    private void deleteLine() {
+        Editable text = body.getText();
+        Line line = cursorLine();
+        if (line.end < text.length()) {
+            text.replace(line.start, line.end + 1, "");
+            body.setSelection(Math.min(line.start, text.length()));
+        } else if (line.start > 0) {
+            text.replace(line.start - 1, line.end, "");
+            body.setSelection(Math.min(line.start - 1, text.length()));
+        } else {
+            text.replace(0, line.end, "");
+            body.setSelection(0);
+        }
+    }
+
+    /** 清空只去掉行内容，换行留着——行还在，只是变成空行（与删除行的区别就在这）。 */
+    private void clearLine() {
+        Editable text = body.getText();
+        Line line = cursorLine();
+        text.replace(line.start, line.end, "");
+        body.setSelection(Math.min(line.start, text.length()));
+    }
+
+    /** 替换行＝用剪贴板**首行**整体换掉光标所在行（人裁 2026-10-22 的读法）。 */
+    private void replaceLineWithClipboard() {
+        ClipboardManager cm = (ClipboardManager)
+                getContext().getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm == null || !cm.hasPrimaryClip() || cm.getPrimaryClip().getItemCount() == 0) {
+            return;
+        }
+        CharSequence clip = cm.getPrimaryClip().getItemAt(0).getText();
+        if (clip == null) {
+            return;
+        }
+        String first = clip.toString();
+        int breakAt = first.indexOf('\n');
+        if (breakAt >= 0) {
+            first = first.substring(0, breakAt);
+        }
+        Editable text = body.getText();
+        Line line = cursorLine();
+        text.replace(line.start, line.end, first);
+        body.setSelection(Math.min(line.start + first.length(), text.length()));
+    }
+
+    /** 重复行：在本行正下方插一条同样的，光标落在新行的同一列。 */
+    private void duplicateLine() {
+        Editable text = body.getText();
+        Line line = cursorLine();
+        int caret = Math.max(0, Math.min(body.getSelectionStart(), text.length()));
+        int column = Math.max(0, Math.min(caret - line.start, line.text.length()));
+        text.insert(line.end, "\n" + line.text);
+        body.setSelection(Math.min(line.end + 1 + column, text.length()));
     }
 
     private void undo() {

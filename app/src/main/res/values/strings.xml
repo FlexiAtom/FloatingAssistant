@@ -37,6 +37,21 @@
     <string name="editor_cd_more">更多</string>
     <string name="editor_cd_new">新建文件</string>
 
+    <!-- 编辑工具抽屉（「/」）：文案沿用 MT 管理器的短名，「xx行」的实际语义一律是「xx光标所在行」。 -->
+    <string name="editor_line_copy">复制行</string>
+    <string name="editor_line_cut">剪切行</string>
+    <string name="editor_line_delete">删除行</string>
+    <string name="editor_line_clear">清空行</string>
+    <string name="editor_line_replace">替换行</string>
+    <string name="editor_line_duplicate">重复行</string>
+    <string name="editor_case_upper">转为大写</string>
+    <string name="editor_case_lower">转为小写</string>
+    <string name="editor_indent_add">增加缩进</string>
+    <string name="editor_indent_remove">减小缩进</string>
+    <string name="editor_format_code">格式化代码</string>
+    <string name="editor_comment_toggle">切换注释</string>
+    <string name="editor_compress_code">压缩代码</string>
+
     <string name="translate_panel_title">翻译设置</string>
     <string name="translate_label_target">目标语言</string>
     <string name="translate_current_tgt">当前：%1$s</string>
