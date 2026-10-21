@@ -39,7 +39,8 @@ import java.util.List;
  * 文档列表＝同窗左栏抽屉，盖住编辑器左半**（b 案·遮挡），展开时非抽屉区加半透明遮罩变暗，
  * 遮罩吃掉编辑器一切点击——含顶栏钮——**只用于收起**（防误触）。
  * 顶栏：{@code ≡  ︶  / ⋮} ＝ 列表、撤销、重做、保存、编辑工具、溢出；
- * 信息带：文档名（左）+ 编码（右）。{@code /} 已接「xx行」一族（{@link DrawerContent}），
+ * 信息带：文档名（左）+ 编码（右）。{@code /}＝**行级与全文级**工具（走 {@link DrawerContent}），
+ * 选区级动作一律走**选择气泡**（复制/剪切/粘贴/全选/朗读/翻译，人裁 2026-10-22 的分法）；
  * 💾 随 E5、⋮ 随 E6 点亮，现为禁用占位。
  *
  * <p>图标：除软盘（人供 SVG 几何件，{@code ic_floppy.xml}）外全部 {@link SketchIcons} 运行时现绘。
@@ -78,13 +79,16 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private final Listener listener;
     private final LinearLayout editor;
     private final PanelDragHandle handle;
-    private final EditText body;
+    private final BodyEditText body;
+    private final ScrollView bodyScroll;
     private final View scrim;
     private final LinearLayout drawer;
     private final TextView drawerTitle;
     private final ImageButton drawerHeaderAction;
     private final EditText drawerSearch;
     private final LinearLayout drawerList;
+    private final LinearLayout bubble;
+    private final Button bubbleSpeak;
     private final ImageButton undoButton;
     private final ImageButton redoButton;
 
@@ -177,7 +181,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
         editor.addView(divider(context), dividerLp());
 
-        body = new EditText(context);
+        body = new BodyEditText(context);
         body.setTextColor(onSurface);
         body.setHintTextColor(onVariant);
         body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
@@ -216,10 +220,10 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 mainHandler.postDelayed(undoFlush, UNDO_MERGE_MS);
             }
         });
-        ScrollView scroll = new ScrollView(context);
-        scroll.addView(body, new ScrollView.LayoutParams(
+        bodyScroll = new ScrollView(context);
+        bodyScroll.addView(body, new ScrollView.LayoutParams(
                 ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
-        editor.addView(scroll, new LinearLayout.LayoutParams(
+        editor.addView(bodyScroll, new LinearLayout.LayoutParams(
                 LayoutParams.MATCH_PARENT, dp(BODY_HEIGHT_DP)));
 
         // ---------- 遮罩层：盖整窗，任何点击＝只收起（人裁防误触，含顶栏钮） ----------
@@ -281,6 +285,90 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 ScrollView.LayoutParams.MATCH_PARENT, ScrollView.LayoutParams.WRAP_CONTENT));
         drawer.addView(listScroll, new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f));
         addView(drawer, new LayoutParams(dp(DRAWER_WIDTH_DP), LayoutParams.MATCH_PARENT));
+
+        // ---------- 选择气泡（压在一切之上）：选区一形成就弹，贴选区首行上方，顶边放不下就翻到下方 ----------
+        bubble = new LinearLayout(context);
+        bubble.setOrientation(LinearLayout.HORIZONTAL);
+        bubble.setGravity(Gravity.CENTER_VERTICAL);
+        bubble.setClickable(true); // 自身点击不外泄给正文，否则点钮会被当成挪光标而把气泡收掉
+        bubble.setPadding(dp(2), 0, dp(2), 0);
+        GradientDrawable bubbleBg = new GradientDrawable();
+        bubbleBg.setColor(M3.color(context, M3.INVERSE_SURFACE));
+        bubbleBg.setCornerRadius(dp(8));
+        bubble.setBackground(bubbleBg);
+        bubble.addView(bubbleAction(context, R.string.action_copy, this::copySelection));
+        bubble.addView(bubbleAction(context, R.string.editor_sel_cut, this::cutSelection));
+        bubble.addView(bubbleAction(context, R.string.editor_sel_paste, this::pasteAtCursor));
+        bubble.addView(bubbleAction(context, R.string.editor_sel_all, this::selectAllText));
+        bubbleSpeak = bubbleAction(context, R.string.action_speak, this::speakOutlet);
+        bubble.addView(bubbleSpeak);
+        bubble.addView(bubbleAction(context, R.string.editor_translate, this::translateOutlet));
+        bubble.setVisibility(GONE);
+        addView(bubble, new LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT));
+
+        body.onSelectionChanged = this::updateBubbleForSelection;
+    }
+
+    /** 气泡里的一条：反色底上的扁平短钮，尺寸只由文字与内边距定（六条要挤进 300dp 宽）。 */
+    private Button bubbleAction(Context context, int labelRes, Runnable action) {
+        Button b = new Button(context);
+        b.setText(labelRes);
+        b.setAllCaps(false);
+        b.setFocusable(false);
+        b.setTextColor(M3.color(context, M3.ON_INVERSE_SURFACE));
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        b.setBackgroundColor(0);
+        b.setStateListAnimator(null);
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setMinHeight(0);
+        b.setMinimumHeight(0);
+        b.setPadding(dp(7), dp(4), dp(7), dp(4));
+        b.setOnClickListener(v -> action.run());
+        return b;
+    }
+
+    /**
+     * 选区一形成就弹、一收起就藏（人裁 2026-10-22）。气泡是**同窗**绘制的最上层子视图：
+     * 不另开窗、不抢焦点、拖窗时跟着走，代价是它出不了卡片边界——所以上边放不下时翻到选区下方。
+     */
+    private void updateBubbleForSelection() {
+        int start = body.getSelectionStart();
+        int end = body.getSelectionEnd();
+        android.text.Layout layout = body.getLayout();
+        if (start < 0 || end <= start || layout == null || getWidth() == 0 || drawerOpen()) {
+            bubble.setVisibility(GONE);
+            return;
+        }
+        int firstLine = layout.getLineForOffset(start);
+        int lastLine = layout.getLineForOffset(Math.max(start, end - 1));
+        // 锚在选区**首行**那一段：跨行选区若取首末行的横向极值，气泡会被算到莫名其妙的地方
+        int anchorEnd = firstLine == lastLine ? end : layout.getLineEnd(firstLine);
+        float hx0 = layout.getPrimaryHorizontal(start);
+        float hx1 = layout.getPrimaryHorizontal(anchorEnd);
+        android.graphics.Rect sel = new android.graphics.Rect(
+                Math.round(Math.min(hx0, hx1)), layout.getLineTop(firstLine),
+                Math.round(Math.max(hx0, hx1)), layout.getLineBottom(firstLine));
+        offsetDescendantRectToMyCoords(body, sel);
+        // ScrollView 的滚动是画布平移，不体现在祖先的 left/top 里，得自己补回来
+        sel.offset(0, -bodyScroll.getScrollY());
+
+        bubbleSpeak.setText(listener.isSpeaking() ? R.string.action_cancel : R.string.action_speak);
+        bubble.measure(MeasureSpec.makeMeasureSpec(getWidth(), MeasureSpec.AT_MOST),
+                MeasureSpec.UNSPECIFIED);
+        int margin = dp(4);
+        int bw = bubble.getMeasuredWidth();
+        int bh = bubble.getMeasuredHeight();
+        int left = Math.max(margin, Math.min((sel.left + sel.right) / 2 - bw / 2, getWidth() - bw - margin));
+        int top = sel.top - bh - margin;
+        if (top < margin) {
+            top = Math.min(sel.bottom + margin, getHeight() - bh - margin);
+        }
+        LayoutParams lp = (LayoutParams) bubble.getLayoutParams();
+        lp.leftMargin = left;
+        lp.topMargin = top;
+        bubble.setLayoutParams(lp);
+        bubble.setVisibility(VISIBLE);
     }
 
     private ImageButton toolButton(Context context, android.graphics.drawable.Drawable icon,
@@ -331,6 +419,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
     /** 展开抽屉位并装入这份内容；已展开时＝原地换内容（N 种内容共用一格，人裁 2026-10-22）。 */
     private void openDrawer(DrawerContent content) {
+        bubble.setVisibility(GONE); // 抽屉与气泡抢的是同一块屏，展开这一格就先收气泡
         bindDrawer(content);
         scrim.setVisibility(VISIBLE);
         drawer.setVisibility(VISIBLE);
@@ -391,25 +480,18 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     }
 
     /**
-     * /＝编辑工具：**选区四项 → 「xx行」六项 → 翻译/朗读两出口 → 其余七项置灰占位**。
-     * 行一族作用于**光标所在行**（显示沿用 MT 短名）；七项按人给的原始次序传 null 占位——
-     * 整眼菜单先看全，缺的档期一眼可见。
+     * /＝编辑工具，**只管行级与全文级**（人裁 2026-10-22：选区级的复制/剪切/粘贴/翻译/TTS 归**选择气泡**，
+     * 不进这一格）。当前实装「xx行」六项（作用于**光标所在行**，显示沿用 MT 短名），
+     * 其余七项按人给的原始次序传 null 置灰占位——整眼菜单先看全，缺的档期一眼可见。
      */
     private DrawerContent editToolsContent(Context context) {
-        List<DrawerContent.Item> items = new ArrayList<>(24);
-        items.add(toolItem(R.string.editor_sel_all, this::selectAllText));
-        items.add(toolItem(R.string.action_copy, this::copySelection));
-        items.add(toolItem(R.string.editor_sel_cut, this::cutSelection));
-        items.add(toolItem(R.string.editor_sel_paste, this::pasteAtCursor));
+        List<DrawerContent.Item> items = new ArrayList<>(13);
         items.add(toolItem(R.string.editor_line_copy, this::copyLine));
         items.add(toolItem(R.string.editor_line_cut, this::cutLine));
         items.add(toolItem(R.string.editor_line_delete, this::deleteLine));
         items.add(toolItem(R.string.editor_line_clear, this::clearLine));
         items.add(toolItem(R.string.editor_line_replace, this::replaceLineWithClipboard));
         items.add(toolItem(R.string.editor_line_duplicate, this::duplicateLine));
-        items.add(toolItem(R.string.editor_translate, this::translateOutlet));
-        items.add(toolItem(listener.isSpeaking() ? R.string.action_cancel : R.string.action_speak,
-                this::speakOutlet));
         items.add(toolItem(R.string.editor_case_upper, null));
         items.add(toolItem(R.string.editor_case_lower, null));
         items.add(toolItem(R.string.editor_indent_add, null));
@@ -735,5 +817,26 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private int dp(int value) {
         return (int) TypedValue.applyDimension(
                 TypedValue.COMPLEX_UNIT_DIP, value, getResources().getDisplayMetrics());
+    }
+
+    /**
+     * 正文输入框：存在的唯一理由是 {@code onSelectionChanged} 这个 protected 回调——
+     * 「选区一形成就弹」没有别的通路（焦点监听看不见选区，文本监听看不见光标折叠）。
+     * 回调字段在视图建好后才挂：构造期 {@code EditText} 自己会调一次，那时气泡还不存在。
+     */
+    static final class BodyEditText extends EditText {
+        Runnable onSelectionChanged;
+
+        BodyEditText(Context context) {
+            super(context);
+        }
+
+        @Override
+        protected void onSelectionChanged(int start, int end) {
+            super.onSelectionChanged(start, end);
+            if (onSelectionChanged != null) {
+                onSelectionChanged.run();
+            }
+        }
     }
 }
