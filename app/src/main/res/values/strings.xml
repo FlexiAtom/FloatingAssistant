@@ -78,9 +78,19 @@
     <string name="editor_stat_lines">行数 %1$d</string>
     <string name="editor_stat_glyphs">字数 %1$d（非空白字符）</string>
     <string name="editor_stat_chars">字符数 %1$d</string>
-    <string name="editor_stat_bytes">字节数 %1$d（UTF-8）</string>
+    <string name="editor_stat_bytes">字节数 %1$d（%2$s）</string>
     <string name="editor_stat_caret">光标 第%1$d行 第%2$d列</string>
-    <string name="editor_stat_encoding">编码 UTF-8</string>
+    <string name="editor_stat_encoding">编码 %1$s</string>
+    <string name="editor_stat_newline">换行符 %1$s</string>
+    <string name="editor_more_newline">换行符</string>
+    <string name="editor_newline_lf">Linux（LF）</string>
+    <string name="editor_newline_crlf">Windows（CRLF）</string>
+    <string name="editor_newline_cr">MacOS（CR）</string>
+    <string name="editor_charset_other">其他编码…（%1$d 档）</string>
+    <string name="editor_charset_all">全部编码</string>
+    <string name="editor_charset_common">常用编码</string>
+    <string name="editor_discard_hint">有未保存的改动，重载会丢掉它们</string>
+    <string name="editor_discard_confirm">放弃并重载</string>
 
     <string name="translate_panel_title">翻译设置</string>
     <string name="translate_label_target">目标语言</string>

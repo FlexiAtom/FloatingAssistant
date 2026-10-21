@@ -12,7 +12,6 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -41,7 +40,13 @@ import java.util.regex.Pattern;
  * 之后才提交索引。这样最坏情况是"文件在、索引还没记上"（孤儿文件），下次读取会自愈成新一条
  * （{@link #indexHealed()}）；反过来则会静默丢正文。
  *
- * <p>对外一律异步（{@link #save}/{@link #load}/{@link #search}/{@link #body}/{@link #setPinned}），
+ * <p><b>编码与换行（E6b）</b>：盘上字节按该篇索引里的档位编解码，内存缓冲**恒为换行 {@code \n}**——
+ * {@code EditText} 认不了 CRLF，行号/光标行列/撤销快照那一整套也都按 {@code \n} 算，所以归一在进缓冲前、
+ * 展开在出盘前，两头各一次（{@link NotesCodec#decodeBytes}/{@link NotesCodec#encodeBytes}）。
+ * 换档＝一次真写：只改标签不重编码字节，索引就在撒谎，所以 {@code save} 必须带上当下档位。
+ * 编码档认不得时**读按 UTF-8 兜底、写也按 UTF-8 出字节**并记一条日志，绝不因为一档脏了就丢正文。
+ *
+ * <p>对外一律异步（{@link #save}/{@link #load}/{@link #search}/{@link #open}/{@link #reencode}/{@link #setPinned}），
  * 回调**回主线程**；参数 {@code id} 为 null/空＝还没有身份的新文档，落库时生成并回传。
  * 回调收到 {@code null} 表示这次 IO 失败（磁盘满、rename 被拒等），由调用方决定怎么告诉人。
  */
@@ -85,6 +90,21 @@ public final class NotesStore {
 
     // ---------------------------------------------------------------- 异步接口
 
+    /**
+     * 一篇的打开结果：缓冲里的正文（已按该篇编码解码、归一成 {@code \n}）＋该篇当下的索引元数据。
+     * 编辑器要拿 {@code record.charset}/{@code record.newline} 填信息带和那两个档位抽屉，
+     * 所以这两样一起回，省得人那边再发一次异步读、再对一次时序。
+     */
+    public static final class Doc {
+        public final String text;
+        public final Record record;
+
+        Doc(String text, Record record) {
+            this.text = text;
+            this.record = record;
+        }
+    }
+
     /** 全部文档（置顶在前、组内更新时间倒序），已对孤儿文件做过自愈。 */
     public void load(Consumer<List<Record>> onMain) {
         post(() -> indexHealed(), onMain);
@@ -103,7 +123,8 @@ public final class NotesStore {
             Pattern pattern = NotesCodec.tryCompile(query);
             List<Record> out = new ArrayList<>();
             for (Record r : all) {
-                if (NotesCodec.matches(pattern, query, r.title, readBody(r.id, SEARCH_BODY_LIMIT))) {
+                if (NotesCodec.matches(pattern, query, r.title,
+                        readBody(r.id, r.charset, SEARCH_BODY_LIMIT))) {
                     out.add(r);
                 }
             }
@@ -111,14 +132,50 @@ public final class NotesStore {
         }, onMain);
     }
 
-    /** 读正文；文件不在＝空串（行仍在列表里，标题还认，别让一次 IO 抖动把用户的条目变没）。 */
-    public void body(String id, Consumer<String> onMain) {
-        post(() -> readBody(id, Integer.MAX_VALUE), onMain);
+    /**
+     * 打开一篇：正文按**该篇索引里记的编码**解码并归一成 {@code \n}（见 {@link NotesCodec#toBuffer}），
+     * 连同索引元数据一起回——调用方要拿编码/换行档位填信息带和抽屉。
+     * 文件不在＝空串（行仍在列表里，标题还认，别让一次 IO 抖动把用户的条目变没）。
+     */
+    public void open(String id, Consumer<Doc> onMain) {
+        post(() -> {
+            Record record = recordOf(id);
+            return new Doc(readBody(id, record.charset, Integer.MAX_VALUE), record);
+        }, onMain);
     }
 
-    /** 落库一篇；回传实际使用的 id（新建时是新生成的）。 */
-    public void save(String id, String text, Consumer<String> onMain) {
-        post(() -> saveSync(id, text), onMain);
+    /**
+     * 落库一篇；编码与换行档位由调用方给（{@code null} 走默认档）。回传实际使用的 id（新建时是新生成的）。
+     * <p><b>换档必须触发一次真写</b>：光改索引里的标签、字节还是旧编码，标签就成了谎话——所以这里
+     * 是先建记录（顺便把标签洗成规范形）再按它编码出盘上字节，索引与文件不可能两套。
+     */
+    public void save(String id, String text, String charset, String newline, Consumer<String> onMain) {
+        post(() -> saveSync(id, text, charset, newline), onMain);
+    }
+
+    /**
+     * 「以指定编码重新加载」（人裁：字面意思，⋮ → 文件 → 指定编码重新加载）：把档位**写进索引**，
+     * 再按新档重读盘上原始字节。回传新的 {@link Doc}；{@code null}＝索引里没有这一条。
+     */
+    public void reencode(String id, String charset, Consumer<Doc> onMain) {
+        post(() -> {
+            List<Record> all = indexHealed();
+            List<Record> next = new ArrayList<>(all.size());
+            Record target = null;
+            for (Record r : all) {
+                if (!r.id.equals(id)) {
+                    next.add(r);
+                } else {
+                    target = new Record(r.id, r.pinned, r.updatedMs, r.title, charset, r.newline);
+                    next.add(target);
+                }
+            }
+            if (target == null) {
+                return null;
+            }
+            persist(NotesCodec.encode(NotesCodec.sorted(next)));
+            return new Doc(readBody(id, target.charset, Integer.MAX_VALUE), target);
+        }, onMain);
     }
 
     /** 置顶/取消置顶；只动索引，不碰正文。回传该文档当下的置顶态，null＝索引里没有这一条。 */
@@ -129,7 +186,7 @@ public final class NotesStore {
             List<Record> next = new ArrayList<>(records.size());
             for (Record r : records) {
                 if (r.id.equals(id)) {
-                    r = new Record(r.id, pinned, r.updatedMs, r.title);
+                    r = new Record(r.id, pinned, r.updatedMs, r.title, r.charset, r.newline);
                     done = pinned;
                 }
                 next.add(r);
@@ -161,17 +218,32 @@ public final class NotesStore {
         });
     }
 
-    private String saveSync(String id, String text) {
+    private String saveSync(String id, String text, String charset, String newline) {
         String target = id == null || id.isEmpty() ? newId() : id;
         String body = text == null ? "" : text;
         if (!dir.isDirectory() && !dir.mkdirs()) {
             Log.w(TAG, "notes dir unavailable: " + dir.getAbsolutePath());
             return null;
         }
+        List<Record> next = new ArrayList<>();
+        Record stale = null;
+        for (Record r : NotesCodec.decode(prefs.getString(K_INDEX, ""))) {
+            if (!r.id.equals(target)) {
+                next.add(r);
+            } else {
+                stale = r; // 编辑不改置顶态
+            }
+        }
+        // 先建记录：标签经它洗成规范形，盘上字节再按**同一个**记录编码，索引与文件不会两套
+        Record record = new Record(target, stale != null && stale.pinned,
+                System.currentTimeMillis(), NotesCodec.deriveTitle(body), charset, newline);
+        if (NotesCodec.charsetFor(record.charset) == null) {
+            Log.w(TAG, "charset unavailable, bytes written as UTF-8: " + record.charset);
+        }
         File tmp = new File(dir, "." + target + ".tmp");
         File out = new File(dir, target + SUFFIX);
         try (FileOutputStream stream = new FileOutputStream(tmp)) {
-            stream.write(body.getBytes(StandardCharsets.UTF_8));
+            stream.write(NotesCodec.encodeBytes(body, record.charset, record.newline));
             stream.flush();
             stream.getFD().sync(); // 先确保正文真到了盘上，再动索引
         } catch (IOException e) {
@@ -183,16 +255,7 @@ public final class NotesStore {
             tmp.delete();
             return null;
         }
-        boolean pinned = false;
-        List<Record> next = new ArrayList<>();
-        for (Record r : NotesCodec.decode(prefs.getString(K_INDEX, ""))) {
-            if (!r.id.equals(target)) {
-                next.add(r);
-            } else {
-                pinned = r.pinned; // 编辑不改置顶态
-            }
-        }
-        next.add(new Record(target, pinned, System.currentTimeMillis(), NotesCodec.deriveTitle(body)));
+        next.add(record);
         persist(NotesCodec.encode(NotesCodec.sorted(next)));
         return target;
     }
@@ -213,10 +276,11 @@ public final class NotesStore {
         }
     }
 
-    private String readBody(String id, int byteLimit) {
+    /** 盘上原始字节（截到 {@code byteLimit}）；文件不在或读失败回 {@code null}，由 {@link #readBody} 换成空串。 */
+    private byte[] readBytes(String id, int byteLimit) {
         File file = new File(dir, id + SUFFIX);
         if (!file.isFile()) {
-            return "";
+            return null;
         }
         long length = file.length();
         int read = (int) Math.min(length, byteLimit);
@@ -230,11 +294,32 @@ public final class NotesStore {
                 }
                 done += n;
             }
-            return new String(buffer, 0, done, StandardCharsets.UTF_8);
+            if (done == read) {
+                return buffer;
+            }
+            byte[] head = new byte[done];
+            System.arraycopy(buffer, 0, head, 0, done);
+            return head;
         } catch (IOException e) {
             Log.w(TAG, "body read failed: " + id, e);
-            return "";
+            return null;
         }
+    }
+
+    /** 按该篇的编码档解码成缓冲（{@code \n} 归一＋剥 BOM 都在 {@link NotesCodec#decodeBytes} 里）。 */
+    private String readBody(String id, String charset, int byteLimit) {
+        byte[] raw = readBytes(id, byteLimit);
+        return raw == null ? "" : NotesCodec.decodeBytes(raw, charset);
+    }
+
+    /** 索引里这一条；没记上（新建、或自愈前的孤儿）就现造一条默认档，读侧不需要分支。 */
+    private Record recordOf(String id) {
+        for (Record r : NotesCodec.decode(prefs.getString(K_INDEX, ""))) {
+            if (r.id.equals(id)) {
+                return r;
+            }
+        }
+        return new Record(id, false, 0L, "", null, null);
     }
 
     /** 索引 ＋ 自愈：正文文件在、索引没记上（写文件后被杀）时，按文件补一条，别把内容藏没。 */
@@ -256,9 +341,9 @@ public final class NotesStore {
                 continue;
             }
             known.add(id);
-            // 只为取标题而读个开头，不整篇进内存
+            // 只为取标题而读个开头，不整篇进内存；孤儿文件没有索引，档位只能按默认档猜（下一次 save 记真身）
             records.add(new Record(id, false, file.lastModified(),
-                    NotesCodec.deriveTitle(readBody(id, 4096))));
+                    NotesCodec.deriveTitle(readBody(id, NotesCodec.DEFAULT_CHARSET, 4096)), null, null));
         }
         // 自愈只补进内存、不反写索引：读操作不该有写副作用，真身下一次 save 会一并记下。
         return NotesCodec.sorted(records);

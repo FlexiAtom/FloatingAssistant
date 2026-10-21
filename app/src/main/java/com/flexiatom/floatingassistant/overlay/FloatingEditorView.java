@@ -36,7 +36,7 @@ import com.flexiatom.floatingassistant.core.EditorPrefs;
 import com.flexiatom.floatingassistant.core.NotesCodec;
 import com.flexiatom.floatingassistant.core.NotesStore;
 
-import java.nio.charset.StandardCharsets;
+import java.nio.charset.Charset;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -137,11 +137,20 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private final NotesStore notes;
     private final EditorPrefs prefs;
     private final TextView docName;
+    /** 信息带右格＝当下这篇的「编码·换行」两档（E6b）：一格装两个标签，省一行。 */
+    private final TextView encodingLabel;
     private final Runnable autosaveTick = this::persistCurrent;
     /** 写成方法引用而不是就地 lambda：字段初始化期 {@code drawerSearch} 还没赋值，javac 按 definite assignment 会拒。 */
     private final Runnable docSearchTick = this::runDocSearch;
     /** 当下这篇的身份；null＝新建、还没落过库。 */
     private String docId;
+    /** 当下这两档＝E5 索引里那两列的本地影子；换档立刻走一次落库，不一致只在写的途中存在一瞬。 */
+    private String docCharset = NotesCodec.DEFAULT_CHARSET;
+    private String docNewline = NotesCodec.DEFAULT_NEWLINE;
+    /** 盘上字节还是旧档（换档时正好有一次写在途）：脏判之外多一个"得写"的信号，别让标签成了谎话。 */
+    private boolean settingStale;
+    /** 换文档就自增：落库回调只对**当下这篇**有意义，旧一趟的结果一律丢掉。 */
+    private int docSeq;
     /** 上一次落库的内容——与正文相等就不写盘。 */
     private String savedText = "";
     /** 一次写只在途一份：回调之后再做脏判补写，免得同一篇被并发写出两个身份。 */
@@ -224,11 +233,11 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         docName = title;
         strip.addView(title, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
-        TextView encoding = new TextView(context);
-        encoding.setText("UTF-8");
-        encoding.setTextColor(onVariant);
-        encoding.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        strip.addView(encoding);
+        encodingLabel = new TextView(context);
+        encodingLabel.setTextColor(onVariant);
+        encodingLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        updateEncodingLabel();
+        strip.addView(encodingLabel);
         editor.addView(strip, new LinearLayout.LayoutParams(
                 LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT));
 
@@ -670,18 +679,18 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     /** 换文档前先落库当下这篇（人裁 §4c：宁多存不误丢）；两次写都排在同一条 {@code notes-io} 上，先后有保证。 */
     private void openNote(String id) {
         persistCurrent();
-        notes.body(id, text -> {
-            if (text == null) {
+        notes.open(id, doc -> {
+            if (doc == null) {
                 return; // 读挂了就保持现状，不要把正文换成空、也不收起抽屉——让人的编辑现场原样留着
             }
-            installDoc(id, text, false);
+            installDoc(doc.record.id, doc.text, doc.record.charset, doc.record.newline, false);
             closeDrawer();
         });
     }
 
     private void newDocument() {
         persistCurrent();
-        installDoc(null, "", true);
+        installDoc(null, "", NotesCodec.DEFAULT_CHARSET, NotesCodec.DEFAULT_NEWLINE, true);
         closeDrawer();
     }
 
@@ -694,8 +703,12 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     }
 
     /** 把正文换成另一篇：清撤销栈、认作已落库（载入不是用户的编辑，不该进撤销、也不该被自动落库写回）。 */
-    private void installDoc(String id, String text, boolean caretToEnd) {
+    private void installDoc(String id, String text, String charset, String newline, boolean caretToEnd) {
         docId = id;
+        docCharset = charset;
+        docNewline = newline;
+        settingStale = false;
+        docSeq++; // 在途的那一趟落库从此不属于当下这篇，回调只许改它的簿记
         savedText = text;
         initialLoadPending = false;
         undoStack.clear();
@@ -708,6 +721,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         applyingUndo = false;
         body.setSelection(caretToEnd ? text.length() : 0);
         updateDocName();
+        updateEncodingLabel();
         syncEditState();
     }
 
@@ -724,39 +738,46 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 }
             }
             final String id = latest.id;
-            notes.body(id, text -> {
-                if (text == null || !initialLoadPending) {
+            notes.open(id, doc -> {
+                if (doc == null || !initialLoadPending) {
                     return; // 等结果的这段时间里人已经打了字，就别把输入盖掉
                 }
-                installDoc(id, text, true);
+                installDoc(id, doc.text, doc.record.charset, doc.record.newline, true);
             });
         });
     }
 
     /**
-     * 落库当下这篇（💾 与自动落库与关面板同一条通路）。三种情况不写盘：在途一次没回、正文与上次落库相同、
-     * 空正文的新文档（那还不是一篇"文档"，生成一条空记录只是脏列表）。
+     * 落库当下这篇（💾 与自动落库与关面板与换档同一条通路）。三种情况不写盘：在途一次没回、
+     * 正文与上次落库相同**且档位已与盘上一致**、空正文的新文档（那还不是一篇"文档"，生成一条空记录只是脏列表）。
      */
     private void persistCurrent() {
         mainHandler.removeCallbacks(autosaveTick);
         String text = body.getText().toString();
-        if (saveInFlight || text.equals(savedText) || (text.isEmpty() && docId == null)) {
+        if (saveInFlight || (text.equals(savedText) && !settingStale)
+                || (text.isEmpty() && docId == null)) {
             return;
         }
         saveInFlight = true;
+        final int seq = docSeq;
         final String pendingId = docId;
-        notes.save(pendingId, text, savedId -> {
+        final String charset = docCharset;
+        final String newline = docNewline;
+        notes.save(pendingId, text, charset, newline, savedId -> {
             saveInFlight = false;
-            if (savedId == null) {
-                return; // 写挂了：正文一个字都不动，停手后下一次自动落库自会再试
+            if (savedId == null || seq != docSeq) {
+                return; // 写挂了：正文一个字都不动，停手后下一次自动落库自会再试；换了篇：这一趟的簿记不再归当下这篇
             }
             if (docId == null) {
                 docId = savedId;
             }
             savedText = text;
+            if (charset.equals(docCharset) && newline.equals(docNewline)) {
+                settingStale = false; // 这一趟的字节真按当下这两档出去了
+            }
             updateDocName(); // 信息带从「未命名」换成标题＝落库成功的人眼凭据
-            if (!body.getText().toString().equals(savedText)) {
-                mainHandler.postDelayed(autosaveTick, AUTOSAVE_MERGE_MS); // 期间又打了字，补一次
+            if (!body.getText().toString().equals(savedText) || settingStale) {
+                mainHandler.postDelayed(autosaveTick, AUTOSAVE_MERGE_MS); // 期间又打了字或又换了档，补一次
             }
             if (docListShowing && drawerOpen()) {
                 refreshDocList(drawerSearch.getText().toString());
@@ -772,6 +793,145 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private String titleOf(String title) {
         return title == null || title.isEmpty()
                 ? getContext().getString(R.string.editor_untitled) : title;
+    }
+
+    // ---------- E6b 两档（保存编码／换行符）：都**按篇**存，落 E5 索引那两列，不是全局档 ----------
+
+    /**
+     * 常用六档（人裁：先给常用的，其余走「其他…」那张全量表）。{@code UTF-8 BOM} 不是 JDK 的
+     * charset 名而是本 app 的档（见 {@link NotesCodec#BOM_LABEL}），列在这儿因为它是 Windows 记事本那一格。
+     */
+    private static final String[] COMMON_CHARSETS = {
+            NotesCodec.DEFAULT_CHARSET, NotesCodec.BOM_LABEL, "GBK", "GB18030", "Big5", "ISO-8859-1"};
+
+    private void updateEncodingLabel() {
+        encodingLabel.setText(docCharset + "·" + docNewline);
+    }
+
+    /** 缓冲与盘上不一致＝有未保存的改动（重载那两格先拿它问一次人，人裁 2026-10-22）。换档也算：档还没落到盘上。 */
+    private boolean dirty() {
+        return settingStale || !body.getText().toString().equals(savedText);
+    }
+
+    /** 重新加载文件＝丢掉缓冲里未落库的字，按当下两档从盘上重读。新文档还没文件可重读，菜单那格对它置灰。 */
+    private void reloadFromDisk() {
+        final String id = docId;
+        if (id == null) {
+            return;
+        }
+        Runnable go = () -> {
+            mainHandler.removeCallbacks(autosaveTick); // 决定放弃了，就先把排队的自动落库收回来
+            notes.open(id, doc -> {
+                if (doc == null || !id.equals(docId)) {
+                    return; // 读挂了保持现状；等结果的这段时间人已经换了篇，别把另一篇盖进来
+                }
+                installDoc(id, doc.text, doc.record.charset, doc.record.newline, false);
+                closeDrawer();
+            });
+        };
+        if (dirty()) {
+            confirmDiscard(R.string.editor_more_reload, go);
+        } else {
+            go.run();
+        }
+    }
+
+    /** 以指定编码重新加载＝挑一档，把这一档**写进索引**再按它重读盘上字节（这篇的编码从此就是它）。 */
+    private void reloadWithCharset() {
+        openCharsetPicker(R.string.editor_more_reload_charset, charset -> {
+            final String id = docId;
+            if (id == null) {
+                return;
+            }
+            Runnable go = () -> {
+                mainHandler.removeCallbacks(autosaveTick);
+                notes.reencode(id, charset, doc -> {
+                    if (doc == null || !id.equals(docId)) {
+                        return;
+                    }
+                    installDoc(id, doc.text, doc.record.charset, doc.record.newline, false);
+                    closeDrawer();
+                });
+            };
+            if (dirty()) {
+                confirmDiscard(R.string.editor_more_reload_charset, go);
+            } else {
+                go.run();
+            }
+        });
+    }
+
+    /**
+     * 换档统一走这一条：改影子、刷信息带、认作"盘上字节还是旧档"，再叫落库那一条通路补一次写——
+     * **换档＝一次真写**，只改标签不重出字节，索引就在撒谎。
+     */
+    private void applyDocSettings() {
+        updateEncodingLabel();
+        settingStale = true;
+        closeDrawer();
+        persistCurrent();
+    }
+
+    /** 放弃未保存改动的确认。抽屉位＝本 app 唯一的对话框替身：悬浮窗架构里没有 AlertDialog 这回事。 */
+    private void confirmDiscard(int titleRes, Runnable proceed) {
+        Context context = getContext();
+        List<DrawerContent.Item> items = new ArrayList<>(3);
+        items.add(greyRow(context.getString(R.string.editor_discard_hint)));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_discard_confirm), proceed));
+        items.add(new DrawerContent.Item(context.getString(R.string.action_cancel),
+                () -> bindDrawer(overflowContent(context)))); // 取消＝回到 ⋮ 那一眼，不让人重新找位置
+        openDrawer(new DrawerContent(context.getString(titleRes), null, null, false, items));
+    }
+
+    private void openCharsetPicker(int titleRes, java.util.function.Consumer<String> onPick) {
+        showCharsets(getContext().getString(titleRes), COMMON_CHARSETS, true, onPick);
+    }
+
+    private void openNewlinePicker() {
+        Context context = getContext();
+        List<DrawerContent.Item> items = new ArrayList<>(3);
+        items.add(newlineRow(context, R.string.editor_newline_lf, "LF"));
+        items.add(newlineRow(context, R.string.editor_newline_crlf, "CRLF"));
+        items.add(newlineRow(context, R.string.editor_newline_cr, "CR"));
+        openDrawer(new DrawerContent(context.getString(R.string.editor_more_newline),
+                null, null, false, items));
+    }
+
+    /** 三档按人的叫法显示（Linux/Windows/MacOS），标签 LF/CRLF/CR 不再同排——一栏两个名字只会糊。 */
+    private DrawerContent.Item newlineRow(Context context, int labelRes, String tag) {
+        return checkRow(context.getString(labelRes), tag.equals(docNewline),
+                () -> {
+                    docNewline = tag;
+                    applyDocSettings();
+                });
+    }
+
+    /**
+     * 编码档位表：一行一档、当下这篇的档打勾；平台没有的档**显示但点不动**——GBK/Big5 这类在各家 ROM
+     * 支持不齐，点出一篇乱码比灰着更坏。{@code offerFullList} 只给常用那张表挂「其他…」入口。
+     */
+    private void showCharsets(String title, String[] labels, boolean offerFullList,
+                              java.util.function.Consumer<String> onPick) {
+        Context context = getContext();
+        List<DrawerContent.Item> items = new ArrayList<>(labels.length + 1);
+        for (String label : labels) {
+            items.add(NotesCodec.charsetFor(label) == null
+                    ? greyRow(label) : checkRow(label, label.equals(docCharset), () -> onPick.accept(label)));
+        }
+        if (offerFullList) {
+            String[] all = Charset.availableCharsets().keySet().toArray(new String[0]);
+            items.add(new DrawerContent.Item(context.getString(R.string.editor_charset_other, all.length),
+                    () -> showCharsets(context.getString(R.string.editor_charset_all), all, false, onPick)));
+        }
+        openDrawer(new DrawerContent(title, null, null, false, items));
+    }
+
+    /** 「指定保存的编码」这一格：选完只改保存档，正文一个字不动（字节按新档重出一遍）。 */
+    private void openSaveCharsetPicker() {
+        openCharsetPicker(R.string.editor_more_save_charset, charset -> {
+            docCharset = charset;
+            applyDocSettings();
+        });
     }
 
     /**
@@ -805,16 +965,22 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     // ---------- ⋮＝溢出菜单（E6）：人 2026-10-22 定终版清单＝动作八项＋开关四项，按人给的原始次序排 ----------
 
     /**
-     * E6a 这一档实装三格＝统计、自动换行、流畅模式；余下传 null 置灰（与 {@code /} 同一口径：整眼菜单
-     * 先看全，缺的档期一眼可见）。「只读模式」要按篇存，等 E5 索引续列那一格；末尾的「翻译全文」**不在**
-     * 人这份清单里，是原提案留下的格子，占位等待裁。
+     * E6a 实装三格＝统计、自动换行、流畅模式；E6b 再点亮四格＝重新加载文件、以指定编码重新加载、
+     * 指定保存的编码、换行符（换行符是人后补的第 13 项，位置排在同为档位选择类的「指定保存的编码」之后）。
+     * 两格「重载」对还没落过库的新文档置灰——它没有"文件"可重读。余下仍传 null 置灰（与 {@code /} 同一口径：
+     * 整眼菜单先看全，缺的档期一眼可见）。「只读模式」要按篇存，等 E5 索引续列那一格；末尾的「翻译全文」
+     * **不在**人这份清单里，是原提案留下的格子，占位等待裁。
      */
     private DrawerContent overflowContent(Context context) {
-        List<DrawerContent.Item> items = new ArrayList<>(13);
+        boolean hasFile = docId != null;
+        List<DrawerContent.Item> items = new ArrayList<>(14);
         items.add(toolItem(R.string.editor_more_save_as, null));
-        items.add(toolItem(R.string.editor_more_reload, null));
-        items.add(toolItem(R.string.editor_more_reload_charset, null));
-        items.add(toolItem(R.string.editor_more_save_charset, null));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_more_reload),
+                hasFile ? this::reloadFromDisk : null));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_more_reload_charset),
+                hasFile ? this::reloadWithCharset : null));
+        items.add(toolItem(R.string.editor_more_save_charset, this::openSaveCharsetPicker));
+        items.add(toolItem(R.string.editor_more_newline, this::openNewlinePicker));
         items.add(toolItem(R.string.editor_more_stats, this::openStats));
         items.add(toolItem(R.string.editor_more_find, null));
         items.add(toolItem(R.string.editor_more_syntax, null));
@@ -830,10 +996,13 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
     /** 勾选类条目＝前缀一枚勾或空框（人原话「以下是是否勾选类的」）；行首对齐已有 START 重力，符号不会飘。 */
     private DrawerContent.Item checkItem(int labelRes, boolean checked, Runnable action) {
+        return checkRow(getContext().getString(labelRes), checked, action);
+    }
+
+    private DrawerContent.Item checkRow(String label, boolean checked, Runnable action) {
         Context context = getContext();
         return new DrawerContent.Item(context.getString(
-                checked ? R.string.editor_check_on : R.string.editor_check_off,
-                context.getString(labelRes)), action);
+                checked ? R.string.editor_check_on : R.string.editor_check_off, label), action);
     }
 
     private DrawerContent.Item greyRow(String label) {
@@ -884,14 +1053,16 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             }
         }
         Context context = getContext();
-        List<DrawerContent.Item> items = new ArrayList<>(6);
+        List<DrawerContent.Item> items = new ArrayList<>(7);
         items.add(greyRow(context.getString(R.string.editor_stat_lines, lines)));
         items.add(greyRow(context.getString(R.string.editor_stat_glyphs, glyphs)));
         items.add(greyRow(context.getString(R.string.editor_stat_chars, text.length())));
+        // 字节数按**这篇的编码档与换行档**算：同一篇正文 GBK 比 UTF-8 少三成，硬标 UTF-8 就不是它落盘的大小了
         items.add(greyRow(context.getString(R.string.editor_stat_bytes,
-                text.getBytes(StandardCharsets.UTF_8).length)));
+                NotesCodec.encodeBytes(text, docCharset, docNewline).length, docCharset)));
         items.add(greyRow(context.getString(R.string.editor_stat_caret, caretLine, caret - lineStart + 1)));
-        items.add(greyRow(context.getString(R.string.editor_stat_encoding)));
+        items.add(greyRow(context.getString(R.string.editor_stat_encoding, docCharset)));
+        items.add(greyRow(context.getString(R.string.editor_stat_newline, docNewline)));
         openDrawer(new DrawerContent(context.getString(R.string.editor_more_stats),
                 null, null, false, items));
     }
