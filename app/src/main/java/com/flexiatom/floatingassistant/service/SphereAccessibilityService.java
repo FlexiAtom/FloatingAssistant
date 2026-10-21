@@ -656,8 +656,9 @@ public class SphereAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * 打开统一编辑器（§4.4，m5-editor-asr-notes E1）。E1 阶段关闭即丢弃——落库是 E5（Room）的事、
-     * 注入出口是 E4，都不进这一刀。E3 的两个出口（送翻译 / 送 TTS）在**这里**接线：模型、引擎、线程
+     * 打开统一编辑器（§4.4，m5-editor-asr-notes E1）。E1 阶段关闭即丢弃；E5 之后落库在**视图内**自理
+     * （{@code NotesStore}，弃 Room 的对账见该项 §4b），服务层不插手——注入出口是 E4，仍不进这一刀。
+     * E3 的两个出口（送翻译 / 送 TTS）在**这里**接线：模型、引擎、线程
      * 与反馈浮层全归服务（复用采集链那套 {@code mtHub}/{@code ttsEngine}，编辑器不另起引擎），
      * 视图只交出一段源文，并决定译文落在正文哪一行。
      * 取向同 {@link #openTranslateSettings()}：面板已在就收起（当开关用），内容视图必须用 {@code themedContext()} 构造。
