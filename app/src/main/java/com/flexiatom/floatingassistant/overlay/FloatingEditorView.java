@@ -550,6 +550,10 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     }
 
     private void bindDrawer(DrawerContent content) {
+        // 换内容＝换身份：文档列表那套态（docListShowing）不归零，/ 就还顶着「列表正在显示」的招牌——
+        // 于是开过 ≡ 之后任何一次落库/置顶回调（它们只认 docListShowing + drawerOpen）都会把文档条目
+        // 直接盖进 / 的抽屉里。人测 2026-10-22：「斜线有概率显示为三横线的内容」，条件＝这面板里开过 ≡。
+        docListShowing = false;
         drawerTitle.setText(content.title);
         if (content.headerIcon == null) {
             drawerHeaderAction.setVisibility(GONE);
