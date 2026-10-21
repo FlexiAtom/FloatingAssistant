@@ -26,12 +26,16 @@
     <string name="tool_translate_settings">翻译设置</string>
     <string name="tool_notebook">记事本</string>
 
-    <string name="editor_title">记事本</string>
-    <string name="editor_hint">在这里打字…长按可粘贴</string>
-    <string name="editor_select_all">全选</string>
-    <string name="editor_copy">复制</string>
-    <string name="editor_paste">粘贴</string>
-    <string name="editor_undo">撤销</string>
+    <string name="editor_untitled">untitled</string>
+    <string name="editor_drawer_title">文本编辑器</string>
+    <string name="editor_search_hint">Search</string>
+    <string name="editor_cd_list">文档列表</string>
+    <string name="editor_cd_undo">撤销</string>
+    <string name="editor_cd_redo">重做</string>
+    <string name="editor_cd_save">保存</string>
+    <string name="editor_cd_tools">编辑工具</string>
+    <string name="editor_cd_more">更多</string>
+    <string name="editor_cd_new">新建文件</string>
 
     <string name="translate_panel_title">翻译设置</string>
     <string name="translate_label_target">目标语言</string>
