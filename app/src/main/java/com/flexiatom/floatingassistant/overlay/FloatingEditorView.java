@@ -30,6 +30,8 @@ import android.widget.Space;
 import android.widget.TextView;
 
 import com.flexiatom.floatingassistant.R;
+import com.flexiatom.floatingassistant.core.NotesCodec;
+import com.flexiatom.floatingassistant.core.NotesStore;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -47,11 +49,14 @@ import java.util.List;
  * 信息带：文档名（左）+ 编码（右）。{@code /}＝**行级与全文级**工具（走 {@link DrawerContent}），
  * 选区级动作一律走**选择气泡**（复制/剪切/粘贴/全选/朗读/翻译）；无选区时长按正文唤起同一只气泡的
  * 行级五项（复制行/剪切行/粘贴/朗读/翻译），作用光标所在行——两套内容的分法皆人裁 2026-10-22；
- * 💾 随 E5、⋮ 随 E6 点亮，现为禁用占位。
+ * 💾 已随 E5 点亮（落库走 {@link NotesStore}），⋮ 随 E6 点亮，仍为禁用占位。
  *
  * <p>图标：除软盘（人供 SVG 几何件，{@code ic_floppy.xml}）外全部 {@link SketchIcons} 运行时现绘。
  * 朗读与翻译不在本视图里造引擎，经 {@link Listener} 交回服务层用现成 TTS/MT 跑。
- * 落库（E5）与 ASR 插入口（§4.4-3）都不在内——本视图只认「打开时给初值、关闭时由调用方决定去留」。
+ * <b>但记事本的落库在本视图里</b>：E5 之后「打开＝接着上次那篇读、停手/换篇/关面板＝写回文件」全是视图的
+ * 责任，服务层不插手——{@link NotesStore} 是存储层不是引擎（无模型、无并发预算），沿用仓内
+ * {@code SettingsStore} 那套"谁要用谁自己 {@code of(context)}"的多实例口径，不另开注入通路。
+ * ASR 插入口（§4.4-3，E2）仍未接。
  */
 public final class FloatingEditorView extends FrameLayout implements PanelView {
 
@@ -116,9 +121,34 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     };
     private boolean applyingUndo;
 
+    // ---------- E5 记事本：一篇一个正文文件，身份与脏判都记在这里 ----------
+
+    /** 自动落库的静默窗口：停手这么久才写盘，不每个字盘一次（同撤销合并的思路，只是更长）。 */
+    private static final long AUTOSAVE_MERGE_MS = 1200L;
+    /** 搜索框输入合并窗口：比落库短，边打边看结果要跟得上手。 */
+    private static final long DOC_SEARCH_DEBOUNCE_MS = 220L;
+    private final NotesStore notes;
+    private final TextView docName;
+    private final Runnable autosaveTick = this::persistCurrent;
+    /** 写成方法引用而不是就地 lambda：字段初始化期 {@code drawerSearch} 还没赋值，javac 按 definite assignment 会拒。 */
+    private final Runnable docSearchTick = this::runDocSearch;
+    /** 当下这篇的身份；null＝新建、还没落过库。 */
+    private String docId;
+    /** 上一次落库的内容——与正文相等就不写盘。 */
+    private String savedText = "";
+    /** 一次写只在途一份：回调之后再做脏判补写，免得同一篇被并发写出两个身份。 */
+    private boolean saveInFlight;
+    /** 构造时那次「取最近一篇」是否仍有效：人已经动过正文就作废，不把输入盖掉。 */
+    private boolean initialLoadPending = true;
+    /** 当前抽屉装的是否文档列表——搜索框只对它有反应，{@code /} 菜单那格没有搜索框。 */
+    private boolean docListShowing;
+    /** 列表刷新与搜索共用一个代次：只认最后一次请求的结果，早到的旧结果丢掉。 */
+    private int listSeq;
+
     public FloatingEditorView(Context context, Listener listener) {
         super(context);
         this.listener = listener;
+        this.notes = NotesStore.of(context);
 
         float density = getResources().getDisplayMetrics().density;
         int onSurface = M3.color(context, M3.ON_SURFACE);
@@ -153,7 +183,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         toolbar.setOrientation(LinearLayout.HORIZONTAL);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
         ImageButton listButton = toolButton(context, SketchIcons.of(SketchIcons.HAMBURGER, onSurface, density),
-                R.string.editor_cd_list, v -> openDrawer(docListContent(context, onSurface, density)));
+                R.string.editor_cd_list, v -> openDocDrawer());
         toolbar.addView(listButton);
         toolbar.addView(new Space(context), new LinearLayout.LayoutParams(0, 1, 1f));
         undoButton = toolButton(context, SketchIcons.of(SketchIcons.UNDO, onSurface, density),
@@ -162,8 +192,9 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         redoButton = toolButton(context, SketchIcons.of(SketchIcons.REDO, onSurface, density),
                 R.string.editor_cd_redo, v -> redo());
         toolbar.addView(redoButton);
-        toolbar.addView(disabledToolButton(context, icon(context, R.drawable.ic_floppy, onSurface),
-                R.string.editor_cd_save));
+        // 💾 随 E5 点亮（人裁 2026-10-21：□＝软盘保存钮）
+        toolbar.addView(toolButton(context, icon(context, R.drawable.ic_floppy, onSurface),
+                R.string.editor_cd_save, v -> persistCurrent()));
         toolbar.addView(toolButton(context, SketchIcons.of(SketchIcons.SLASH, onSurface, density),
                 R.string.editor_cd_tools, v -> openDrawer(editToolsContent(context))));
         toolbar.addView(disabledToolButton(context, SketchIcons.of(SketchIcons.DOTS, onSurface, density),
@@ -177,11 +208,12 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         LinearLayout strip = new LinearLayout(context);
         strip.setOrientation(LinearLayout.HORIZONTAL);
         strip.setGravity(Gravity.CENTER_VERTICAL);
-        TextView docName = new TextView(context);
-        docName.setText(R.string.editor_untitled);
-        docName.setTextColor(onVariant);
-        docName.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        strip.addView(docName, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
+        TextView title = new TextView(context);
+        title.setText(R.string.editor_untitled);
+        title.setTextColor(onVariant);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        docName = title;
+        strip.addView(title, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
         TextView encoding = new TextView(context);
         encoding.setText("UTF-8");
         encoding.setTextColor(onVariant);
@@ -233,6 +265,9 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 }
                 mainHandler.removeCallbacks(undoFlush);
                 mainHandler.postDelayed(undoFlush, UNDO_MERGE_MS);
+                initialLoadPending = false; // 人已动笔：构造时那次「取最近一篇」不许再盖掉输入
+                mainHandler.removeCallbacks(autosaveTick);
+                mainHandler.postDelayed(autosaveTick, AUTOSAVE_MERGE_MS);
             }
         });
         bodyScroll = new ScrollView(context);
@@ -326,6 +361,27 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             lineBubblePinned = true;
             updateBubbleForSelection();
         };
+
+        // ---------- E5：搜索框接列表过滤（只在文档列表那格生效），并接着上次那篇开 ----------
+        drawerSearch.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                if (!docListShowing) {
+                    return; // / 那格没有搜索框，别让它显示时也在背后发查询
+                }
+                mainHandler.removeCallbacks(docSearchTick);
+                mainHandler.postDelayed(docSearchTick, DOC_SEARCH_DEBOUNCE_MS);
+            }
+        });
+        loadLastDoc();
     }
 
     /**
@@ -532,17 +588,183 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             b.setAlpha(0.38f);
         } else {
             b.setOnClickListener(v -> item.action.run());
+            if (item.longAction != null) {
+                b.setOnLongClickListener(v -> {
+                    item.longAction.run();
+                    return true; // 吃掉这次长按，否则紧接着的抬起会被当成一次普通点击
+                });
+            }
         }
         return b;
     }
 
-    /** ≡＝文档列表：落库与新建随 E5，今天栏内空着，先把外壳与形态跑通。 */
-    private static DrawerContent docListContent(Context context, int onSurface, float density) {
+    /** ≡＝文档列表（E5）：栏头右上＝新建，搜索框＝默认正则，条目＝一篇文档，**长按＝置顶/取消置顶**。 */
+    private DrawerContent docListContent() {
+        Context context = getContext();
         return new DrawerContent(context.getString(R.string.editor_drawer_title),
-                SketchIcons.of(SketchIcons.SQUARE, onSurface, density),
-                () -> { /* E5：新建文档 */ },
+                SketchIcons.of(SketchIcons.SQUARE, M3.color(context, M3.ON_SURFACE),
+                        context.getResources().getDisplayMetrics().density),
+                this::newDocument,
                 true,
                 Collections.emptyList());
+    }
+
+    private void openDocDrawer() {
+        docListShowing = false;    // 先关监听，免得清词这一下在背后发一次查询
+        drawerSearch.setText("");
+        openDrawer(docListContent());
+        docListShowing = true;
+        refreshDocList("");
+    }
+
+    /**
+     * 列表与搜索结果都走 {@code notes-io} 线程读盘，回主线程换条目。
+     * 代次 {@code listSeq} 是唯一的时间判据：抽屉里连打几个字会发出好几个查询，只有最后一个的结果能落屏
+     * ——否则旧查询的条目会把新查询的盖回去。
+     */
+    private void refreshDocList(String query) {
+        final int seq = ++listSeq;
+        java.util.function.Consumer<List<NotesCodec.Record>> onMain = records -> {
+            if (seq != listSeq || !docListShowing || !drawerOpen()) {
+                return;
+            }
+            bindDocRows(records == null ? Collections.<NotesCodec.Record>emptyList() : records);
+        };
+        if (query == null || query.isEmpty()) {
+            notes.load(onMain);
+        } else {
+            notes.search(query, onMain);
+        }
+    }
+
+    /** 搜索框停手到点：拿当下这行字去查（默认正则，非法正则由存储层退回字面包含）。 */
+    private void runDocSearch() {
+        refreshDocList(drawerSearch.getText().toString());
+    }
+
+    /** 置顶在前（{@link NotesCodec#sorted} 的口径），当下这篇行尾点个 {@code ▸}——列表窄，得知道自己在哪。 */
+    private void bindDocRows(List<NotesCodec.Record> records) {
+        drawerList.removeAllViews();
+        if (records.isEmpty()) {
+            drawerList.addView(drawerRow(new DrawerContent.Item(
+                    getContext().getString(R.string.editor_notes_empty), null, null)));
+            return;
+        }
+        for (NotesCodec.Record record : records) {
+            String label = (record.pinned ? "★ " : "") + titleOf(record.title)
+                    + (record.id.equals(docId) ? " ▸" : "");
+            String id = record.id;
+            boolean pinned = record.pinned;
+            drawerList.addView(drawerRow(new DrawerContent.Item(label,
+                    () -> openNote(id), () -> togglePin(id, !pinned))));
+        }
+    }
+
+    /** 换文档前先落库当下这篇（人裁 §4c：宁多存不误丢）；两次写都排在同一条 {@code notes-io} 上，先后有保证。 */
+    private void openNote(String id) {
+        persistCurrent();
+        notes.body(id, text -> {
+            if (text == null) {
+                return; // 读挂了就保持现状，不要把正文换成空、也不收起抽屉——让人的编辑现场原样留着
+            }
+            installDoc(id, text, false);
+            closeDrawer();
+        });
+    }
+
+    private void newDocument() {
+        persistCurrent();
+        installDoc(null, "", true);
+        closeDrawer();
+    }
+
+    private void togglePin(String id, boolean pinned) {
+        notes.setPinned(id, pinned, ignored -> {
+            if (docListShowing && drawerOpen()) {
+                refreshDocList(drawerSearch.getText().toString());
+            }
+        });
+    }
+
+    /** 把正文换成另一篇：清撤销栈、认作已落库（载入不是用户的编辑，不该进撤销、也不该被自动落库写回）。 */
+    private void installDoc(String id, String text, boolean caretToEnd) {
+        docId = id;
+        savedText = text;
+        initialLoadPending = false;
+        undoStack.clear();
+        redoStack.clear();
+        pendingUndoBase = null;
+        mainHandler.removeCallbacks(undoFlush);
+        mainHandler.removeCallbacks(autosaveTick);
+        applyingUndo = true;
+        body.setText(text);
+        applyingUndo = false;
+        body.setSelection(caretToEnd ? text.length() : 0);
+        updateDocName();
+        syncEditState();
+    }
+
+    /** 打开编辑器＝接着上次那篇读（取更新时间最新的一篇——置顶是给列表排序用的，不代表"这篇在写"）。 */
+    private void loadLastDoc() {
+        notes.load(records -> {
+            if (!initialLoadPending || records == null || records.isEmpty()) {
+                return;
+            }
+            NotesCodec.Record latest = records.get(0);
+            for (NotesCodec.Record r : records) {
+                if (r.updatedMs > latest.updatedMs) {
+                    latest = r;
+                }
+            }
+            final String id = latest.id;
+            notes.body(id, text -> {
+                if (text == null || !initialLoadPending) {
+                    return; // 等结果的这段时间里人已经打了字，就别把输入盖掉
+                }
+                installDoc(id, text, true);
+            });
+        });
+    }
+
+    /**
+     * 落库当下这篇（💾 与自动落库与关面板同一条通路）。三种情况不写盘：在途一次没回、正文与上次落库相同、
+     * 空正文的新文档（那还不是一篇"文档"，生成一条空记录只是脏列表）。
+     */
+    private void persistCurrent() {
+        mainHandler.removeCallbacks(autosaveTick);
+        String text = body.getText().toString();
+        if (saveInFlight || text.equals(savedText) || (text.isEmpty() && docId == null)) {
+            return;
+        }
+        saveInFlight = true;
+        final String pendingId = docId;
+        notes.save(pendingId, text, savedId -> {
+            saveInFlight = false;
+            if (savedId == null) {
+                return; // 写挂了：正文一个字都不动，停手后下一次自动落库自会再试
+            }
+            if (docId == null) {
+                docId = savedId;
+            }
+            savedText = text;
+            updateDocName(); // 信息带从「未命名」换成标题＝落库成功的人眼凭据
+            if (!body.getText().toString().equals(savedText)) {
+                mainHandler.postDelayed(autosaveTick, AUTOSAVE_MERGE_MS); // 期间又打了字，补一次
+            }
+            if (docListShowing && drawerOpen()) {
+                refreshDocList(drawerSearch.getText().toString());
+            }
+        });
+    }
+
+    /** 标题＝正文首行（存储层同一口径），空白篇显示「未命名」。 */
+    private void updateDocName() {
+        docName.setText(titleOf(NotesCodec.deriveTitle(body.getText().toString())));
+    }
+
+    private String titleOf(String title) {
+        return title == null || title.isEmpty()
+                ? getContext().getString(R.string.editor_untitled) : title;
     }
 
     /**
@@ -882,6 +1104,19 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             return true;
         }
         return super.dispatchKeyEvent(event);
+    }
+
+    /**
+     * 视图从窗上摘下来＝最后一次落库机会。关面板的通路不止一条（返回键、拖曳条、换别的面板、服务销毁），
+     * 全都要经过这一格，所以挂在这里而不是逐条去补调用方。写是异步的：视图已摘不影响
+     * {@code notes-io} 把那一次写完。
+     */
+    @Override
+    protected void onDetachedFromWindow() {
+        mainHandler.removeCallbacks(autosaveTick);
+        mainHandler.removeCallbacks(docSearchTick);
+        persistCurrent();
+        super.onDetachedFromWindow();
     }
 
     private int dp(int value) {

@@ -29,6 +29,7 @@
     <string name="editor_untitled">untitled</string>
     <string name="editor_drawer_title">文本编辑器</string>
     <string name="editor_search_hint">Search</string>
+    <string name="editor_notes_empty">暂无文档</string>
     <string name="editor_cd_list">文档列表</string>
     <string name="editor_cd_undo">撤销</string>
     <string name="editor_cd_redo">重做</string>

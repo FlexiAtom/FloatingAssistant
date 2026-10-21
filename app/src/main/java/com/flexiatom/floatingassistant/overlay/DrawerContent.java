@@ -14,14 +14,20 @@ import java.util.List;
  */
 final class DrawerContent {
 
-    /** 抽屉里的一条：文案 + 动作。 */
+    /** 抽屉里的一条：文案 + 动作（{@code longAction} 可无＝长按不做事）。 */
     static final class Item {
         final String label;
         final Runnable action;
+        final Runnable longAction;
 
         Item(String label, Runnable action) {
+            this(label, action, null);
+        }
+
+        Item(String label, Runnable action, Runnable longAction) {
             this.label = label;
             this.action = action;
+            this.longAction = longAction;
         }
     }
 
