@@ -51,6 +51,18 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         void onClose();
 
         void onMove(int dx, int dy);
+
+        /**
+         * 送翻译（E3 出口）：源文已在视图侧按口径取好，模型与线程都归服务侧；
+         * 结果**回主线程**交给 {@code onResult}，失败或空回 {@code null}（视图不动，提示由服务侧浮层给）。
+         */
+        void onTranslate(String source, java.util.function.Consumer<String> onResult);
+
+        /** 送 TTS（E3 出口）：开关语义在引擎侧——正在读时再按＝停。 */
+        void onSpeak(String text);
+
+        /** 当下是否在朗读：抽屉条目标签「朗读」/「取消」由它定（与服务侧面板钮同一条规则）。 */
+        boolean isSpeaking();
     }
 
     /** 编辑区高（dp）：与 E1 同值，编辑器的主战场。 */
@@ -379,17 +391,25 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     }
 
     /**
-     * /＝编辑工具：人裁先做「xx行」一族（作用于**光标所在行**，显示沿用 MT 的短名），
-     * 其余七项按人给的原始次序传 null 置灰占位——整眼菜单先看全，缺的档期一眼可见。
+     * /＝编辑工具：**选区四项 → 「xx行」六项 → 翻译/朗读两出口 → 其余七项置灰占位**。
+     * 行一族作用于**光标所在行**（显示沿用 MT 短名）；七项按人给的原始次序传 null 占位——
+     * 整眼菜单先看全，缺的档期一眼可见。
      */
     private DrawerContent editToolsContent(Context context) {
-        List<DrawerContent.Item> items = new ArrayList<>(13);
+        List<DrawerContent.Item> items = new ArrayList<>(24);
+        items.add(toolItem(R.string.editor_sel_all, this::selectAllText));
+        items.add(toolItem(R.string.action_copy, this::copySelection));
+        items.add(toolItem(R.string.editor_sel_cut, this::cutSelection));
+        items.add(toolItem(R.string.editor_sel_paste, this::pasteAtCursor));
         items.add(toolItem(R.string.editor_line_copy, this::copyLine));
         items.add(toolItem(R.string.editor_line_cut, this::cutLine));
         items.add(toolItem(R.string.editor_line_delete, this::deleteLine));
         items.add(toolItem(R.string.editor_line_clear, this::clearLine));
         items.add(toolItem(R.string.editor_line_replace, this::replaceLineWithClipboard));
         items.add(toolItem(R.string.editor_line_duplicate, this::duplicateLine));
+        items.add(toolItem(R.string.editor_translate, this::translateOutlet));
+        items.add(toolItem(listener.isSpeaking() ? R.string.action_cancel : R.string.action_speak,
+                this::speakOutlet));
         items.add(toolItem(R.string.editor_case_upper, null));
         items.add(toolItem(R.string.editor_case_lower, null));
         items.add(toolItem(R.string.editor_indent_add, null));
@@ -421,6 +441,28 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         if (payload.isEmpty()) {
             return;
         }
+        writeClipboard(payload);
+    }
+
+    /**
+     * 剪切选区。**无选区时剪光标所在行**——这是编辑器惯例（与「无选区复制全文」有意不对称：
+     * 一键删掉全文的代价太大，而删一行还能撤销）。
+     */
+    void cutSelection() {
+        String text = body.getText().toString();
+        int start = body.getSelectionStart();
+        int end = body.getSelectionEnd();
+        if (end <= start) {
+            cutLine();
+            return;
+        }
+        writeClipboard(text.substring(start, end));
+        Editable editable = body.getText();
+        editable.replace(start, end, "");
+        body.setSelection(Math.min(start, editable.length()));
+    }
+
+    private void writeClipboard(String payload) {
         ClipboardManager cm = (ClipboardManager)
                 getContext().getSystemService(Context.CLIPBOARD_SERVICE);
         if (cm != null) {
@@ -459,10 +501,15 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         }
     }
 
-    /** 光标所在行，行首/行尾偏移不含行尾换行符。 */
+    /** 光标所在行（＝选区起点所在行）。 */
     private Line cursorLine() {
+        return lineAt(body.getSelectionStart());
+    }
+
+    /** 某偏移所在行，行首/行尾偏移不含行尾换行符。 */
+    private Line lineAt(int offset) {
         String text = body.getText().toString();
-        int caret = Math.max(0, Math.min(body.getSelectionStart(), text.length()));
+        int caret = Math.max(0, Math.min(offset, text.length()));
         int lineStart = text.lastIndexOf('\n', caret - 1) + 1;
         int nextBreak = text.indexOf('\n', lineStart);
         int lineEnd = nextBreak < 0 ? text.length() : nextBreak;
@@ -470,11 +517,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     }
 
     private void copyLine() {
-        ClipboardManager cm = (ClipboardManager)
-                getContext().getSystemService(Context.CLIPBOARD_SERVICE);
-        if (cm != null) {
-            cm.setPrimaryClip(ClipData.newPlainText("editor", cursorLine().text));
-        }
+        writeClipboard(cursorLine().text);
     }
 
     private void cutLine() {
@@ -536,6 +579,43 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         int column = Math.max(0, Math.min(caret - line.start, line.text.length()));
         text.insert(line.end, "\n" + line.text);
         body.setSelection(Math.min(line.end + 1 + column, text.length()));
+    }
+
+    // ---------- 输出出口（E3）：翻译与朗读同一条口径——有选区取选区，无选区取光标所在行 ----------
+
+    private void translateOutlet() {
+        String source = outletSource();
+        if (!source.isEmpty()) {
+            listener.onTranslate(source, this::insertTranslationBelowCaret);
+        }
+    }
+
+    private void speakOutlet() {
+        String source = outletSource();
+        if (!source.isEmpty()) {
+            listener.onSpeak(source);
+        }
+    }
+
+    private String outletSource() {
+        String text = body.getText().toString();
+        int start = Math.max(0, Math.min(body.getSelectionStart(), text.length()));
+        int end = Math.max(start, Math.min(body.getSelectionEnd(), text.length()));
+        return end > start ? text.substring(start, end) : lineAt(start).text;
+    }
+
+    /**
+     * 模型要跑几秒才回来，所以插入锚点**到了再算**：这期间人挪了光标、又打了字，译文就落在当下那一行的
+     * 正下方，而不是插进一个早就漂走的旧偏移里。译文自带的换行原样保留。
+     */
+    private void insertTranslationBelowCaret(String translated) {
+        if (translated == null || translated.isEmpty()) {
+            return;
+        }
+        Editable text = body.getText();
+        Line anchor = lineAt(Math.max(body.getSelectionStart(), body.getSelectionEnd()));
+        text.insert(anchor.end, "\n" + translated);
+        body.setSelection(Math.min(anchor.end + 1 + translated.length(), text.length()));
     }
 
     private void undo() {

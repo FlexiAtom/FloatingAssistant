@@ -656,9 +656,11 @@ public class SphereAccessibilityService extends AccessibilityService {
     }
 
     /**
-     * 打开统一编辑器（§4.4，m5-editor-asr-notes E1）。E1 阶段关闭即丢弃——落库是 E5（Room）的事，
-     * ASR 插入口是 E2、注入出口是 E4，都不进这一刀。取向同 {@link #openTranslateSettings()}：
-     * 面板已在就收起（当开关用），内容视图必须用 {@code themedContext()} 构造。
+     * 打开统一编辑器（§4.4，m5-editor-asr-notes E1）。E1 阶段关闭即丢弃——落库是 E5（Room）的事、
+     * 注入出口是 E4，都不进这一刀。E3 的两个出口（送翻译 / 送 TTS）在**这里**接线：模型、引擎、线程
+     * 与反馈浮层全归服务（复用采集链那套 {@code mtHub}/{@code ttsEngine}，编辑器不另起引擎），
+     * 视图只交出一段源文，并决定译文落在正文哪一行。
+     * 取向同 {@link #openTranslateSettings()}：面板已在就收起（当开关用），内容视图必须用 {@code themedContext()} 构造。
      */
     private void openEditor() {
         if (overlayManager.isPanelVisible()) {
@@ -669,12 +671,59 @@ public class SphereAccessibilityService extends AccessibilityService {
                 new FloatingEditorView.Listener() {
                     @Override
                     public void onClose() {
+                        stopSpeaking(); // 同文本面板：面板关了声音不该还在
                         overlayManager.hidePanel();
                     }
 
                     @Override
                     public void onMove(int dx, int dy) {
                         overlayManager.movePanel(dx, dy);
+                    }
+
+                    @Override
+                    public void onTranslate(String source, java.util.function.Consumer<String> onResult) {
+                        overlayManager.showTextOverlay("editor_mt_feedback",
+                                getString(R.string.editor_mt_running), FEEDBACK_MS);
+                        new Thread(() -> {
+                            String out = null;
+                            long t0 = System.nanoTime();
+                            try {
+                                com.flexiatom.floatingassistant.core.MtEngine m = mtHub.engineFor(source);
+                                out = m == null ? null : m.translate(source, settings.tgtLang());
+                            } catch (Throwable e) {
+                                android.util.Log.e("E3MT", "editor translate failed: " + e, e);
+                            }
+                            final String result = out;
+                            android.util.Log.i("E3MT", "chars=" + source.length()
+                                    + " ms=" + (System.nanoTime() - t0) / 1_000_000L
+                                    + " out=" + (result == null ? "null" : "len " + result.length()));
+                            mainHandler.post(() -> {
+                                if (result == null || result.isEmpty()) {
+                                    overlayManager.showTextOverlay("editor_mt_feedback",
+                                            getString(R.string.editor_mt_failed), FEEDBACK_MS);
+                                }
+                                onResult.accept(result);
+                            });
+                        }, "e3-mt").start();
+                    }
+
+                    @Override
+                    public void onSpeak(String text) {
+                        TtsEngine te = ttsEngine();
+                        if (te.isSpeaking()) {
+                            te.stop();
+                            overlayManager.showTextOverlay("tts_feedback",
+                                    getString(R.string.tts_stopped_feedback), FEEDBACK_MS);
+                        } else {
+                            te.speak(text);
+                            overlayManager.showTextOverlay("tts_feedback",
+                                    getString(R.string.tts_synth_feedback), FEEDBACK_MS);
+                        }
+                    }
+
+                    @Override
+                    public boolean isSpeaking() {
+                        return ttsEngine != null && ttsEngine.isSpeaking();
                     }
                 }));
     }

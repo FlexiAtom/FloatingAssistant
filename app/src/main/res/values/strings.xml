@@ -38,6 +38,12 @@
     <string name="editor_cd_new">新建文件</string>
 
     <!-- 编辑工具抽屉（「/」）：文案沿用 MT 管理器的短名，「xx行」的实际语义一律是「xx光标所在行」。 -->
+    <string name="editor_sel_all">全选</string>
+    <string name="editor_sel_cut">剪切</string>
+    <string name="editor_sel_paste">粘贴</string>
+    <string name="editor_translate">翻译</string>
+    <string name="editor_mt_running">翻译中…</string>
+    <string name="editor_mt_failed">翻译失败</string>
     <string name="editor_line_copy">复制行</string>
     <string name="editor_line_cut">剪切行</string>
     <string name="editor_line_delete">删除行</string>
