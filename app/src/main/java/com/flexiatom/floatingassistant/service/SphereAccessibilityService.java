@@ -871,6 +871,7 @@ public class SphereAccessibilityService extends AccessibilityService {
                 @Override
                 public void onSpeakingChanged(boolean speaking) {
                     updateSpeakActionLabel(speaking);
+                    updateEditorBubbleSpeakLabel(speaking);
                 }
             });
         }
@@ -882,6 +883,16 @@ public class SphereAccessibilityService extends AccessibilityService {
         TextPanelView.Action action = speakAction;
         if (action != null) {
             action.setLabel(getString(speaking ? R.string.action_cancel : R.string.action_speak));
+        }
+    }
+
+    /**
+     * 编辑器气泡的「朗读/取消」同样由引擎状态推（人裁 2026-10-22）：视图不知道合成何时自己结束。
+     * 现取当下在屏的那块面板，不留字段引用——换面板时不必记着清引用，也不会把已摘掉的面板按着不放。
+     */
+    private void updateEditorBubbleSpeakLabel(boolean speaking) {
+        if (overlayManager.currentPanel() instanceof FloatingEditorView view) {
+            view.setSpeaking(speaking);
         }
     }
 

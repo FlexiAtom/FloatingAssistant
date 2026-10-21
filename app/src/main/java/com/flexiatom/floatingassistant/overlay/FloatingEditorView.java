@@ -43,7 +43,7 @@ import java.util.List;
  * 顶栏：{@code ≡  ︶  / ⋮} ＝ 列表、撤销、重做、保存、编辑工具、溢出；
  * 信息带：文档名（左）+ 编码（右）。{@code /}＝**行级与全文级**工具（走 {@link DrawerContent}），
  * 选区级动作一律走**选择气泡**（复制/剪切/粘贴/全选/朗读/翻译）；无选区时长按正文唤起同一只气泡的
- * 行级四项（复制行/剪切行/朗读/翻译），作用光标所在行——两套内容的分法皆人裁 2026-10-22；
+ * 行级五项（复制行/剪切行/粘贴/朗读/翻译），作用光标所在行——两套内容的分法皆人裁 2026-10-22；
  * 💾 随 E5、⋮ 随 E6 点亮，现为禁用占位。
  *
  * <p>图标：除软盘（人供 SVG 几何件，{@code ic_floppy.xml}）外全部 {@link SketchIcons} 运行时现绘。
@@ -93,7 +93,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private final LinearLayout drawerList;
     private final LinearLayout bubble;
     private Button bubbleSpeak;
-    /** 气泡当前挂的是哪一套项：0＝还没装，1＝选区级六项，2＝行级四项。 */
+    /** 气泡当前挂的是哪一套项：0＝还没装，1＝选区级六项，2＝行级五项。 */
     private int bubbleItems;
     /** 长按唤起的行气泡是否有效：选区一形成、或光标另落一次就顶掉。 */
     private boolean lineBubblePinned;
@@ -310,14 +310,14 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
         body.onSelectionChanged = this::updateBubbleForSelection;
         // 长按＝唤起「行气泡」（人裁 2026-10-22：无选区也得能召出气泡来读/译一行）。
-        // return true 把这次长按整个占下：系统的长按选词与它那套工具条不再插手，否则一次长按
-        // 会同时招出两套气泡。选词仍可双击，拖选仍可拉手柄——只是长按这一条改了归属。
-        body.setOnLongClickListener(v -> {
+        // 接管点在 BodyEditText.performLongClick，不是 setOnLongClickListener：后者在这里永远跑不到
+        // （人测卡⑤-b「目前无法长按」）——TextView 到点把长按整个交给它自己的 TouchHelper 去选词。
+        // 选词仍可双击，拖选仍可拉手柄——只是长按这一条归了行气泡。
+        body.onLongPressForLine = () -> {
             body.setSelection(body.getOffsetForPosition(body.lastDownX, body.lastDownY));
             lineBubblePinned = true;
             updateBubbleForSelection();
-            return true;
-        });
+        };
     }
 
     /**
@@ -334,6 +334,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         if (lineItems) {
             bubble.addView(bubbleAction(R.string.editor_line_copy, this::copyLine));
             bubble.addView(bubbleAction(R.string.editor_line_cut, this::cutLine));
+            // 粘贴留给光标本身：长按后想贴东西，没有选区也得能贴（长按从此不唤系统那个粘贴菜单）
+            bubble.addView(bubbleAction(R.string.editor_sel_paste, this::pasteAtCursor));
             bubbleSpeak = bubbleAction(R.string.action_speak, this::speakOutlet);
             bubble.addView(bubbleSpeak);
             bubble.addView(bubbleAction(R.string.editor_translate, this::translateOutlet));
@@ -731,6 +733,14 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 ? R.string.action_cancel : R.string.action_speak);
     }
 
+    /**
+     * 朗读状态回推（人裁 2026-10-22）：合成什么时候自己结束，视图侧看不出来，由服务层的
+     * {@code onSpeakingChanged} 推过来，标签才不会停在「取消」。
+     */
+    public void setSpeaking(boolean speaking) {
+        bubbleSpeak.setText(speaking ? R.string.action_cancel : R.string.action_speak);
+    }
+
     private String outletSource() {
         String text = body.getText().toString();
         int start = Math.max(0, Math.min(body.getSelectionStart(), text.length()));
@@ -878,7 +888,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      */
     static final class BodyEditText extends EditText {
         Runnable onSelectionChanged;
-        /** 最近一次按下的落点：长按回调里没有坐标，行气泡要按它算光标该落哪。 */
+        Runnable onLongPressForLine;
+        /** 按下落点：带坐标的长按自带，无参那次（无障碍）用它兜底，行气泡按它算光标该落哪。 */
         float lastDownX;
         float lastDownY;
 
@@ -893,6 +904,31 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 lastDownY = event.getY();
             }
             return super.onTouchEvent(event);
+        }
+
+        /**
+         * TextView 会在长按到点时把它交给自家的 TouchHelper 去选词，`OnLongClickListener` 因此
+         * 形同虚设（人测卡⑤-b）。在这里接管＝既不唤系统那套选词与工具条，也不另建计时器抢时序。
+         * 两个重载都要盖：手指长按走带坐标那版，无障碍路径走无参那版（后者退回 ACTION_DOWN 的落点）。
+         */
+        @Override
+        public boolean performLongClick() {
+            if (onLongPressForLine == null) {
+                return super.performLongClick();
+            }
+            onLongPressForLine.run();
+            return true;
+        }
+
+        @Override
+        public boolean performLongClick(float x, float y) {
+            if (onLongPressForLine == null) {
+                return super.performLongClick(x, y);
+            }
+            lastDownX = x;
+            lastDownY = y;
+            onLongPressForLine.run();
+            return true;
         }
 
         @Override
