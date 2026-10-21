@@ -83,6 +83,7 @@
     <string name="tuning_fallback_title">截图失败降级</string>
     <string name="tuning_fallback_lenient">宽松：读无障碍树兜底</string>
     <string name="tuning_fallback_strict">严格：直接提示不支持</string>
+    <string name="tuning_fallback_hint">仅作用于整页/全屏：这两条路径在截图失败时会尝试读无障碍树。框选没有树兜底，不受此开关影响。</string>
     <string name="tuning_run_selftest">运行自检（8 次）</string>
     <string name="tuning_reset">恢复默认</string>
     <string name="tuning_selftest_running">自检中…（连续截图 8 次，请停在普通页面）</string>
