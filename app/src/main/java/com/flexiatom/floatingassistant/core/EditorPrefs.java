@@ -34,7 +34,7 @@ public final class EditorPrefs {
         prefs.edit().putBoolean(K_WRAP, on).apply();
     }
 
-    /** 流畅模式：默认关。开着＝屏蔽输入法联想与提取窗、并不绘选区气泡与手柄（换性能）。 */
+    /** 流畅模式：默认关。开着＝输入法读不到选区与整篇（自带的复制/剪切因此失效），换大文本的流畅度。 */
     public boolean smooth() {
         return prefs.getBoolean(K_SMOOTH, false);
     }

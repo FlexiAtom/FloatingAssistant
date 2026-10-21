@@ -20,6 +20,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 import android.view.inputmethod.EditorInfo;
+import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -240,7 +241,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         body.setBackground(null);
         body.setGravity(Gravity.TOP | Gravity.START);
         body.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
-        applyDisplayFlags();   // 自动换行／流畅模式两档（E6a）按持久档现读，开局就得刷一遍
+        body.inputGate = prefs::smooth; // 流畅模式的闸门不碰显示标志，只挡输入法读文本（见 SmoothInputConnection）
+        applyWrapFlag();   // 自动换行（E6a）按持久档现读，开局就得刷一遍
         // 手柄球垂在行下方，最后那一行的球会被 ScrollView 的下边缘切掉——给正文垫出这一颗的位子。
         // 只动 bottom：气泡定位那套算法用的是 layout 行顶，paddingTop 一变它整个跟着上浮，别碰。
         body.setPadding(body.getPaddingLeft(), body.getPaddingTop(),
@@ -450,10 +452,6 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      * 所以上边放不下时翻到选区下方，而正文滚动也不重算位置（人裁：跟了反而可能滚出窗口）。
      */
     private void updateBubbleForSelection() {
-        if (prefs.smooth()) {
-            bubble.setVisibility(GONE); // 流畅模式连气泡一起关（人裁「屏蔽…以提升性能」的第三条口径）
-            return;
-        }
         int start = body.getSelectionStart();
         int end = body.getSelectionEnd();
         android.text.Layout layout = body.getLayout();
@@ -844,36 +842,25 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
     private void toggleWrap() {
         prefs.setWrap(!prefs.wrap());
-        applyDisplayFlags();
+        applyWrapFlag();
         bindDrawer(overflowContent(getContext())); // 原地换内容刷新勾选态，不重走展开流程
     }
 
     private void toggleSmooth() {
         prefs.setSmooth(!prefs.smooth());
-        applyDisplayFlags();
-        if (prefs.smooth()) {
-            bubble.setVisibility(GONE); // 已经弹着的气泡得收掉，否则它从此不再更新却留在屏上
-            lineBubblePinned = false;
+        // 闸门是每次调用现读的，但**已建立**的连接归输入法管，它不重建就一直用旧档——主动要它重取一次。
+        InputMethodManager imm = (InputMethodManager)
+                getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.restartInput(body);
         }
         bindDrawer(overflowContent(getContext()));
     }
 
-    /**
-     * 两档显示开关都落在正文的输入标志上，必须集中在这一处写：{@code setInputType} 是**整体替换**，
-     * 两处各写一半会互相吃掉对方的档。
-     */
-    private void applyDisplayFlags() {
-        int type = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE;
-        boolean smooth = prefs.smooth();
-        if (smooth) {
-            type |= InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS; // 联想候选＝输入法自带的那一路
-        }
-        body.setInputType(type);
-        // 提取窗也是输入法自带的一路：某些输入法在窄窗上会另起一整屏重写整段文本，性能与焦点双输。
-        body.setImeOptions(smooth ? EditorInfo.IME_FLAG_NO_EXTRACT_UI : 0);
+    /** 自动换行只改这一个标志；流畅模式不碰显示与输入标志，它挡的是输入法读文本那一路。 */
+    private void applyWrapFlag() {
         body.setHorizontallyScrolling(!prefs.wrap());
-        body.suppressHandles = smooth;
-        body.invalidate(); // 开关一翻，已经画在屏上的手柄得立刻消失/回来
+        body.invalidate();
     }
 
     /** 统计（E6a）：整屏都是置灰行——这一格只给人看一眼，不该有任何可点的东西。 */
@@ -1325,8 +1312,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     static final class BodyEditText extends EditText {
         Runnable onSelectionChanged;
         Runnable onLongPressForLine;
-        /** 流畅模式（E6a ⋮ 的开关）：本类是 static 嵌套，读不到外层的档，由 {@code applyDisplayFlags} 写进来。 */
-        boolean suppressHandles;
+        /** 流畅模式（⋮ 的开关）的闸门档：本类是 static 嵌套，读不到外层，由外面把读法挂进来。 */
+        SmoothInputConnection.Gate inputGate;
         /** 按下落点：带坐标的长按自带，无参那次（无障碍）用它兜底，行气泡按它算光标该落哪。 */
         float lastDownX;
         float lastDownY;
@@ -1468,9 +1455,6 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         @Override
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-            if (suppressHandles) {
-                return; // 流畅模式：手柄是每帧重绘件，这一档要的就是把它连同气泡一起省掉
-            }
             for (int which = 0; which < 2; which++) {
                 if (!handleGeom(which)) {
                     continue;
@@ -1508,6 +1492,15 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             longPressFired = true;
             onLongPressForLine.run();
             return true;
+        }
+
+        /**
+         * 流畅模式的挂闸处：把系统那条真连接包一层，档位每次调用现读，所以连接本身不必随开关重建
+         * （重建时机归输入法，我们叫不动它）。见 {@link SmoothInputConnection}。
+         */
+        @Override
+        public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+            return SmoothInputConnection.of(super.onCreateInputConnection(outAttrs), inputGate);
         }
 
         @Override
