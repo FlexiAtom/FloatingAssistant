@@ -91,6 +91,14 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P6_MT_TGT = "p6_mt_tgt";
 
     /**
+     * 截图组一键自检的机读入口（{@code device-tuning-page} A3）：跑 N 次生产截图并打
+     * {@code TuningSelfTest} 摘要。触摸触发与参数编辑仍归人；这条只给自检器一条不经手势的取证路。
+     */
+    public static final String EXTRA_P7_SELFTEST = "p7_selftest";
+    /** 自检次数；默认 {@link com.flexiatom.floatingassistant.core.SelfTestRunner#DEFAULT_ITERATIONS}。 */
+    public static final String EXTRA_P7_SELFTEST_N = "p7_selftest_n";
+
+    /**
      * 端侧 TTS 取证入口（{@code p5_tts}）：不经任何手势地加载模型、逐句合成、把 wav 落盘并打量测。
      * 与 {@code p4_region} 同性质——合成不需要手指，但**听感**要人耳，所以机器只交付数字与音频文件。
      */
@@ -116,6 +124,8 @@ public class MainActivity extends AppCompatActivity {
     private static long sLastTtsAtMs;
     private static String sLastSpeakKey;
     private static long sLastSpeakAtMs;
+    private static String sLastSelfTestKey;
+    private static long sLastSelfTestAtMs;
     /** 服务未连接时的量测用引擎（`install -r` 后无障碍服务可能长时间不回绑，管线取证不能干等）。 */
     private com.flexiatom.floatingassistant.tts.TtsEngine localTtsEngine;
 
@@ -144,6 +154,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP5Tts(getIntent());
         maybeRunP6Mt(getIntent());
         maybeRunTtsSpeak(getIntent());
+        maybeRunP7SelfTest(getIntent());
         maybeRunAnimToggle(getIntent());
     }
 
@@ -162,6 +173,7 @@ public class MainActivity extends AppCompatActivity {
         maybeRunP5Tts(intent);
         maybeRunP6Mt(intent);
         maybeRunTtsSpeak(intent);
+        maybeRunP7SelfTest(intent);
         maybeRunAnimToggle(intent);
     }
 
@@ -246,6 +258,33 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         svc.translateTextForTest(text, intent.getStringExtra(EXTRA_P6_MT_TGT));
+    }
+
+    /** 截图组自检机读入口：与调参页「运行自检」走同一个 {@code SelfTestRunner}，只少一次触摸。 */
+    private void maybeRunP7SelfTest(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_P7_SELFTEST, false)) {
+            return;
+        }
+        SphereAccessibilityService svc = SphereAccessibilityService.getInstance();
+        if (svc == null) {
+            android.util.Log.e("TuningSelfTest", "no accessibility service connected");
+            return;
+        }
+        int n = intent.getIntExtra(EXTRA_P7_SELFTEST_N,
+                com.flexiatom.floatingassistant.core.SelfTestRunner.DEFAULT_ITERATIONS);
+        String key = "n=" + n;
+        long now = System.currentTimeMillis();
+        synchronized (MainActivity.class) {
+            // 与 p5_tts 同一条实测：冷启动的一次 am start 会把同一 intent 交两遍，重复自检会盖住前一组样本。
+            if (key.equals(sLastSelfTestKey) && now - sLastSelfTestAtMs < 20_000L) {
+                android.util.Log.i("TuningSelfTest", "重复投递已忽略（同参数 20s 内只跑一次）key=" + key);
+                return;
+            }
+            sLastSelfTestKey = key;
+            sLastSelfTestAtMs = now;
+        }
+        android.util.Log.i("TuningSelfTest", "requested n=" + n);
+        svc.runSelfTestForTest(n);
     }
 
     private void maybeRunP0(Intent intent) {

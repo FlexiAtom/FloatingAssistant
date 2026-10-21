@@ -15,7 +15,9 @@ import com.flexiatom.floatingassistant.capture.ScreenCapturer;
 import com.flexiatom.floatingassistant.core.BlacklistMatcher;
 import com.flexiatom.floatingassistant.core.CaptureStateRouter;
 import com.flexiatom.floatingassistant.core.RuntimeStats;
+import com.flexiatom.floatingassistant.core.SelfTestRunner;
 import com.flexiatom.floatingassistant.core.SettingsStore;
+import com.flexiatom.floatingassistant.core.TuningStore;
 import com.flexiatom.floatingassistant.ocr.PpOcrEngineFactory;
 import com.flexiatom.floatingassistant.mt.MtModelHub;
 import com.flexiatom.floatingassistant.overlay.BlacklistPanelView;
@@ -147,6 +149,37 @@ public class SphereAccessibilityService extends AccessibilityService {
         if (r != null) {
             r.runOnceRegionShot(rect, onDone);
         }
+    }
+
+    /**
+     * 跑一轮截图组自检（设备自调页与 {@code p7_selftest} 共用）。自检是秒级的连续截图，
+     * 放一次性后台线程，不占服务主线程；结果回主线程交给调用方。
+     *
+     * <p>不写 {@link RuntimeStats}：自检的连续采样不属于生产成功率口径，混进去会冲淡真值。
+     */
+    public void runSelfTest(int iterations, java.util.function.Consumer<SelfTestRunner.Result> onDone) {
+        final ScreenCapturer capturer = capturer();
+        final TuningStore tuning = new TuningStore(this);
+        new Thread(() -> {
+            SelfTestRunner.Result result;
+            try {
+                result = new SelfTestRunner(capturer, tuning).run(iterations);
+            } catch (Throwable t) {
+                android.util.Log.e("TuningSelfTest", "selftest failed: " + t, t);
+                result = new SelfTestRunner.Result(
+                        "自检失败：" + t.getClass().getSimpleName() + ": " + t.getMessage(),
+                        "selftest failed error=" + t.getClass().getSimpleName());
+            }
+            if (onDone != null) {
+                final SelfTestRunner.Result r = result;
+                mainHandler.post(() -> onDone.accept(r));
+            }
+        }, "tuning-selftest").start();
+    }
+
+    /** 机读入口：只把自检摘要打进 {@code TuningSelfTest}，不弹面板；详细报告由人开页面看。 */
+    public void runSelfTestForTest(int iterations) {
+        runSelfTest(iterations, null);
     }
 
     /**

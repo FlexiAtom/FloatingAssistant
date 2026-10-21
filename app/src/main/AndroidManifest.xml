@@ -29,6 +29,11 @@
             android:exported="false"
             android:label="@string/settings_title" />
 
+        <activity
+            android:name=".settings.TuningActivity"
+            android:exported="false"
+            android:label="@string/tuning_title" />
+
         <service
             android:name=".service.SphereAccessibilityService"
             android:exported="false"

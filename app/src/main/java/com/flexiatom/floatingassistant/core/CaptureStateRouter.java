@@ -77,6 +77,8 @@ public final class CaptureStateRouter {
     private final Supplier<OcrEngine> engineFactory;
     /** 分场景模型中枢：整页级路由、单引擎驻留、换面即 close 旧 create 新。 */
     private final MtModelHub mtHub;
+    /** 截图组参数（严格/宽松降级）；每次失败现读，改完下一次采集即生效。 */
+    private final TuningStore tuning;
     /** 懒建：模型加载 ~0.5s，放到工作线程首用时再做，别卡服务主线程。单工作线程串行，故无竞态。 */
     private OcrEngine ocrEngine;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -95,6 +97,7 @@ public final class CaptureStateRouter {
         this.overlayManager = overlayManager;
         this.engineFactory = engineFactory;
         this.mtHub = mtHub;
+        this.tuning = new TuningStore(service);
     }
 
     private OcrEngine engine() {
@@ -616,6 +619,12 @@ public final class CaptureStateRouter {
             return true;
         }
 
+        if (tuning.fallbackStrict()) {
+            String text = "C 此页面不支持贴图 · 严格模式不读树 · 截图失败(" + capErr.outcome + ")";
+            Log.i(TAG, "ROUTE=C(inplace,strict) " + text);
+            overlayManager.showTextOverlay(RESULT_KEY, text);
+            return false;
+        }
         String treeText = firstTextNodeText();
         if (treeText != null && !treeText.isBlank()) {
             String text = "B 树有文本 · " + clip(treeText);
@@ -786,6 +795,12 @@ public final class CaptureStateRouter {
             return false;
         }
 
+        if (tuning.fallbackStrict()) {
+            String text = "C 此页面不支持 · 严格模式不读树 · 截图失败(" + capErr.outcome + ")";
+            Log.i(TAG, "ROUTE=C(strict) " + text);
+            overlayManager.showTextOverlay(RESULT_KEY, text);
+            return false;
+        }
         String treeText = firstTextNodeText();
         if (treeText != null && !treeText.isBlank()) {
             String text = "B 树有文本 · " + clip(treeText);

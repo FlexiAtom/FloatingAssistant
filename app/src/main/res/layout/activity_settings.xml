@@ -167,5 +167,12 @@
             android:valueTo="2.0"
             app:labelBehavior="gone" />
 
+        <Button
+            android:id="@+id/settings_open_tuning"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/settings_open_tuning" />
+
     </LinearLayout>
 </ScrollView>

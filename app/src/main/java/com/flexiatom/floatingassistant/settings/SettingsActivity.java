@@ -1,5 +1,6 @@
 package com.flexiatom.floatingassistant.settings;
 
+import android.content.Intent;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.View;
@@ -71,6 +72,8 @@ public class SettingsActivity extends AppCompatActivity {
 
         findViewById(R.id.settings_add_entry).setOnClickListener(v -> addEntry());
         findViewById(R.id.settings_test_btn).setOnClickListener(v -> runTest());
+        findViewById(R.id.settings_open_tuning).setOnClickListener(v ->
+                startActivity(new Intent(this, TuningActivity.class)));
 
         rebuildList();
     }

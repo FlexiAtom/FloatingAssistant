@@ -67,4 +67,27 @@
     <string name="settings_tts_hint">仅框选结果面板提供「朗读」。关闭后按钮不再出现；开启时模型按需加载，空闲 60 秒或前台切走（未在朗读时）即释放。</string>
     <string name="settings_tts_enabled">启用朗读</string>
     <string name="settings_tts_speed_value">语速 %1$.1f×</string>
+
+    <string name="settings_open_tuning">设备自调（截图组）</string>
+    <string name="tuning_title">设备自调</string>
+    <string name="tuning_section_capture">截图组</string>
+    <string name="tuning_note">改动即时保存，下一次截图生效，无需重启无障碍服务。默认值＝当前生产常量；非基准机上的差异属正常。</string>
+    <string name="tuning_fingerprint">%1$s\nAndroid %2$s · 安全补丁 %3$s</string>
+    <string name="tuning_baseline">基准机：Redmi 13R 5G / HyperOS 2.0.208.0.VGQCNXM / Android 15 / 安全补丁 2026-03-01</string>
+    <string name="tuning_timeout_label">单次超时：%1$d ms</string>
+    <string name="tuning_retry_label">失败重试：%1$d 次</string>
+    <string name="tuning_interval_label">最小间隔：%1$d ms</string>
+    <string name="tuning_black_label">黑屏亮度阈值：%1$d（越大越不容易判黑）</string>
+    <string name="tuning_detect_blank">黑屏/空图检测</string>
+    <string name="tuning_warmup">首次截图预热（拍一张丢弃）</string>
+    <string name="tuning_fallback_title">截图失败降级</string>
+    <string name="tuning_fallback_lenient">宽松：读无障碍树兜底</string>
+    <string name="tuning_fallback_strict">严格：直接提示不支持</string>
+    <string name="tuning_run_selftest">运行自检（8 次）</string>
+    <string name="tuning_reset">恢复默认</string>
+    <string name="tuning_selftest_running">自检中…（连续截图 8 次，请停在普通页面）</string>
+    <string name="tuning_selftest_no_service">无障碍服务未连接：先回主界面开启服务，再回来自检。</string>
+    <string name="tuning_selftest_hint">自检连续截图 8 次，期间请停在普通页面；结果同时写入 logcat（TuningSelfTest）。</string>
+    <string name="tuning_result_default">尚未运行自检。</string>
+    <string name="tuning_reset_done">已恢复默认参数，下一次截图生效。</string>
 </resources>
