@@ -89,6 +89,9 @@
     <string name="editor_charset_other">其他编码…（%1$d 档）</string>
     <string name="editor_charset_all">全部编码</string>
     <string name="editor_charset_common">常用编码</string>
+    <string name="editor_charset_refused">这一档装不下</string>
+    <string name="editor_charset_nofit">%1$s 里没有这 %2$d 个字：%3$s（正文保持不动）</string>
+    <string name="editor_charset_repick">换一档重选</string>
     <string name="editor_discard_hint">有未保存的改动，重载会丢掉它们</string>
     <string name="editor_discard_confirm">放弃并重载</string>
 

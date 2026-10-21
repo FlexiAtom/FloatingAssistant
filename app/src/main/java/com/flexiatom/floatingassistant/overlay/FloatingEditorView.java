@@ -926,12 +926,53 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         openDrawer(new DrawerContent(title, null, null, false, items));
     }
 
-    /** 「指定保存的编码」这一格：选完只改保存档，正文一个字不动（字节按新档重出一遍）。 */
+    /**
+     * 「指定保存的编码」这一格：**保持文本、当场把字节按新档重出一遍**（人裁 2026-10-22「是保持文本的前提下
+     * 改编码，而不是单纯保存」）。前提守在这一条上：新档装不下正文里的字就不换——JDK 的默认动作是把那几个字
+     * 悄悄替换成 {@code ?}，那是拿用户的正文去换一个标签。
+     */
     private void openSaveCharsetPicker() {
         openCharsetPicker(R.string.editor_more_save_charset, charset -> {
+            String missing = NotesCodec.unmappable(body.getText().toString(), charset);
+            if (!missing.isEmpty()) {
+                refuseCharset(charset, missing);
+                return;
+            }
             docCharset = charset;
             applyDocSettings();
         });
+    }
+
+    /** 装不下＝不换档、不落库、正文一个字都不动；把这几个字点出来，再给一条「换一档重选」回去。 */
+    private void refuseCharset(String charset, String missing) {
+        Context context = getContext();
+        List<DrawerContent.Item> items = new ArrayList<>(2);
+        items.add(greyRow(context.getString(R.string.editor_charset_nofit, charset,
+                missing.codePointCount(0, missing.length()), listSample(missing))));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_charset_repick),
+                () -> openSaveCharsetPicker()));
+        openDrawer(new DrawerContent(context.getString(R.string.editor_charset_refused),
+                null, null, false, items));
+    }
+
+    /** 点名点到 12 个字为止：抽屉只有 100dp 宽，全列出来会把提示挤没。 */
+    private static String listSample(String chars) {
+        int total = chars.codePointCount(0, chars.length());
+        int limit = Math.min(total, 12);
+        StringBuilder out = new StringBuilder();
+        int index = 0;
+        for (int i = 0; i < limit; i++) {
+            int codePoint = chars.codePointAt(index);
+            index += Character.charCount(codePoint);
+            if (i > 0) {
+                out.append(' ');
+            }
+            out.appendCodePoint(codePoint);
+        }
+        if (index < chars.length()) {
+            out.append("…");
+        }
+        return out.toString();
     }
 
     /**

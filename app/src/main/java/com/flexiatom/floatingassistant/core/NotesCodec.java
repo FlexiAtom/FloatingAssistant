@@ -2,8 +2,10 @@ package com.flexiatom.floatingassistant.core;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.Charset;
+import java.nio.charset.CharsetEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -162,9 +164,40 @@ public final class NotesCodec {
     }
 
     /**
+     * 正文里这一档**装不下**的字：按出现次序、**去重**后连成一串回给你，空串＝一个字都不丢。
+     * 人裁 2026-10-22「指定保存的编码＝在保持文本的前提下改编码」，所以这一串非空就不许换档——
+     * 换下去是拿用户的正文去换一个标签（JDK 默认把它们悄悄替换成 {@code ?}，见 {@link #encodeBytes}）。
+     */
+    public static String unmappable(String buffer, String charset) {
+        Charset cs = charsetFor(charset);
+        if (buffer == null || buffer.isEmpty() || cs == null) {
+            return ""; // 认不得的档在上面已按 UTF-8 兜底，而 UTF-8 没有装不下的字
+        }
+        CharsetEncoder encoder = cs.newEncoder();
+        LinkedHashSet<Integer> missing = new LinkedHashSet<>();
+        for (int i = 0; i < buffer.length(); ) {
+            int codePoint = buffer.codePointAt(i);
+            i += Character.charCount(codePoint);
+            // CharsetEncoder 只有 canEncode(char)／canEncode(CharSequence) 两扇：星平面那几十个字符得整串喂进去
+            boolean fits = Character.isSupplementaryCodePoint(codePoint)
+                    ? encoder.canEncode(new String(Character.toChars(codePoint)))
+                    : encoder.canEncode((char) codePoint);
+            if (!fits) {
+                missing.add(codePoint);
+            }
+        }
+        StringBuilder out = new StringBuilder(missing.size());
+        for (Integer codePoint : missing) {
+            out.appendCodePoint(codePoint);
+        }
+        return out.toString();
+    }
+
+    /**
      * 缓冲 → 盘上字节：先按档位展开换行，再按档位编码，{@link #BOM_LABEL} 最后前置三个字节。
-     * 标签认不得（或该档装不下这些字）时**按 UTF-8 出字节**——纯编解码层不写日志，才能在 JVM 里
-     * 单文件跑；调用方要提醒人就自己看 {@link #charsetFor(String)} 再调这里。
+     * 标签认不得时**按 UTF-8 出字节**（纯编解码层不写日志，才能在 JVM 里单文件跑；调用方要提醒人就
+     * 自己看 {@link #charsetFor(String)}）。但**装不下 ≠ 认不得**：JDK 对表里没有的字默认替换成
+     * {@code ?}，这里不做兜底也不该做——该不该换档由调用方拿 {@link #unmappable} 先问人。
      */
     public static byte[] encodeBytes(String buffer, String charset, String newline) {
         Charset cs = charsetFor(charset);
