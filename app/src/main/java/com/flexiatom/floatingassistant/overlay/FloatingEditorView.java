@@ -38,6 +38,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * 统一悬浮文本编辑器（§4.4，m5-editor-asr-notes E1b 终稿壳）。复用面板系那扇全 app 唯一焦点窗。
@@ -769,8 +770,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
     /**
      * /＝编辑工具，**只管行级与全文级**（人裁 2026-10-22：选区级的复制/剪切/粘贴/翻译/TTS 归**选择气泡**，
-     * 不进这一格）。当前实装「xx行」六项（作用于**光标所在行**，显示沿用 MT 短名），
-     * 其余七项按人给的原始次序传 null 置灰占位——整眼菜单先看全，缺的档期一眼可见。
+     * 不进这一格）。实装十一项，一律作用于**光标所在行**（显示沿用 MT 短名）；
+     * 格式化代码/压缩代码仍按人给的原始次序传 null 置灰占位——整眼菜单先看全，缺的档期一眼可见。
      */
     private DrawerContent editToolsContent(Context context) {
         List<DrawerContent.Item> items = new ArrayList<>(13);
@@ -780,12 +781,12 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         items.add(toolItem(R.string.editor_line_clear, this::clearLine));
         items.add(toolItem(R.string.editor_line_replace, this::replaceLineWithClipboard));
         items.add(toolItem(R.string.editor_line_duplicate, this::duplicateLine));
-        items.add(toolItem(R.string.editor_case_upper, null));
-        items.add(toolItem(R.string.editor_case_lower, null));
-        items.add(toolItem(R.string.editor_indent_add, null));
-        items.add(toolItem(R.string.editor_indent_remove, null));
+        items.add(toolItem(R.string.editor_case_upper, () -> transformLineCase(true)));
+        items.add(toolItem(R.string.editor_case_lower, () -> transformLineCase(false)));
+        items.add(toolItem(R.string.editor_indent_add, this::indentLine));
+        items.add(toolItem(R.string.editor_indent_remove, this::unindentLine));
         items.add(toolItem(R.string.editor_format_code, null));
-        items.add(toolItem(R.string.editor_comment_toggle, null));
+        items.add(toolItem(R.string.editor_comment_toggle, this::toggleCommentLine));
         items.add(toolItem(R.string.editor_compress_code, null));
         return new DrawerContent(context.getString(R.string.editor_cd_tools),
                 null, null, false, items);
@@ -941,6 +942,85 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         int column = Math.max(0, Math.min(caret - line.start, line.text.length()));
         text.insert(line.end, "\n" + line.text);
         body.setSelection(Math.min(line.end + 1 + column, text.length()));
+    }
+
+    /** 缩进档位与注释符：人裁 2026-10-22「先默认是 Python 的」，其余语言等各自的档期再谈。 */
+    private static final int INDENT_SPACES = 4;
+    private static final String COMMENT_MARK = "#";
+
+    /** 光标在本行的列号（夹进 [0, 行宽]，行尾偏移之外不算）。 */
+    private int caretColumn(Line line) {
+        int caret = Math.max(0, Math.min(body.getSelectionStart(), line.end));
+        return caret - line.start;
+    }
+
+    /** 换掉整行并把光标落在给定列——列夹到新行宽以内，否则光标会跨过行尾跑到下一行去。 */
+    private void rewriteLine(Line line, String replacement, int caretColumn) {
+        Editable text = body.getText();
+        text.replace(line.start, line.end, replacement);
+        int caret = Math.min(Math.max(0, caretColumn), replacement.length());
+        body.setSelection(Math.min(line.start + caret, text.length()));
+    }
+
+    /**
+     * 转大写/转小写（人裁 2026-10-22：就是字面意思，作用在光标所在行）。
+     * {@code Locale.ROOT} 不是可选项：按设备 locale 折大小写时，土耳其语环境会把 i 折成没有点的
+     * 「İ/I」——代码行经不起这种改动。
+     */
+    private void transformLineCase(boolean upper) {
+        Line line = cursorLine();
+        int column = caretColumn(line);
+        String changed = upper
+                ? line.text.toUpperCase(Locale.ROOT) : line.text.toLowerCase(Locale.ROOT);
+        rewriteLine(line, changed, column);
+    }
+
+    /** 增加缩进：行首插一档空格，光标跟着右移一档，落在原来那个字符上。 */
+    private void indentLine() {
+        Line line = cursorLine();
+        int column = caretColumn(line);
+        rewriteLine(line, " ".repeat(INDENT_SPACES) + line.text, column + INDENT_SPACES);
+    }
+
+    /** 减小缩进：吃掉行首至多一档空格；行首没有空格就整条不动（不动文本＝也不脏化、不占撤销栈）。 */
+    private void unindentLine() {
+        Line line = cursorLine();
+        int strip = 0;
+        while (strip < INDENT_SPACES && strip < line.text.length()
+                && line.text.charAt(strip) == ' ') {
+            strip++;
+        }
+        if (strip == 0) {
+            return;
+        }
+        int column = caretColumn(line);
+        rewriteLine(line, line.text.substring(strip), Math.max(0, column - strip));
+    }
+
+    /**
+     * 切换注释（Python 的 {@code #}）：注释符落在**行首空白之后**，缩进不被顶掉——
+     * 否则连按两次就把一条缩进行推到了行首。取消时把 {@code #} 后面那一个空格一并吃掉，行还原回原样。
+     */
+    private void toggleCommentLine() {
+        Line line = cursorLine();
+        int column = caretColumn(line);
+        int lead = 0;
+        while (lead < line.text.length() && line.text.charAt(lead) == ' ') {
+            lead++;
+        }
+        if (line.text.startsWith(COMMENT_MARK, lead)) {
+            int cut = COMMENT_MARK.length();
+            if (lead + cut < line.text.length() && line.text.charAt(lead + cut) == ' ') {
+                cut++;
+            }
+            String head = line.text.substring(0, lead);
+            int next = column <= lead ? column : Math.max(lead, column - cut);
+            rewriteLine(line, head + line.text.substring(lead + cut), next);
+        } else {
+            String prefix = COMMENT_MARK + " ";
+            int next = column < lead ? column : column + prefix.length();
+            rewriteLine(line, line.text.substring(0, lead) + prefix + line.text.substring(lead), next);
+        }
     }
 
     // ---------- 输出出口（E3）：翻译与朗读同一条口径——有选区取选区，无选区取光标所在行 ----------
