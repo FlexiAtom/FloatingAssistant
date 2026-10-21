@@ -22,6 +22,7 @@ import com.flexiatom.floatingassistant.ocr.PpOcrEngineFactory;
 import com.flexiatom.floatingassistant.mt.MtModelHub;
 import com.flexiatom.floatingassistant.overlay.BlacklistPanelView;
 import com.flexiatom.floatingassistant.overlay.FanMenuView;
+import com.flexiatom.floatingassistant.overlay.FloatingEditorView;
 import com.flexiatom.floatingassistant.overlay.OverlayManager;
 import com.flexiatom.floatingassistant.overlay.RegionSelectView;
 import com.flexiatom.floatingassistant.overlay.TextPanelView;
@@ -390,7 +391,7 @@ public class SphereAccessibilityService extends AccessibilityService {
 
     /**
      * 构建工具树（§10 M0 + #68 径向树）：注册顺序 = 最内环自上而下。
-     * 第1页 = [全屏翻译(叶子), 框选(容器), 翻译设置(叶子→悬浮窗), 开发者选项(容器)]；
+     * 第1页 = [全屏翻译(叶子), 框选(容器), 翻译设置(叶子→悬浮窗), 记事本(叶子→编辑器悬浮窗), 开发者选项(容器)]；
      * 开发者选项 → [整页OCR(叶子), 模型档位(容器), 黑名单(叶子→悬浮窗), 自检(叶子→悬浮窗), 关闭切换动画(叶子→悬浮窗反馈)]；
      * 模型档位 → [自动, 轻量, 重量](叶子→即时设 model_mode)。
      */
@@ -418,6 +419,8 @@ public class SphereAccessibilityService extends AccessibilityService {
                 getString(R.string.tool_blacklist), svc -> openBlacklist());
         Tool translateSettings = new SimpleTool("translate_settings",
                 getString(R.string.tool_translate_settings), svc -> openTranslateSettings());
+        Tool editor = new SimpleTool("editor",
+                getString(R.string.tool_notebook), svc -> openEditor());
         Tool report = new SimpleTool("runtime_report",
                 getString(R.string.tool_runtime_report), svc -> openReport());
         Tool closeAnim = new SimpleTool("close_anim",
@@ -428,6 +431,7 @@ public class SphereAccessibilityService extends AccessibilityService {
         tools.register(fullscreen);
         tools.register(region);
         tools.register(translateSettings);
+        tools.register(editor);
         tools.register(devOptions);
     }
 
@@ -639,6 +643,30 @@ public class SphereAccessibilityService extends AccessibilityService {
                         settings.setTgtLang(code);
                     }
 
+                    @Override
+                    public void onClose() {
+                        overlayManager.hidePanel();
+                    }
+
+                    @Override
+                    public void onMove(int dx, int dy) {
+                        overlayManager.movePanel(dx, dy);
+                    }
+                }));
+    }
+
+    /**
+     * 打开统一编辑器（§4.4，m5-editor-asr-notes E1）。E1 阶段关闭即丢弃——落库是 E5（Room）的事，
+     * ASR 插入口是 E2、注入出口是 E4，都不进这一刀。取向同 {@link #openTranslateSettings()}：
+     * 面板已在就收起（当开关用），内容视图必须用 {@code themedContext()} 构造。
+     */
+    private void openEditor() {
+        if (overlayManager.isPanelVisible()) {
+            overlayManager.hidePanel();
+            return;
+        }
+        overlayManager.showPanel(new FloatingEditorView(overlayManager.themedContext(),
+                new FloatingEditorView.Listener() {
                     @Override
                     public void onClose() {
                         overlayManager.hidePanel();

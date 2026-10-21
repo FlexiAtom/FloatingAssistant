@@ -24,6 +24,14 @@
     <string name="tool_runtime_report">自检</string>
     <string name="tool_close_anim">关闭切换动画</string>
     <string name="tool_translate_settings">翻译设置</string>
+    <string name="tool_notebook">记事本</string>
+
+    <string name="editor_title">记事本</string>
+    <string name="editor_hint">在这里打字…长按可粘贴</string>
+    <string name="editor_select_all">全选</string>
+    <string name="editor_copy">复制</string>
+    <string name="editor_paste">粘贴</string>
+    <string name="editor_undo">撤销</string>
 
     <string name="translate_panel_title">翻译设置</string>
     <string name="translate_label_target">目标语言</string>
