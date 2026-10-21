@@ -52,7 +52,8 @@ import java.util.Locale;
  * 行级五项（复制行/剪切行/粘贴/朗读/翻译），作用光标所在行——两套内容的分法皆人裁 2026-10-22；
  * 💾 已随 E5 点亮（落库走 {@link NotesStore}），⋮ 随 E6 点亮，仍为禁用占位。
  *
- * <p>图标：除软盘（人供 SVG 几何件，{@code ic_floppy.xml}）外全部 {@link SketchIcons} 运行时现绘。
+ * <p>图标：除人供 SVG 的两件几何件（软盘 {@code ic_floppy.xml}、新建纸笔 {@code ic_paper_pen.xml}）
+ * 外全部 {@link SketchIcons} 运行时现绘。
  * 朗读与翻译不在本视图里造引擎，经 {@link Listener} 交回服务层用现成 TTS/MT 跑。
  * <b>但记事本的落库在本视图里</b>：E5 之后「打开＝接着上次那篇读、停手/换篇/关面板＝写回文件」全是视图的
  * 责任，服务层不插手——{@link NotesStore} 是存储层不是引擎（无模型、无并发预算），沿用仓内
@@ -305,7 +306,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         drawerHeader.addView(drawerTitle, new LinearLayout.LayoutParams(
                 0, LayoutParams.WRAP_CONTENT, 1f));
         drawerHeaderAction = toolButton(context,
-                SketchIcons.of(SketchIcons.SQUARE, onSurface, density), R.string.editor_cd_new, null);
+                icon(context, R.drawable.ic_paper_pen, onSurface), R.string.editor_cd_new, null);
         drawerHeader.addView(drawerHeaderAction);
         drawer.addView(drawerHeader, new LinearLayout.LayoutParams(
                 LayoutParams.MATCH_PARENT, dp(40)));
@@ -599,12 +600,11 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         return b;
     }
 
-    /** ≡＝文档列表（E5）：栏头右上＝新建，搜索框＝默认正则，条目＝一篇文档，**长按＝置顶/取消置顶**。 */
+    /** ≡＝文档列表（E5）：栏头右上＝新建（人供纸笔几何件），搜索框＝默认正则，条目＝一篇文档，**长按＝置顶/取消置顶**。 */
     private DrawerContent docListContent() {
         Context context = getContext();
         return new DrawerContent(context.getString(R.string.editor_drawer_title),
-                SketchIcons.of(SketchIcons.SQUARE, M3.color(context, M3.ON_SURFACE),
-                        context.getResources().getDisplayMetrics().density),
+                icon(context, R.drawable.ic_paper_pen, M3.color(context, M3.ON_SURFACE)),
                 this::newDocument,
                 true,
                 Collections.emptyList());

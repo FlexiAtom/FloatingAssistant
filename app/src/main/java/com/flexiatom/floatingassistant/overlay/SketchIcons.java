@@ -11,7 +11,8 @@ import android.graphics.drawable.Drawable;
 /**
  * 手绘系工具栏图标（m5-editor-asr-notes E1b）：运行时按给定尺寸现绘，零资源零解码
  * （人裁 2026-10-21「图标应使用代码在应用启动时绘制需要的大小」）。
- * 软盘不在这里——那是人供 SVG 的几何件，见 {@code ic_floppy.xml}。
+ * 人供 SVG 的几何件不在这里——软盘见 {@code ic_floppy.xml}、新建（纸笔）见 {@code ic_paper_pen.xml}：
+ * 那两件的**比例由人钉死**，只许改色，手绘系才有自由按格子里的尺寸重排。
  */
 final class SketchIcons {
 
@@ -20,7 +21,6 @@ final class SketchIcons {
     static final int REDO = 2;
     static final int SLASH = 3;
     static final int DOTS = 4;
-    static final int SQUARE = 5;
 
     private SketchIcons() {
     }
@@ -79,11 +79,6 @@ final class SketchIcons {
                     canvas.drawCircle(cx, b.top + h * 0.25f, r, fill);
                     canvas.drawCircle(cx, b.top + h * 0.50f, r, fill);
                     canvas.drawCircle(cx, b.top + h * 0.75f, r, fill);
-                }
-                case SQUARE -> {
-                    float inset = 4f * d;
-                    RectF r = new RectF(b.left + inset, b.top + inset, b.right - inset, b.bottom - inset);
-                    canvas.drawRoundRect(r, 2f * d, 2f * d, stroke);
                 }
                 default -> throw new IllegalStateException("unknown icon kind " + kind);
             }
