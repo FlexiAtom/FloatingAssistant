@@ -4,6 +4,8 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.res.ColorStateList;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
@@ -197,6 +199,10 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         body.setBackground(null);
         body.setGravity(Gravity.TOP | Gravity.START);
         body.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+        // 手柄球垂在行下方，最后那一行的球会被 ScrollView 的下边缘切掉——给正文垫出这一颗的位子。
+        // 只动 bottom：气泡定位那套算法用的是 layout 行顶，paddingTop 一变它整个跟着上浮，别碰。
+        body.setPadding(body.getPaddingLeft(), body.getPaddingTop(),
+                body.getPaddingRight(), dp(16));
         // 焦点型悬浮窗里「点」输入框才拉得起键盘（BlacklistPanelView / TextPanelView 两条同型实测）。
         body.setOnClickListener(v -> {
             InputMethodManager imm = (InputMethodManager)
@@ -899,10 +905,22 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         /** 拖曳扩选的固定端；-1＝没在拖。 */
         private int dragAnchor = -1;
         private final int touchSlop;
+        private final float density;
+        /** 正在拖哪一颗手柄球：-1＝没拖，0＝首端，1＝尾端；固定端记在 dragAnchor 里。 */
+        private int handleDrag = -1;
+        private final Paint handlePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        /** 手柄几何临时槽：杆 x、杆顶、杆底、球心 x、球心 y、球半径。 */
+        private final float[] geom = new float[6];
 
         BodyEditText(Context context) {
             super(context);
             touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
+            density = context.getResources().getDisplayMetrics().density;
+            handlePaint.setColor(M3.color(context, M3.PRIMARY));
+        }
+
+        private float dpf(float value) {
+            return value * density;
         }
 
         /**
@@ -913,11 +931,31 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         @Override
         public boolean onTouchEvent(MotionEvent event) {
             int action = event.getActionMasked();
+            if (handleDrag >= 0) {
+                // 抓住球＝调那一端。整串事件都不交给 Editor，否则它把按下当成挪光标、选区当场塌掉。
+                if (action == MotionEvent.ACTION_MOVE) {
+                    moveHandleTo(event.getX(), event.getY());
+                } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    handleDrag = -1;
+                    dragAnchor = -1;
+                    longPressFired = false;
+                    disallowAncestorIntercept(false);
+                }
+                return true;
+            }
             if (action == MotionEvent.ACTION_DOWN) {
                 lastDownX = event.getX();
                 lastDownY = event.getY();
                 longPressFired = false;
                 dragAnchor = -1;
+                int which = handleAt(event.getX(), event.getY());
+                if (which >= 0) {
+                    handleDrag = which;
+                    dragAnchor = which == 0 ? getSelectionEnd() : getSelectionStart();
+                    disallowAncestorIntercept(true);
+                    moveHandleTo(event.getX(), event.getY());
+                    return true;
+                }
             } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
                 if (dragAnchor >= 0) {
                     disallowAncestorIntercept(false);
@@ -945,6 +983,70 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             android.view.ViewParent parent = getParent();
             if (parent != null) {
                 parent.requestDisallowInterceptTouchEvent(disallow);
+            }
+        }
+
+        /**
+         * 「偏置水滴」手柄（人裁 2026-10-22，主流样式）：杆贯穿选区首/末行那一列，球垂在**行下方**，
+         * 首端球偏左、尾端球偏右。球朝下正是为了把选区**上方**整块留给气泡——两者不抢同一格触摸。
+         * 坐标换算照 {@code Editor.getTopOffset()} 的路子：padding + layout 行顶/行底。
+         */
+        private boolean handleGeom(int which) {
+            android.text.Layout layout = getLayout();
+            int start = getSelectionStart();
+            int end = getSelectionEnd();
+            if (layout == null || end <= start) {
+                return false;
+            }
+            int line = layout.getLineForOffset(which == 0 ? start : Math.max(start, end - 1));
+            int edge = which == 0 ? start : Math.min(end, layout.getLineEnd(line));
+            float stem = layout.getPrimaryHorizontal(edge) + getTotalPaddingLeft();
+            float top = getTotalPaddingTop() + layout.getLineTop(line);
+            float bottom = getTotalPaddingTop() + layout.getLineBottom(line);
+            float r = dpf(5.5f);
+            geom[0] = stem;
+            geom[1] = top;
+            geom[2] = bottom;
+            // 球夹在视图内：选区正好落在行首时，往左偏的那一颗会被左边缘切掉半颗，看着就像没画。
+            geom[3] = Math.max(r, Math.min(getWidth() - r, stem + (which == 0 ? -r : r)));
+            geom[4] = bottom + r;
+            geom[5] = r;
+            return true;
+        }
+
+        /** 命中球优先（到球心 14dp 内），其次杆那一列（±9dp）。没选区或没命中返回 -1。 */
+        private int handleAt(float x, float y) {
+            for (int which = 0; which < 2; which++) {
+                if (!handleGeom(which)) {
+                    return -1;
+                }
+                if (Math.hypot(x - geom[3], y - geom[4]) <= dpf(14)) {
+                    return which;
+                }
+                if (Math.abs(x - geom[0]) <= dpf(9) && y >= geom[1] - dpf(6) && y <= geom[2] + dpf(6)) {
+                    return which;
+                }
+            }
+            return -1;
+        }
+
+        private void moveHandleTo(float x, float y) {
+            int focal = getOffsetForPosition(x, y);
+            setSelection(Math.min(dragAnchor, focal), Math.max(dragAnchor, focal));
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            for (int which = 0; which < 2; which++) {
+                if (!handleGeom(which)) {
+                    continue;
+                }
+                handlePaint.setStyle(Paint.Style.STROKE);
+                handlePaint.setStrokeWidth(dpf(2f));
+                canvas.drawLine(geom[0], geom[1], geom[0], geom[4], handlePaint);
+                handlePaint.setStyle(Paint.Style.FILL);
+                canvas.drawCircle(geom[3], geom[4], geom[5], handlePaint);
             }
         }
 
@@ -978,6 +1080,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         @Override
         protected void onSelectionChanged(int start, int end) {
             super.onSelectionChanged(start, end);
+            invalidate(); // 手柄画在本视图内容空间里，选区一动就得重画（滚动自带跟随，无需额外刷）
             if (onSelectionChanged != null) {
                 onSelectionChanged.run();
             }
