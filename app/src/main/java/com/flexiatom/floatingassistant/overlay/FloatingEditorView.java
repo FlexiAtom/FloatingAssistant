@@ -16,6 +16,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -312,7 +313,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         // 长按＝唤起「行气泡」（人裁 2026-10-22：无选区也得能召出气泡来读/译一行）。
         // 接管点在 BodyEditText.performLongClick，不是 setOnLongClickListener：后者在这里永远跑不到
         // （人测卡⑤-b「目前无法长按」）——TextView 到点把长按整个交给它自己的 TouchHelper 去选词。
-        // 选词仍可双击，拖选仍可拉手柄——只是长按这一条归了行气泡。
+        // 按住不动＝行气泡；按住再拖＝拖曳扩选（这面板压根不画系统选择手柄，那条得自己接，见 BodyEditText）；
+        // 单击仍是挪光标，选词靠双击。
         body.onLongPressForLine = () -> {
             body.setSelection(body.getOffsetForPosition(body.lastDownX, body.lastDownY));
             lineBubblePinned = true;
@@ -892,18 +894,58 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         /** 按下落点：带坐标的长按自带，无参那次（无障碍）用它兜底，行气泡按它算光标该落哪。 */
         float lastDownX;
         float lastDownY;
+        /** 长按已到点：此后手指再动就改走「拖曳扩选」，不再当挪光标（人裁 2026-10-22，见下）。 */
+        private boolean longPressFired;
+        /** 拖曳扩选的固定端；-1＝没在拖。 */
+        private int dragAnchor = -1;
+        private final int touchSlop;
 
         BodyEditText(Context context) {
             super(context);
+            touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
         }
 
+        /**
+         * 「按住不动＝行气泡，按住再拖＝扩选」这条分叉只能自己接（人测卡⑤-d 前提纠正
+         * 「选区手柄不存在」）：这块面板里系统根本不画选择手柄，所以拖曳扩选唯一的入口本就是
+         * 长按之后的那串 MOVE，而长按已经被我们接管——交回系统也换不回手柄，只会丢掉头一次弹的气泡。
+         */
         @Override
         public boolean onTouchEvent(MotionEvent event) {
-            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+            int action = event.getActionMasked();
+            if (action == MotionEvent.ACTION_DOWN) {
                 lastDownX = event.getX();
                 lastDownY = event.getY();
+                longPressFired = false;
+                dragAnchor = -1;
+            } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                if (dragAnchor >= 0) {
+                    disallowAncestorIntercept(false);
+                }
+                dragAnchor = -1;
+                longPressFired = false;
+            } else if (longPressFired && action == MotionEvent.ACTION_MOVE) {
+                if (dragAnchor < 0
+                        && Math.hypot(event.getX() - lastDownX, event.getY() - lastDownY) > touchSlop) {
+                    dragAnchor = getOffsetForPosition(lastDownX, lastDownY);
+                    // 不夺回则外层 ScrollView 一有竖向位移就 intercept，拖选当场断掉
+                    disallowAncestorIntercept(true);
+                }
+                if (dragAnchor >= 0) {
+                    int focal = getOffsetForPosition(event.getX(), event.getY());
+                    setSelection(Math.min(dragAnchor, focal), Math.max(dragAnchor, focal));
+                    return true; // 这条 MOVE 不再交给 Editor 当「挪光标」
+                }
             }
             return super.onTouchEvent(event);
+        }
+
+        /** 这道闸在 ViewGroup 手上：子视图要拖选，就得替父级把 intercept 关掉（拖完必须还原，否则整页滚不动）。 */
+        private void disallowAncestorIntercept(boolean disallow) {
+            android.view.ViewParent parent = getParent();
+            if (parent != null) {
+                parent.requestDisallowInterceptTouchEvent(disallow);
+            }
         }
 
         /**
@@ -916,6 +958,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             if (onLongPressForLine == null) {
                 return super.performLongClick();
             }
+            longPressFired = true;
             onLongPressForLine.run();
             return true;
         }
@@ -927,6 +970,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             }
             lastDownX = x;
             lastDownY = y;
+            longPressFired = true;
             onLongPressForLine.run();
             return true;
         }
