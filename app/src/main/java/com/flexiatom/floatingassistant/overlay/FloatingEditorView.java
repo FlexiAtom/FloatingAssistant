@@ -59,6 +59,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private static final float SCRIM_ALPHA = 0.32f;
 
     private final Listener listener;
+    private final LinearLayout editor;
     private final PanelDragHandle handle;
     private final EditText body;
     private final View scrim;
@@ -92,7 +93,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         setFocusableInTouchMode(true);
 
         // ---------- 编辑器层（恒满宽，被抽屉盖住也不改尺寸） ----------
-        LinearLayout editor = new LinearLayout(context);
+        editor = new LinearLayout(context);
         editor.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(12);
         editor.setPadding(pad, dp(4), pad, pad);
@@ -430,6 +431,23 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     /** 量测用：抽屉当前是否展开。 */
     public boolean isDrawerOpenForTest() {
         return drawerOpen();
+    }
+
+    /**
+     * 根视图的高**只由编辑器层决定**。抽屉与遮罩都是 {@code MATCH_PARENT} 子项：放任默认的
+     * WRAP_CONTENT 测量，FrameLayout 会把它们量成「当前可用高度」，面板当场被顶满全屏——而
+     * {@code FLAG_LAYOUT_NO_LIMITS} 下可用高度又随窗长高，展开抽屉即变成人测卡②报的**无限拉长**。
+     * 先用同一规格量出编辑器自然高，再以 EXACTLY(该高) 走标准测量，两个覆盖层正好钉满卡片高。
+     */
+    @Override
+    protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.EXACTLY) {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+            return;
+        }
+        editor.measure(widthMeasureSpec, heightMeasureSpec);
+        super.onMeasure(widthMeasureSpec,
+                MeasureSpec.makeMeasureSpec(editor.getMeasuredHeight(), MeasureSpec.EXACTLY));
     }
 
     @Override
