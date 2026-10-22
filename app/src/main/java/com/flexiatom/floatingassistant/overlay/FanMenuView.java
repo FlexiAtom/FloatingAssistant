@@ -5,9 +5,14 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
+import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.widget.Button;
+
+import com.flexiatom.floatingassistant.R;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -382,6 +387,44 @@ public final class FanMenuView extends View {
         labelTextPaint.setTextAlign(Paint.Align.CENTER);
         labelTextActivePaint.set(labelTextPaint);
         labelTextActivePaint.setColor(M3.color(context, M3.ON_PRIMARY));
+
+        installAccessibility();
+    }
+
+    /**
+     * 悬浮球的无障碍语义（{@code ui-blind-operation} F4 第一件）：本视图全自绘、零子节点，实测
+     * （服务侧 {@code A11YPROBE}）在无障碍树里就是 {@code cd=[] click=false foc=false kids=0} 的一个
+     * View——读屏会**整扇跳过**，等于视障用户连入口都摸不到。
+     *
+     * <p>这里**不用** {@code setOnClickListener}：那会把 {@code clickable} 真打开、连带改
+     * {@code onTouchEvent} 的吃掉行为，而球上的拖曳/点按判定是 {@code ball-tap-hits-fan-zone}
+     * 一路实机调出来的，不为无障碍去动它。delegate 只报语义，读屏的"双击执行"由
+     * {@link #performAccessibilityAction} 直接接到既有的 {@link BallGesture#onBallTap()}。
+     *
+     * <p>**没解决的写明白**：扇形那些格子是本视图画出来的，本方法只让球本身可读可点；环上的工具项
+     * 仍旧不在树里（要 {@code ExploreByTouchHelper} 那类虚拟节点，成本另案 pool/overlay-window-a11y-visibility）。
+     */
+    private void installAccessibility() {
+        setAccessibilityDelegate(new View.AccessibilityDelegate() {
+            @Override
+            public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
+                super.onInitializeAccessibilityNodeInfo(host, info);
+                info.setClickable(true);
+                info.setClassName(Button.class.getName());
+                // 名字在节点被要的那一刻现算：菜单开合两种状态读出来不一样，且不用谁去刷它
+                info.setContentDescription(host.getContext().getString(
+                        menuOpen() ? R.string.ball_cd_open : R.string.ball_cd_collapsed));
+            }
+
+            @Override
+            public boolean performAccessibilityAction(View host, int action, Bundle args) {
+                if (action == AccessibilityNodeInfo.ACTION_CLICK) {
+                    ballGesture.onBallTap();
+                    return true;
+                }
+                return super.performAccessibilityAction(host, action, args);
+            }
+        });
     }
 
     /**

@@ -28,7 +28,41 @@ public final class A11yProbe {
     private A11yProbe() {
     }
 
-    public static void run(AccessibilityService svc) {
+    public static void run(AccessibilityService svc, boolean tapBall) {
+        list(svc);
+        if (tapBall) {
+            tapBallNode(svc);
+        }
+    }
+
+    /**
+     * 机测「读屏双击到底能不能**操作**」而不只是"能不能听见"：给自己那扇覆盖窗的根节点发
+     * {@code ACTION_CLICK}，再把同一扇窗的根节点重取一次。我们的 delegate 是**现算**名字的
+     * （{@code FanMenuView#installAccessibility}），所以名字翻没翻＝这条动作路通没通的判据。
+     */
+    private static void tapBallNode(AccessibilityService svc) {
+        String self = svc.getPackageName();
+        for (AccessibilityWindowInfo w : svc.getWindows()) {
+            if (w.getType() != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) {
+                continue;
+            }
+            AccessibilityNodeInfo root = w.getRoot();
+            if (root == null || !self.equals(String.valueOf(root.getPackageName()))
+                    || !root.isClickable()) {
+                continue;
+            }
+            String before = String.valueOf(root.getContentDescription());
+            boolean delivered = root.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+            AccessibilityNodeInfo after = w.getRoot();
+            Log.i(TAG, "tap id=" + w.getId() + " before=[" + before + "]"
+                    + " performAction=" + delivered
+                    + " after=[" + (after == null ? "NULL" : after.getContentDescription()) + "]");
+            return;
+        }
+        Log.i(TAG, "tap: 没有可点的覆盖窗根节点（球没在窗上？）");
+    }
+
+    private static void list(AccessibilityService svc) {
         List<AccessibilityWindowInfo> windows = svc.getWindows();
         Rect box = new Rect();
         String self = svc.getPackageName();

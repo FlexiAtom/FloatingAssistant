@@ -41,6 +41,8 @@
     <string name="editor_cd_scrim">收起抽屉</string>
     <string name="editor_cd_search">搜索文档</string>
     <string name="panel_cd_handle">面板手柄：双击关闭，按住拖动</string>
+    <string name="ball_cd_collapsed">悬浮球，双击展开菜单</string>
+    <string name="ball_cd_open">悬浮球，菜单已展开</string>
 
     <!-- 编辑工具抽屉（「/」）：文案沿用 MT 管理器的短名，「xx行」的实际语义一律是「xx光标所在行」。 -->
     <string name="editor_sel_all">全选</string>
