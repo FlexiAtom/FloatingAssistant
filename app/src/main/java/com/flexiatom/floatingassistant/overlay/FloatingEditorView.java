@@ -8,6 +8,7 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.Editable;
@@ -318,6 +319,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         scrim = new View(context);
         scrim.setBackgroundColor(M3.alpha(0xFF000000, SCRIM_ALPHA));
         scrim.setClickable(true);
+        scrim.setFocusable(false); // 遮罩只用于收起，不该在 Tab 链上占一格（可点击的裸 View 默认会被算成可聚焦）
         scrim.setContentDescription(context.getString(R.string.editor_cd_scrim));
         scrim.setOnClickListener(v -> closeDrawer());
         scrim.setVisibility(GONE);
@@ -460,7 +462,10 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         Button b = new Button(context);
         b.setText(labelRes);
         b.setAllCaps(false);
-        b.setFocusable(false);
+        // 键盘可达、但**触摸态不吃焦点**（F2）：焦点仍归正文，点一次不再把光标与键盘让出去。
+        b.setFocusable(true);
+        b.setFocusableInTouchMode(false);
+        applyFocusRing(b);
         b.setTextColor(M3.color(context, M3.ON_INVERSE_SURFACE));
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
         b.setBackgroundColor(0);
@@ -545,7 +550,27 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         b.setPadding(dp(8), dp(8), dp(8), dp(8));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(side, side);
         b.setLayoutParams(lp);
+        applyFocusRing(b);
         return b;
+    }
+
+    /**
+     * 键盘导航的**可见焦点环**（ui-blind-operation F2）：只在 focused 态露一圈描边。
+     * 用 {@code foreground} 而不是换 {@code background}，因为钮的底子各有安排（图标钮透明、
+     * 抽屉行扁平），换底会把 M3 取色与置灰一并牵动。
+     * 强度（粗细／取色）是待人裁那一格，先按"看得见"这一档做。
+     */
+    private void applyFocusRing(View v) {
+        GradientDrawable ring = new GradientDrawable();
+        ring.setShape(GradientDrawable.RECTANGLE);
+        ring.setColor(0);
+        ring.setCornerRadius(dp(6));
+        ring.setStroke(dp(2), M3.color(getContext(), M3.PRIMARY));
+        StateListDrawable states = new StateListDrawable();
+        states.addState(new int[]{android.R.attr.state_focused}, ring);
+        states.addState(new int[]{}, new android.graphics.drawable.ColorDrawable(0));
+        v.setForeground(states);
+        v.setForegroundGravity(Gravity.FILL);
     }
 
     private android.graphics.drawable.Drawable icon(Context context, int resId, int tintColor) {
@@ -608,12 +633,14 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         emitStamp();
     }
 
-    /** 条目＝整行宽的扁平菜单项。**不吃焦点**，否则点一次就把正文光标与键盘让出去（收起后没法连打）。 */
+    /** 条目＝整行宽的扁平菜单项。**触摸态不吃焦点**（点了不交正文光标与键盘），键盘态可走到（F2）。 */
     private View drawerRow(DrawerContent.Item item) {
         Button b = new Button(getContext());
         b.setText(item.label);
         b.setAllCaps(false);
-        b.setFocusable(false);
+        b.setFocusable(true);
+        b.setFocusableInTouchMode(false);
+        applyFocusRing(b);
         b.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         b.setTextColor(M3.color(getContext(), M3.ON_SURFACE));
@@ -1592,7 +1619,130 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 + " smooth=" + (prefs.smooth() ? 1 : 0) + " wrap=" + (prefs.wrap() ? 1 : 0)
                 + " drawer=" + (drawerOpen() ? "[" + drawerTitle.getText() + "]" : "closed")
                 + " bubble=" + (bubble.getVisibility() == VISIBLE ? bubbleItems : 0)
+                + " focus=" + focusBrief()
                 + " undo=" + undoStack.size() + " redo=" + redoStack.size();
+    }
+
+    /**
+     * 焦点落在谁身上，附**窗的触摸态**：F2 的机读凭据——不看截屏也要知道 Tab 走到了哪一格。
+     * {@code (touch)} 表示窗还在触摸态（此时只有 {@code focusableInTouchMode} 的控件能持有焦点），
+     * 键盘把焦点交给扁平钮之后应当翻成 {@code (key)}。
+     */
+    private String focusBrief() {
+        View f = findFocus();
+        String who;
+        if (f == null) {
+            who = "none";
+        } else if (f == body) {
+            who = "正文";
+        } else if (f == this) {
+            who = "面板";
+        } else {
+            String label = labelOf(f);
+            who = label.isEmpty() ? f.getClass().getSimpleName() : label;
+        }
+        return who + (isInTouchMode() ? "(touch)" : "(key)");
+    }
+
+    /**
+     * 焦点链＝按视图树顺序深度优先收「可聚焦且当前可见」的控件。没有 {@code nextFocus*} 覆盖时
+     * 这就是 Tab 的前进序；**方向键**另按几何取最近者（{@link #focusChain} 只保证 Tab 那一路）。
+     */
+    private List<View> focusChain() {
+        List<View> out = new ArrayList<>();
+        collectFocusable(this, out);
+        return out;
+    }
+
+    private void collectFocusable(View view, List<View> out) {
+        if (view.getVisibility() != VISIBLE) {
+            return;
+        }
+        // 面板自己那格不算：它 setFocusableInTouchMode(true) 只是为了让返回键落到本视图树。
+        if (view != this && view.isFocusable()) {
+            out.add(view);
+        }
+        if (view instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                collectFocusable(group.getChildAt(i), out);
+            }
+        }
+    }
+
+    private String focusChainBrief() {
+        List<View> chain = focusChain();
+        View cur = findFocus();
+        StringBuilder out = new StringBuilder(160);
+        for (int i = 0; i < chain.size(); i++) {
+            View v = chain.get(i);
+            out.append(i == 0 ? "" : " | ").append(v == cur ? "*" : "").append('#').append(i)
+                    .append(' ').append(labelOf(v).isEmpty() ? v.getClass().getSimpleName() : labelOf(v));
+        }
+        return "chain(" + chain.size() + "):" + (out.length() == 0 ? " 空——一个都走不到" : out);
+    }
+
+    /**
+     * 量测用键盘通路：{@code here|list|first|last|next|prev|enter|esc}。
+     *
+     * <p>它把实体键的那几步换成**直接调用框架用的同一支方法**（{@code focusSearch}/{@code requestFocus}
+     * /{@link #dispatchKeyEvent}），所以能证「链子顺序对不对、走到的那格能不能触发、ESC 收不收」；
+     * **证不到**「键盘的键有没有投递到这扇覆盖窗」——那一段只有外接键盘实按（F2 归人）。
+     * 移焦点那一格照 {@code ViewRootImpl.performFocusNavigation} 的做法临时开 {@code focusableInTouchMode}
+     * 再关回去：不开的话触摸态下 {@code requestFocus} 会被直接拒掉。
+     */
+    private String focusForTest(String how) {
+        switch (how) {
+            case "":
+            case "here":
+                return "focus=" + focusBrief();
+            case "list":
+                return focusChainBrief();
+            case "first":
+            case "last":
+            case "next":
+            case "prev":
+                return moveFocus(how);
+            case "enter": {
+                View f = findFocus();
+                if (f == null) {
+                    return "enter: 没有焦点项";
+                }
+                boolean handled = f.performClick();
+                return "enter → [" + labelOf(f) + "] performClick=" + handled;
+            }
+            case "esc":
+                return dispatchKeyEvent(new KeyEvent(0L, 0L,
+                        KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ESCAPE, 0, 0)) ? "esc consumed" : "esc passed";
+            default:
+                return "unknown how";
+        }
+    }
+
+    private String moveFocus(String how) {
+        List<View> chain = focusChain();
+        if (chain.isEmpty()) {
+            return "no focusable view at all";
+        }
+        View cur = findFocus();
+        int at = cur == null ? -1 : chain.indexOf(cur);
+        int to = switch (how) {
+            case "first" -> 0;
+            case "last" -> chain.size() - 1;
+            case "next" -> (at < 0 ? -1 : at + 1) % chain.size();
+            default -> (at <= 0 ? chain.size() : at) - 1;
+        };
+        if (to < 0 || to >= chain.size()) {
+            return "out of chain (at=" + at + " size=" + chain.size() + ")";
+        }
+        View target = chain.get(to);
+        boolean wasTouchFocusable = target.isFocusableInTouchMode();
+        target.setFocusableInTouchMode(true);
+        boolean gained = target.requestFocus(View.FOCUS_DOWN);
+        if (!wasTouchFocusable) {
+            target.setFocusableInTouchMode(false);
+        }
+        return "move " + how + " → #" + to + " [" + labelOf(target) + "] gained=" + gained
+                + " now=" + focusBrief();
     }
 
     /** 只在真变了时落一行（差分）：否则自动落库回调每次都会刷一条一模一样的。 */
@@ -1613,7 +1763,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      * {@code open-save-charset} {@code open-reload-charset} {@code open-stats}
      * {@code pick:<任一可点件的文案或可读音名称>} {@code rows}（读抽屉里全部条目，置灰标 {@code (=)}）
      * {@code close-drawer} {@code type:<文本>}（插在光标处，{@code \n} 算换行）
-     * {@code caret:<偏移>} {@code sel:<起>:<止>} {@code save} {@code undo} {@code redo} {@code back}。
+     * {@code caret:<偏移>} {@code sel:<起>:<止>} {@code save} {@code undo} {@code redo} {@code back}
+     * {@code focus:<here|list|first|last|next|prev|enter|esc>}（F2 键盘通路，见 {@link #focusForTest}）。
      *
      * <p>每条都走控件自己的 {@code performClick()} 与真实 {@code Editable} 通路，所以这条只证
      * 「动作→状态」的因果；**触摸命中、键盘手感、读屏语音仍归人**（{@code back} 走的是
@@ -1702,6 +1853,9 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             case "back":
                 outcome = dispatchKeyEvent(new KeyEvent(0L, 0L,
                         KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK, 0, 0)) ? "back consumed" : "back passed";
+                break;
+            case "focus":
+                outcome = focusForTest(arg);
                 break;
             default:
                 outcome = "unknown verb";
@@ -1857,12 +2011,18 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         offsetDescendantRectToMyCoords(handle, out);
     }
 
+    /**
+     * 返回键与 **ESC** 同一支语义（F2）：抽屉开着先收抽屉，否则关窗。
+     * ESC 这条是给外接键盘留的——人报「TalkBack 把双击抢走、窗口没法关闭」，读屏态下
+     * 自绘控件收不到原始双击，关闭只剩键盘这一出口。
+     */
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK
+        int code = event.getKeyCode();
+        if ((code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_ESCAPE)
                 && event.getAction() == KeyEvent.ACTION_UP) {
             if (drawerOpen()) {
-                closeDrawer(); // 抽屉态：第一下返回收抽屉，面板不动
+                closeDrawer(); // 抽屉态：第一下收抽屉，面板不动
             } else {
                 listener.onClose();
             }

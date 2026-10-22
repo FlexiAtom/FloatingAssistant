@@ -186,7 +186,7 @@ public final class TextPanelView extends LinearLayout implements PanelView {
         android.util.Log.i("P5KEY", "TextPanel act=" + event.getAction()
                 + " code=" + event.getKeyCode() + " focused=" + isFocused()
                 + " attached=" + isAttachedToWindow());
-        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK
+        if ((event.getKeyCode() == KeyEvent.KEYCODE_BACK || event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE)
                 && event.getAction() == KeyEvent.ACTION_UP) {
             listener.onClose();
             return true;

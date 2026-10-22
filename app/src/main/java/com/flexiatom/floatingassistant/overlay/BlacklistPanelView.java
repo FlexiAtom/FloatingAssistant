@@ -248,7 +248,7 @@ public final class BlacklistPanelView extends LinearLayout implements PanelView 
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK
+        if ((event.getKeyCode() == KeyEvent.KEYCODE_BACK || event.getKeyCode() == KeyEvent.KEYCODE_ESCAPE)
                 && event.getAction() == KeyEvent.ACTION_UP) {
             listener.onClose();
             return true;
