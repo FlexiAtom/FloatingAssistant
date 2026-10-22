@@ -86,6 +86,16 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
         /** 当下是否在朗读：抽屉条目标签「朗读」/「取消」由它定（与服务侧面板钮同一条规则）。 */
         boolean isSpeaking();
+
+        /**
+         * 把面板窗**交回给系统**（人裁 2026-10-23「悬浮窗会抢输入法，解决办法是自动关闭悬浮窗」）：
+         * 这扇 {@code TYPE_ACCESSIBILITY_OVERLAY} 是带焦点的，系统选择器起来时 IME 归属仍在我们这儿，
+         * 它的搜索框就打不了字。发起 SAF 前先收窗，结果回来再顶回去。
+         */
+        void hideForSystemUi();
+
+        /** {@link #hideForSystemUi()} 的对偶：选择器收尾后把这扇窗放回原处（视图实例不换，缓冲与绑定都还在）。 */
+        void restoreAfterSystemUi();
     }
 
     /** 编辑区高（dp）：与 E1 同值，编辑器的主战场。 */
@@ -689,6 +699,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private void openDocDrawer() {
         docListShowing = false;    // 先关监听，免得清词这一下在背后发一次查询
         drawerSearch.setText("");
+        drawerSearch.setHint(R.string.editor_search_hint); // 「重命名文件」借过这一格，回到列表就得换回原招牌
         openDrawer(docListContent());
         docListShowing = true;
         refreshDocList("");
@@ -1055,13 +1066,34 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      * 这一格在人给的十二项之外，按那句「至少包含这些功能」补：没有它，URI 那一列只能靠「另存为」单向贴上。
      */
     private void openExternalFile() {
+        persistCurrent(); // 交窗期间进程可能被杀，先把手上这点改动落地
+        closeDrawer();
+        listener.hideForSystemUi();
         FilePickerActivity.request(getContext(), FilePickerActivity.MODE_OPEN, null, uri -> {
+            listener.restoreAfterSystemUi();
             if (uri == null) {
-                closeDrawer(); // 人按了返回＝取消，不是失败：安静收起，别把没发生的事报成一格
-                return;
+                return; // 人按了返回＝取消，不是失败：窗已顶回来，别把没发生的事报成一格
             }
             openUri(uri.toString());
         });
+    }
+
+    /**
+     * 「另存为」的建议名。标题就是**首行**，直接当文件名会带出两类坑：含 {@code /}（provider 当场拒）、
+     * 长得没边（vfat 上限 255 字节）。所以按码点截 60、洗掉 {@code /}。
+     *
+     * <p>**后缀不在这儿拼**（人裁 2026-10-23「应该默认为 .txt，这样就不需要加 .txt 了，避免可能的 .txt.txt」）：
+     * 发起时带的是 {@code text/plain}，落什么后缀由提供程序按这个类型给默认，代码只交裸名。于是
+     * {@code a.md} 不会被改成 {@code a.md.txt}，裸名也不会被两头各加一次。最终名字以选择器回传的 URI 为准，
+     * 绑定跟着那条走，不由这里的字符串决定。
+     */
+    private String suggestedName() {
+        String title = NotesCodec.deriveTitle(body.getText().toString()).replace('/', ' ').trim();
+        if (title.isEmpty()) {
+            title = getContext().getString(R.string.editor_untitled);
+        }
+        int cut = title.offsetByCodePoints(0, Math.min(60, title.codePointCount(0, title.length())));
+        return title.substring(0, cut);
     }
 
     /**
@@ -1122,24 +1154,26 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      * 盘上一个字节都不动，连一行回执都没有——那是人按的返回，不是失败。
      */
     private void saveAs() {
-        String title = NotesCodec.deriveTitle(body.getText().toString());
-        FilePickerActivity.request(getContext(), FilePickerActivity.MODE_CREATE,
-                title.isEmpty() ? getContext().getString(R.string.editor_untitled) : title, uri -> {
-                    if (uri == null) {
-                        return; // 取消：绑定、正文、盘上一个字节都不动，也不发回执（那是人按的返回，不是失败）
-                    }
-                    final String target = uri.toString();
-                    if (target.equals(docUri)) {
-                        saveNow(); // 选中的正是当下这个文件：只需把缓冲落一次，不必换绑
-                        return;
-                    }
-                    final String previous = docUri;
-                    docUri = target;
-                    settingStale = true; // 换了写的目标＝那第七列在盘上还没落地，脏判得认这一条
-                    saveReport = ok -> reportSaveAs(ok != null && ok, target, previous);
-                    saveNow();
-                    requestStamp();
-                });
+        persistCurrent();
+        closeDrawer();
+        listener.hideForSystemUi();
+        FilePickerActivity.request(getContext(), FilePickerActivity.MODE_CREATE, suggestedName(), uri -> {
+            listener.restoreAfterSystemUi();
+            if (uri == null) {
+                return; // 取消：绑定、正文、盘上一个字节都不动，也不发回执（那是人按的返回，不是失败）
+            }
+            final String target = uri.toString();
+            if (target.equals(docUri)) {
+                saveNow(); // 选中的正是当下这个文件：只需把缓冲落一次，不必换绑
+                return;
+            }
+            final String previous = docUri;
+            docUri = target;
+            settingStale = true; // 换了写的目标＝那第七列在盘上还没落地，脏判得认这一条
+            saveReport = ok -> reportSaveAs(ok != null && ok, target, previous);
+            saveNow();
+            requestStamp();
+        });
     }
 
     /**
@@ -1177,6 +1211,60 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     /** 当下这篇的真身在外部文件上（E6c，索引第七列非空）——菜单那两格「重载」认它，不只认 {@code docId}。 */
     private boolean externalDoc() {
         return !docUri.isEmpty();
+    }
+
+    /**
+     * 「重命名文件」（人裁 2026-10-23，且要**支持改后缀**）：名字与后缀是同一件事——后缀就是名字的一段，
+     * 改 {@code .txt→.md} 不必走第二条通路。输入格复用抽屉里那一格搜索框（它对非列表抽屉是惰性的，
+     * 监听被 {@code docListShowing} 关着），预填现名并把光标送到末尾。
+     */
+    private void openRename() {
+        if (!externalDoc()) {
+            return; // ⋮ 里这一格对内部篇置灰，机检 pick 也进不来；这里再挡一次是防自己改次序时漏看
+        }
+        String current = bindName(null, docUri);
+        Context context = getContext();
+        List<DrawerContent.Item> items = new ArrayList<>(2);
+        items.add(greyRow(context.getString(R.string.editor_rename_now, current)));
+        items.add(toolItem(R.string.editor_rename_go, () -> applyRename(drawerSearch.getText().toString())));
+        openDrawer(new DrawerContent(context.getString(R.string.editor_more_rename),
+                null, null, true, items));
+        drawerSearch.setHint(R.string.editor_rename_hint);
+        drawerSearch.setText(current);
+        drawerSearch.setSelection(drawerSearch.length());
+    }
+
+    private void applyRename(String newName) {
+        String name = newName == null ? "" : newName.trim();
+        if (!externalDoc() || name.isEmpty() || name.equals(bindName(null, docUri))) {
+            closeDrawer(); // 没改名就什么都不动：一次空写也是写，盘上时间戳会莫名变新
+            return;
+        }
+        final String from = docUri;
+        notes.rename(from, name, to -> {
+            if (to == null) {
+                reportRenameResult(R.string.editor_rename_refused, from);
+                return;
+            }
+            docUri = to; // provider 可能换一个 documentId，旧串不能再拿去写
+            docName.setText(bindName(null, to));
+            settingStale = true;
+            // 改名这一步自己回话，不欠任何一次保存：索引那一列由存储层当场跟着换，
+            // 而正文写不写得进去仍归落库那条路报——有损闸关着时它是"停着"，不是"失败"。
+            reportRenameResult(R.string.editor_rename_done, to);
+            persistCurrent();
+            requestStamp();
+        });
+    }
+
+    /** 改名结果说给自己那格的抽屉：行是置灰的读数，第二条是"知道了"。 */
+    private void reportRenameResult(int textRes, String uri) {
+        Context context = getContext();
+        List<DrawerContent.Item> items = new ArrayList<>(2);
+        items.add(greyRow(context.getString(textRes, bindName(null, uri))));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_lossy_ok), this::closeDrawer));
+        openDrawer(new DrawerContent(context.getString(R.string.editor_more_rename),
+                null, null, false, items));
     }
 
     /**
@@ -1345,6 +1433,9 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         List<DrawerContent.Item> items = new ArrayList<>(15);
         items.add(toolItem(R.string.editor_more_open, this::openExternalFile));
         items.add(toolItem(R.string.editor_more_save_as, this::saveAs));
+        // 改名只对**有文件**的篇成立：内部篇的名字是首行洗出来的标题，没有"后缀"这回事，置灰并等人裁
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_more_rename),
+                externalDoc() ? this::openRename : null));
         items.add(new DrawerContent.Item(context.getString(R.string.editor_more_reload),
                 hasFile ? this::reloadFromDisk : null));
         items.add(new DrawerContent.Item(context.getString(R.string.editor_more_reload_charset),
@@ -1945,6 +2036,9 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      * {@code caret:<偏移>} {@code sel:<起>:<止>} {@code save} {@code undo} {@code redo} {@code back}
      * {@code open-uri:<uri>}／{@code save-uri:<uri>}（E6c 外部文件两格：不经选择器，直接把 URI 读进来／绑上写出去，
      * {@code file://} 串就能测通整条通路——外部文件那一路本来要手指，这一格把它变成不要）。
+     * {@code rename:<新名>}（同一支 {@code applyRename}，改盘上名字与索引第七列）。
+     * {@code picker-open}／{@code picker-save-as}（真交接那一趟：收窗、拉系统选择器、回来顶窗——
+     * 选择器画的东西机侧读不到，但窗的有无与 IME 归属在 {@code dumpsys} 里是公开的）。
      * {@code focus:<here|list|first|last|next|prev|enter|esc>}（F2 键盘通路，见 {@link #focusForTest}）。
      *
      * <p>每条都走控件自己的 {@code performClick()} 与真实 {@code Editable} 通路，所以这条只证
@@ -2007,6 +2101,22 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                     saveNow();
                     outcome = "bound " + arg;
                 }
+                break;
+            case "picker-open":
+                // 真交接那一趟（收窗 → SAF 选择器 → 顶回窗）：选择器画什么机侧读不到，但窗的有无与
+                // IME 归属在 dumpsys 里是公开的——这一格证的是「悬浮窗不再抢输入法」那条人裁的因果
+                openExternalFile();
+                outcome = "handed off to picker (open)";
+                break;
+            case "picker-save-as":
+                saveAs();
+                // 建议名机读得到才算数（后缀那一格人测出来的错，下次回归不用人眼看选择器）
+                outcome = "handed off to picker (create) name=" + suggestedName();
+                break;
+            case "rename":
+                // 不经抽屉输入格直接改名（写的是抽屉里那一格的真通路同一支 applyRename；打字归人）
+                applyRename(arg);
+                outcome = "renaming " + arg;
                 break;
             case "open-reload-charset":
                 reloadWithCharset();

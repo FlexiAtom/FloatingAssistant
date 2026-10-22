@@ -66,7 +66,11 @@ public final class FilePickerActivity extends Activity {
                 .setType(create ? "text/plain" : "*/*");
         if (create) {
             String name = getIntent().getStringExtra(EXTRA_NAME);
-            pick.putExtra(Intent.EXTRA_TITLE, name == null || name.isEmpty() ? "untitled.txt" : name);
+            if (name != null && !name.isEmpty()) {
+                pick.putExtra(Intent.EXTRA_TITLE, name);
+            }
+            // 空名就**不发**标题：上面那句 setType("text/plain") 已经说清了"要一个文本文件"，
+            // 裸名与默认后缀是提供程序的活儿（人裁 2026-10-23：默认给 .txt，代码不再拼，免得拼成 .txt.txt）。
         }
         try {
             startActivityForResult(pick, REQ);

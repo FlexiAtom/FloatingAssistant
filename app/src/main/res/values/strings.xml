@@ -128,6 +128,13 @@
     <string name="editor_external_unreadable">%1$s 读不到（provider 挂了或授权被撤）。缓冲一个字没动。</string>
     <string name="editor_save_as_done">已写入 %1$s，这篇此后就落在那儿</string>
     <string name="editor_save_as_failed">%1$s 写不进去（只读？授权没了？）。绑定已退回，正文照旧存原处。</string>
+    <!-- 以下五格＝人测 2026-10-23「三点的左栏应该提供重命名文件（并且支持改后缀）」，同样在人给的十二项之外，待追认 -->
+    <string name="editor_more_rename">重命名文件</string>
+    <string name="editor_rename_now">现在叫 %1$s——在框里写新名字，后缀一起改</string>
+    <string name="editor_rename_hint">新文件名（含后缀）</string>
+    <string name="editor_rename_go">改名</string>
+    <string name="editor_rename_done">现在叫 %1$s｜清单里那条也跟着换了名字，下次「重新加载」读的就是它</string>
+    <string name="editor_rename_refused">没改成 %1$s（文件一个字没动，旧名字还在原处）</string>
 
     <string name="translate_panel_title">翻译设置</string>
     <string name="translate_label_target">目标语言</string>

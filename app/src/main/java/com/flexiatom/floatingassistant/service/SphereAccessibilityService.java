@@ -97,6 +97,11 @@ public class SphereAccessibilityService extends AccessibilityService {
     private TtsEngine ttsEngine;
     /** 当前面板的「朗读」动作：合成/播放期间把它原地改成「取消」，结束后恢复。 */
     private TextPanelView.Action speakAction;
+    /**
+     * 交给系统选择器（SAF）时**停着的那一扇编辑器**：窗收掉是为了让出输入法与整屏（人裁 2026-10-23），
+     * 视图实例本身还活着，缓冲、绑定、撤销栈都在里面——结果回来按同一个实例顶回去。
+     */
+    private View parkedEditor;
 
     /** 最近一次窗口状态变化看到的顶层外部 App 包名（忽略自身覆盖层）。用于"切走即卸载"判定。 */
     private volatile String lastTopPkg;
@@ -693,7 +698,17 @@ public class SphereAccessibilityService extends AccessibilityService {
      */
     private void openEditor() {
         if (overlayManager.isPanelVisible()) {
+            parkedEditor = null; // 人自己关的（当开关用）：那份缓冲就此作废，下次点开是新建
             overlayManager.hidePanel();
+            return;
+        }
+        // 选择器还挂在上面时编辑器是**收起**的（parked），这一按顶回同一篇：新建一份会把缓冲与绑定全丢掉，
+        // 而选择器回来时又会把旧的顶回去——两份编辑器互相盖，谁也不知道盘上落的是哪一份。
+        if (parkedEditor != null) {
+            View parked = parkedEditor;
+            parkedEditor = null;
+            android.util.Log.i("P5EDITOR", "park reused by openEditor");
+            overlayManager.showPanel(parked);
             return;
         }
         overlayManager.showPanel(new FloatingEditorView(overlayManager.themedContext(),
@@ -701,7 +716,36 @@ public class SphereAccessibilityService extends AccessibilityService {
                     @Override
                     public void onClose() {
                         stopSpeaking(); // 同文本面板：面板关了声音不该还在
+                        parkedEditor = null; // 同上一条：✕ 关掉的这篇不欠下一次点开
                         overlayManager.hidePanel();
+                    }
+
+                    @Override
+                    public void hideForSystemUi() {
+                        View panel = overlayManager.currentPanel();
+                        if (panel instanceof FloatingEditorView) {
+                            parkedEditor = panel;
+                            overlayManager.hidePanel();
+                            android.util.Log.i("P5EDITOR", "parked for system ui");
+                        } else {
+                            android.util.Log.i("P5EDITOR", "nothing parked (panel="
+                                    + (panel == null ? "none" : panel.getClass().getSimpleName()) + ")");
+                        }
+                    }
+
+                    @Override
+                    public void restoreAfterSystemUi() {
+                        View parked = parkedEditor;
+                        parkedEditor = null;
+                        if (parked == null) {
+                            android.util.Log.i("P5EDITOR", "restore: no park"
+                                    + (overlayManager.isPanelVisible() ? " (panel already up)" : ""));
+                            return;
+                        }
+                        // showPanel 自己先 hidePanel 再上窗，所以这里不再问"面板在不在"：问了就得为
+                        // "在"那一格决定丢谁，而丢掉 parked 正是把缓冲和绑定一起扔了。
+                        android.util.Log.i("P5EDITOR", "restore: park back on window");
+                        overlayManager.showPanel(parked);
                     }
 
                     @Override

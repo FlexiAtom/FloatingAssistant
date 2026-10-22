@@ -7,6 +7,7 @@ import android.database.Cursor;
 import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
 import android.util.Log;
 
@@ -247,6 +248,72 @@ public final class NotesStore {
                     NotesCodec.deriveTitle(text), charset, NotesCodec.detectNewline(raw), uri),
                     displayName(uri));
         }, onMain);
+    }
+
+    /**
+     * 改名（人裁 2026-10-23「三点的左栏应该提供重命名文件，并且支持改后缀」）。**只动文件名，不动正文**：
+     * {@code file://} 走同目录 {@code renameTo}（目标已存在就拒，不覆盖别人），其余走
+     * {@code DocumentsContract.renameDocument}——后缀就是名字的一部分，改 {@code .txt→.md} 与改名是同一条路。
+     * 回传**新 URI**（provider 可能换一个 documentId，调用方不能拿旧串继续写），失败回 {@code null}。
+     */
+    public void rename(String uri, String newName, Consumer<String> onMain) {
+        post(() -> {
+            String moved = renameSync(uri, newName);
+            if (moved != null) {
+                rebind(uri, moved);
+            }
+            return moved;
+        }, onMain);
+    }
+
+    /**
+     * 把索引里指着旧名的每一格改成新名。**不交给"下一次保存"去做**：有损闸关着时保存那条路整条不走
+     * （实测 10-23：GBK 文件按 UTF-8 读 → {@code gate=closed} → 名字改了、索引还指着已经不存在的旧名，
+     * 「重新加载」当场读不到）。改名动的是身份，不是正文，所以这一列由改名自己在同一次工作线程里改掉。
+     */
+    private void rebind(String oldUri, String newUri) {
+        List<Record> records = NotesCodec.decode(prefs.getString(K_INDEX, ""));
+        List<Record> next = new ArrayList<>(records.size());
+        boolean changed = false;
+        for (Record r : records) {
+            if (oldUri.equals(r.uri)) {
+                r = new Record(r.id, r.pinned, r.updatedMs, r.title, r.charset, r.newline, newUri);
+                changed = true;
+            }
+            next.add(r);
+        }
+        if (changed) {
+            persist(NotesCodec.encode(NotesCodec.sorted(next)));
+        }
+    }
+
+    private String renameSync(String uri, String name) {
+        String target = name == null ? "" : name.replace('/', ' ').trim();
+        if (uri == null || uri.isEmpty() || target.isEmpty()) {
+            return null;
+        }
+        if (uri.startsWith("file://")) {
+            File from = new File(Uri.parse(uri).getPath());
+            File parent = from.getParentFile();
+            if (parent == null) {
+                return null; // 没有父目录就不知道往哪搁新名字，别拿进程工作目录当落点
+            }
+            File to = new File(parent, target);
+            if (!from.isFile() || (to.exists() && !to.equals(from))) {
+                Log.w(TAG, "rename refused: " + uri + " → " + target);
+                return null;
+            }
+            return from.renameTo(to) ? Uri.fromFile(to).toString() : null;
+        }
+        try {
+            Uri moved = DocumentsContract.renameDocument(resolver, Uri.parse(uri), target);
+            return moved == null ? null : moved.toString();
+        } catch (IOException | RuntimeException e) {
+            // renameDocument 的失败是抛出来的（provider 不让改名＝FileNotFoundException／SecurityException），
+            // 而"改不成"是这次动作的正常结局之一，说成一行日志、回 null，让它自己说话
+            Log.w(TAG, "rename failed: " + uri + " → " + target, e);
+            return null;
+        }
     }
 
     /** 置顶/取消置顶；只动索引，不碰正文。回传该文档当下的置顶态，null＝索引里没有这一条。 */
