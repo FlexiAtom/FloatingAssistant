@@ -2019,6 +2019,10 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         int code = event.getKeyCode();
+        // P5KEY 取证探针：本视图是窗的根，任何键都先经过这里，所以"物理键到底送达没"只能由这一行判。
+        android.util.Log.i("P5KEY", "Editor act=" + event.getAction()
+                + " code=" + code + " focused=" + isFocused()
+                + " focus=" + focusBrief() + " isInTouchMode=" + isInTouchMode());
         if ((code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_ESCAPE)
                 && event.getAction() == KeyEvent.ACTION_UP) {
             if (drawerOpen()) {
