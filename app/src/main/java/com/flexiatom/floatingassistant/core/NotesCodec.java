@@ -14,13 +14,18 @@ import java.util.regex.PatternSyntaxException;
  * 记事本索引的**纯编解码**（不碰 Android，所以用例可以直接用 {@code javac}＋{@code java} 单文件跑这份本体，
  * 仓里目前没有它的测试源集——E6b 起这条口径改成了「临时跑一遍并把输出贴进反证表」，别当成已有用例）。
  *
- * <p>索引一条一行，字段以 {@code |} 分隔：{@code id|pin|updatedMs|title|charset|newline}。正文不进索引，
+ * <p>索引一条一行，字段以 {@code |} 分隔：{@code id|pin|updatedMs|title|charset|newline[|uri]}。正文不进索引，
  * 每篇是一个独立文件（见 {@link NotesStore}），所以这里只处理"看得见的那一列名字"。
  *
  * <p>后两列（E6b）＝**保存编码**与**换行符档位**，都是字符串标签（{@code UTF-8}／{@code GBK}；
  * {@code LF}／{@code CRLF}／{@code CR}），不是枚举序号——索引是人类可用文件管理器直读的，
  * 序号会把它变成只有本 app 认得的暗码。读侧缺列按默认补（{@link #DEFAULT_CHARSET}／
  * {@link #DEFAULT_NEWLINE}），所以旧的 4 列索引原样能用，不必迁移。
+ *
+ * <p>第七列（E6c）＝这篇**绑定的外部文件 URI**。它**为空时整列不写**，所以未绑外部文件的旧行
+ * 与新行长得一模一样（仍是 6 列），迁移成本为零；一旦绑上就是 {@code …|LF|content://…}，
+ * 人用文件管理器直读索引仍看得出"这篇住在外面"。URI 里有 {@code :} 与 {@code /}，但没有 {@code |}
+ * 与换行，所以不需要为它另开一套清洗。
  *
  * <p>读侧一律**逐行兜底**：坏行跳过、缺列按默认补齐，绝不因为一行脏了就丢掉整份索引
  * （同 {@link SettingsStore} 黑名单"无合法前缀按字面兜底"的取向——用户数据不可静默丢）。
@@ -47,7 +52,7 @@ public final class NotesCodec {
     private NotesCodec() {
     }
 
-    /** 索引里的一条文档元数据（正文不在这里，按 id 去文件取）。 */
+    /** 索引里的一条文档元数据（正文不在这里，按 id 去文件取；绑了外部文件的，正文在那个 URI 上）。 */
     public static final class Record {
         public final String id;
         public final boolean pinned;
@@ -55,15 +60,23 @@ public final class NotesCodec {
         public final String title;
         public final String charset;
         public final String newline;
+        /** 绑定的外部文件 URI；空串＝这篇住在应用内（E6c）。 */
+        public final String uri;
 
         public Record(String id, boolean pinned, long updatedMs, String title,
-                      String charset, String newline) {
+                      String charset, String newline, String uri) {
             this.id = id;
             this.pinned = pinned;
             this.updatedMs = updatedMs;
             this.title = title;
             this.charset = sanitizeLabel(charset, DEFAULT_CHARSET);
             this.newline = sanitizeLabel(newline, DEFAULT_NEWLINE);
+            this.uri = sanitizeLabel(uri, "");
+        }
+
+        /** 这篇是不是住在外部文件上。 */
+        public boolean external() {
+            return !uri.isEmpty();
         }
     }
 
@@ -79,6 +92,9 @@ public final class NotesCodec {
                     .append(sanitizeTitle(r.title)).append(SEP)
                     .append(r.charset).append(SEP)
                     .append(r.newline);
+            if (!r.uri.isEmpty()) {
+                sb.append(SEP).append(r.uri); // 没绑就不留这一列：索引里少一个尾随空管，旧行新行同形
+            }
         }
         return sb.toString();
     }
@@ -106,7 +122,8 @@ public final class NotesCodec {
             String title = parts.length >= 4 ? parts[3] : "";
             String charset = parts.length >= 6 ? parts[4] : DEFAULT_CHARSET;
             String newline = parts.length >= 6 ? parts[5] : DEFAULT_NEWLINE;
-            out.add(new Record(parts[0], "1".equals(parts[1]), updated, title, charset, newline));
+            String uri = parts.length >= 7 ? parts[6] : "";
+            out.add(new Record(parts[0], "1".equals(parts[1]), updated, title, charset, newline, uri));
         }
         return out;
     }
@@ -120,6 +137,31 @@ public final class NotesCodec {
             return "\r";
         }
         return "\n";
+    }
+
+    /**
+     * 盘上字节 → 这一篇的换行档位（E6c，人裁口径＝**盘上第一个换行是什么档就认什么档**）：
+     * 混合换行按第一处定，因为这一档是**整篇的标记**、不是逐行统计。找不到换行（单行文件）回 LF。
+     *
+     * <p>在**字节**上扫而不是在解码后的字符串上扫：{@code \r}=0x0D、{@code \n}=0x0A 在我们支持的
+     * 每一档（UTF-8／GBK／GB18030／Big5／ISO-8859-1，含 BOM 那档）里都是自身——多字节序列的后续字节
+     * 在 UTF-8 恒 ≥0x80、在 GBK/Big5 的尾字节区间也不落到 0x0D/0x0A，所以不会把一个字的一部分读成换行。
+     * 真会读错的是 UTF-16，而 UTF-16 不在我们的档位表里。
+     */
+    public static String detectNewline(byte[] raw) {
+        if (raw == null) {
+            return DEFAULT_NEWLINE;
+        }
+        for (int i = 0; i < raw.length; i++) {
+            int b = raw[i] & 0xFF;
+            if (b == '\n') {
+                return "LF";
+            }
+            if (b == '\r') {
+                return i + 1 < raw.length && raw[i + 1] == '\n' ? "CRLF" : "CR";
+            }
+        }
+        return DEFAULT_NEWLINE;
     }
 
     /** 标签 → JDK charset 名；存储层拿它去 {@code Charset.forName}，其余标签原样透传。 */

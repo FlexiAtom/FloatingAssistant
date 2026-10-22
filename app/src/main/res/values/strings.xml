@@ -73,7 +73,9 @@
     <string name="editor_comment_toggle">切换注释</string>
     <string name="editor_compress_code">压缩代码</string>
 
-    <!-- ⋮ 溢出菜单（E6）：人 2026-10-22 定的终版清单，动作八项＋勾选四项，逐字照录 -->
+    <!-- ⋮ 溢出菜单（E6）：人 2026-10-22 定的终版清单，动作八项＋勾选四项，逐字照录。
+         editor_more_open 在人那份之外（那句「至少包含这些功能」licensed，E6c 补，待追认位置＝第一项） -->
+    <string name="editor_more_open">打开文件…</string>
     <string name="editor_more_save_as">另存为</string>
     <string name="editor_more_reload">重新加载文件</string>
     <string name="editor_more_reload_charset">以指定编码重新加载文件</string>
@@ -119,6 +121,13 @@
     <string name="editor_lossy_switch_drop">不存，直接切</string>
     <string name="editor_discard_hint">有未保存的改动，重载会丢掉它们</string>
     <string name="editor_discard_confirm">放弃并重载</string>
+
+    <!-- E6c 外部文件（SAF）：三句都是"发生了什么"的实话，不是进度条。失败那句要连退路一起说，
+         因为人听完得知道正文现在归谁管。 -->
+    <string name="editor_external_opened">%1$s｜按 %2$s·%3$s 解出 %4$d 个字符</string>
+    <string name="editor_external_unreadable">%1$s 读不到（provider 挂了或授权被撤）。缓冲一个字没动。</string>
+    <string name="editor_save_as_done">已写入 %1$s，这篇此后就落在那儿</string>
+    <string name="editor_save_as_failed">%1$s 写不进去（只读？授权没了？）。绑定已退回，正文照旧存原处。</string>
 
     <string name="translate_panel_title">翻译设置</string>
     <string name="translate_label_target">目标语言</string>

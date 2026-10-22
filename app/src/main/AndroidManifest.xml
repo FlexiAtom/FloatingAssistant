@@ -34,6 +34,13 @@
             android:exported="false"
             android:label="@string/tuning_title" />
 
+        <!-- SAF 选择器的接线盒：透明、不进最近任务，只为把系统选择器的结果接回覆盖窗（E6c） -->
+        <activity
+            android:name=".FilePickerActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <service
             android:name=".service.SphereAccessibilityService"
             android:exported="false"

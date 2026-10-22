@@ -33,6 +33,7 @@ import android.widget.ScrollView;
 import android.widget.Space;
 import android.widget.TextView;
 
+import com.flexiatom.floatingassistant.FilePickerActivity;
 import com.flexiatom.floatingassistant.R;
 import com.flexiatom.floatingassistant.core.EditorPrefs;
 import com.flexiatom.floatingassistant.core.NotesCodec;
@@ -146,9 +147,19 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private final Runnable docSearchTick = this::runDocSearch;
     /** 当下这篇的身份；null＝新建、还没落过库。 */
     private String docId;
-    /** 当下这两档＝E5 索引里那两列的本地影子；换档立刻走一次落库，不一致只在写的途中存在一瞬。 */
+    /** 当下这篇的「编码·换行」两档＝E5 索引里那两列的本地影子；换档立刻走一次落库，不一致只在写的途中存在一瞬。 */
     private String docCharset = NotesCodec.DEFAULT_CHARSET;
     private String docNewline = NotesCodec.DEFAULT_NEWLINE;
+    /**
+     * 当下这篇绑的外部文件（E6c，索引第七列）；空串＝住在应用内。与那两档同一身份：**影子，不是缓存**——
+     * 每次落库都拿它当"这篇该写到哪儿"的发言口，所以换篇/另存为都必须一起换它。
+     */
+    private String docUri = "";
+    /**
+     * 人明确要写的那一次（另存为）留下的**一次性**回执：落库回调回来时按成没成说一句，不做成长期状态。
+     * 自动落库那条通路不填它，所以它不会让人每 1.2 秒被一句话打断。
+     */
+    private java.util.function.Consumer<Boolean> saveReport;
     /** 盘上字节还是旧档（换档时正好有一次写在途）：脏判之外多一个"得写"的信号，别让标签成了谎话。 */
     private boolean settingStale;
     /** 换文档就自增：落库回调只对**当下这篇**有意义，旧一趟的结果一律丢掉。 */
@@ -718,6 +729,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         }
         for (NotesCodec.Record record : records) {
             String label = (record.pinned ? "★ " : "") + titleOf(record.title)
+                    + (record.external() ? " ↗" : "") // 真身在外部文件上（E6c 第七列），列表里得看得出来
                     + (record.id.equals(docId) ? " ▸" : "");
             String id = record.id;
             boolean pinned = record.pinned;
@@ -732,7 +744,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             if (doc == null) {
                 return; // 读挂了就保持现状，不要把正文换成空、也不收起抽屉——让人的编辑现场原样留着
             }
-            installDoc(doc.record.id, doc.text, doc.record.charset, doc.record.newline, false);
+            installDoc(doc.record.id, doc.text, doc.record.charset, doc.record.newline, doc.record.uri, false);
             settleAfterReload();
         });
         if (blockedByLossy()) {
@@ -745,7 +757,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
     private void newDocument() {
         Runnable go = () -> {
-            installDoc(null, "", NotesCodec.DEFAULT_CHARSET, NotesCodec.DEFAULT_NEWLINE, true);
+            installDoc(null, "", NotesCodec.DEFAULT_CHARSET, NotesCodec.DEFAULT_NEWLINE, "", true);
             closeDrawer();
         };
         if (blockedByLossy()) {
@@ -765,10 +777,13 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     }
 
     /** 把正文换成另一篇：清撤销栈、认作已落库（载入不是用户的编辑，不该进撤销、也不该被自动落库写回）。 */
-    private void installDoc(String id, String text, String charset, String newline, boolean caretToEnd) {
+    private void installDoc(String id, String text, String charset, String newline, String uri,
+                            boolean caretToEnd) {
         docId = id;
         docCharset = charset;
         docNewline = newline;
+        docUri = uri == null ? "" : uri;
+        saveReport = null; // 上一篇的「另存为」回执不跨篇有效：它认的是那一次写
         settingStale = false;
         lossyAcked = false; // 换了一篇＝重新问起，上一篇的「仍要存」不延续
         lossyCount = NotesCodec.countLossy(text);
@@ -806,7 +821,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 if (doc == null || !initialLoadPending) {
                     return; // 等结果的这段时间里人已经打了字，就别把输入盖掉
                 }
-                installDoc(id, doc.text, doc.record.charset, doc.record.newline, true);
+                installDoc(id, doc.text, doc.record.charset, doc.record.newline, doc.record.uri, true);
             });
         });
     }
@@ -815,6 +830,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      * 落库当下这篇（💾 与自动落库与关面板与换档同一条通路）。四种情况不写盘：在途一次没回、
      * 正文与上次落库相同**且档位已与盘上一致**、空正文的新文档（那还不是一篇"文档"，生成一条空记录只是脏列表）、
      * **闸机关着**（缓冲里有解不出来的字而人还没说要存，见 {@link #blockedByLossy}）。
+     * <p>第三条那个"空正文"只挡**应用内**的空白草稿：另存为空文件是人明确点过的事（E6c），
+     * 那时 {@code docUri} 非空，写出去的正是系统里那个空文件。
      */
     private void persistCurrent() {
         mainHandler.removeCallbacks(autosaveTick);
@@ -823,7 +840,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             return; // 装闸：自动通路不打断人，只是**不写盘**——要存这一版得人自己按软盘（见 saveNow）
         }
         if (saveInFlight || (text.equals(savedText) && !settingStale)
-                || (text.isEmpty() && docId == null)) {
+                || (text.isEmpty() && docId == null && docUri.isEmpty())) {
             return;
         }
         saveInFlight = true;
@@ -831,8 +848,15 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         final String pendingId = docId;
         final String charset = docCharset;
         final String newline = docNewline;
-        notes.save(pendingId, text, charset, newline, savedId -> {
+        final String uri = docUri;
+        // 回执在这一刻取走并清空：它是"这一次写"的凭据，不能留给下一趟（哪怕下一趟只晚一毫秒）
+        final java.util.function.Consumer<Boolean> report = saveReport;
+        saveReport = null;
+        notes.save(pendingId, text, charset, newline, uri, savedId -> {
             saveInFlight = false;
+            if (report != null) {
+                report.accept(savedId != null); // 成没成都说得出：失败也是人那一刻该知道的事实
+            }
             if (savedId == null || seq != docSeq) {
                 return; // 写挂了：正文一个字都不动，停手后下一次自动落库自会再试；换了篇：这一趟的簿记不再归当下这篇
             }
@@ -840,8 +864,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 docId = savedId;
             }
             savedText = text;
-            if (charset.equals(docCharset) && newline.equals(docNewline)) {
-                settingStale = false; // 这一趟的字节真按当下这两档出去了
+            if (charset.equals(docCharset) && newline.equals(docNewline) && uri.equals(docUri)) {
+                settingStale = false; // 这一趟的字节真按当下的两档与那个目标出去了
             }
             updateDocName(); // 信息带从「未命名」换成标题＝落库成功的人眼凭据
             if (!body.getText().toString().equals(savedText) || settingStale) {
@@ -956,21 +980,32 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         return settingStale || !body.getText().toString().equals(savedText);
     }
 
-    /** 重新加载文件＝丢掉缓冲里未落库的字，按当下两档从盘上重读。新文档还没文件可重读，菜单那格对它置灰。 */
+    /**
+     * 重新加载文件＝丢掉缓冲里未落库的字，按当下两档从盘上重读。新文档还没文件可重读，菜单那格对它置灰。
+     * <p>绑了外部文件（E6c）就重读**那个 URI**——包括「刚打开、一次库都没落过」那种（{@code docId} 还是 null）：
+     * 它的真身在外部文件上，"没有索引记录"不等于"没有文件可重读"。
+     */
     private void reloadFromDisk() {
         final String id = docId;
-        if (id == null) {
+        final String uri = docUri;
+        if (id == null && uri.isEmpty()) {
             return;
         }
         Runnable go = () -> {
             mainHandler.removeCallbacks(autosaveTick); // 决定放弃了，就先把排队的自动落库收回来
-            notes.open(id, doc -> {
-                if (doc == null || !id.equals(docId)) {
-                    return; // 读挂了保持现状；等结果的这段时间人已经换了篇，别把另一篇盖进来
+            java.util.function.Consumer<NotesStore.Doc> read = doc -> {
+                // 等结果的这段时间人已经换了篇/换了绑定，别把另一篇盖进来
+                if (doc == null || !uri.equals(docUri) || (id == null ? docId != null : !id.equals(docId))) {
+                    return;
                 }
-                installDoc(id, doc.text, doc.record.charset, doc.record.newline, false);
+                installDoc(id, doc.text, doc.record.charset, doc.record.newline, doc.record.uri, false);
                 settleAfterReload();
-            });
+            };
+            if (id == null) {
+                notes.reencodeUri(uri, docCharset, read); // 还没入库的外部文件：按当下这一档重读那串字节
+            } else {
+                notes.open(id, read); // 已入库：存储层自己认第七列（绑了就以那个 URI 为准，读不到回 null）
+            }
         };
         if (dirty()) {
             confirmDiscard(R.string.editor_more_reload, go);
@@ -979,22 +1014,33 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         }
     }
 
-    /** 以指定编码重新加载＝挑一档，把这一档**写进索引**再按它重读盘上字节（这篇的编码从此就是它）。 */
+    /**
+     * 以指定编码重新加载＝挑一档，按它重读原始字节（绑了外部文件就读那个）。
+     * 已入库的篇把档位**写进索引**再读（{@link NotesStore#reencode}）；「刚打开、还没落过库」的外部文件
+     * 没有记录可写，只重读（{@link NotesStore#reencodeUri}），档位进影子、下一次自然落库才记上。
+     */
     private void reloadWithCharset() {
         openCharsetPicker(R.string.editor_more_reload_charset, charset -> {
             final String id = docId;
-            if (id == null) {
+            final String uri = docUri;
+            if (id == null && uri.isEmpty()) {
                 return;
             }
             Runnable go = () -> {
                 mainHandler.removeCallbacks(autosaveTick);
-                notes.reencode(id, charset, doc -> {
-                    if (doc == null || !id.equals(docId)) {
-                        return;
+                java.util.function.Consumer<NotesStore.Doc> read = doc -> {
+                    if (doc == null || !uri.equals(docUri)
+                            || (id == null ? docId != null : !id.equals(docId))) {
+                        return; // 读挂了保持现状；等结果的这段时间人已经换了篇，别把另一篇盖进来
                     }
-                    installDoc(id, doc.text, doc.record.charset, doc.record.newline, false);
+                    installDoc(id, doc.text, doc.record.charset, doc.record.newline, doc.record.uri, false);
                     settleAfterReload();
-                });
+                };
+                if (id != null) {
+                    notes.reencode(id, charset, read); // 索引里有这一条：档位写进去，字节按它重解（外部就读那个 URI）
+                } else {
+                    notes.reencodeUri(uri, charset, read); // 刚打开、还没落过库：没记录可写，只重读，档位进影子
+                }
             };
             if (dirty()) {
                 confirmDiscard(R.string.editor_more_reload_charset, go);
@@ -1002,6 +1048,135 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 go.run();
             }
         });
+    }
+
+    /**
+     * 「打开文件…」（E6c，⋮ 第一格）＝SAF 系统选择器选一个文件，把它的字节读进缓冲。
+     * 这一格在人给的十二项之外，按那句「至少包含这些功能」补：没有它，URI 那一列只能靠「另存为」单向贴上。
+     */
+    private void openExternalFile() {
+        FilePickerActivity.request(getContext(), FilePickerActivity.MODE_OPEN, null, uri -> {
+            if (uri == null) {
+                closeDrawer(); // 人按了返回＝取消，不是失败：安静收起，别把没发生的事报成一格
+                return;
+            }
+            openUri(uri.toString());
+        });
+    }
+
+    /**
+     * 读一个外部文件并换成当下这篇。单列一条而不只给菜单用，是给取证留一扇**不需要手指**的门：
+     * 探针 {@code open-uri:<uri>} 递一个 {@code file://} 串进来，走的是 SAF 之后完全相同的那一路。
+     */
+    private void openUri(String uri) {
+        Runnable go = () -> notes.openUri(uri, doc -> {
+            if (doc == null) {
+                reportUnreadable(uri);
+                return;
+            }
+            // 外部文件在索引里没有身份：docId 留 null，第一次落库才同时生成 id 与那第七列
+            installDoc(null, doc.text, doc.record.charset, doc.record.newline, doc.record.uri, false);
+            if (lossyCount == 0) {
+                showOpenedExternal(doc); // 有坏字时让闸门那张先说，名字这句不插队
+            } else {
+                warnLossy();
+            }
+        });
+        if (blockedByLossy()) {
+            confirmSwitchAway(go); // 切走＝丢掉当下这篇的改动，闸门拦着时得问
+            return;
+        }
+        persistCurrent();
+        go.run();
+    }
+
+    /** 打开成功那一格：文件名＋按哪一档解的＋一条「换一档重解」（UTF-16 之类不报错但会是满屏坏字）。 */
+    private void showOpenedExternal(NotesStore.Doc doc) {
+        Context context = getContext();
+        List<DrawerContent.Item> items = new ArrayList<>(3);
+        items.add(greyRow(context.getString(R.string.editor_external_opened,
+                bindName(doc.name, doc.record.uri),
+                doc.record.charset, doc.record.newline, doc.text.length())));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_lossy_repick),
+                this::reloadWithCharset));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_lossy_ok), this::closeDrawer));
+        openDrawer(new DrawerContent(context.getString(R.string.editor_more_open),
+                null, null, false, items));
+    }
+
+    /** 读不到＝provider 挂了/授权被撤/URI 过期。把话说死：没把它读成空文档，缓冲一个字没动。 */
+    private void reportUnreadable(String uri) {
+        Context context = getContext();
+        List<DrawerContent.Item> items = new ArrayList<>(2);
+        items.add(greyRow(context.getString(R.string.editor_external_unreadable, bindName(null, uri))));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_lossy_ok), this::closeDrawer));
+        openDrawer(new DrawerContent(context.getString(R.string.editor_more_open),
+                null, null, false, items));
+    }
+
+    /**
+     * 另存为＝SAF 建一个文件，把**当下缓冲**写进去并从此绑上它（此后自动落库直接落那个文件）。
+     *
+     * <p>走 {@link #saveNow()} 而不是直接落库：这一次是人明确要写，坏字闸门照旧问一句。
+     * 目标相同就直接落（选中的正是当下这个文件时不必绕一趟写）。取消（{@code null}）＝绑定、正文、
+     * 盘上一个字节都不动，连一行回执都没有——那是人按的返回，不是失败。
+     */
+    private void saveAs() {
+        String title = NotesCodec.deriveTitle(body.getText().toString());
+        FilePickerActivity.request(getContext(), FilePickerActivity.MODE_CREATE,
+                title.isEmpty() ? getContext().getString(R.string.editor_untitled) : title, uri -> {
+                    if (uri == null) {
+                        return; // 取消：绑定、正文、盘上一个字节都不动，也不发回执（那是人按的返回，不是失败）
+                    }
+                    final String target = uri.toString();
+                    if (target.equals(docUri)) {
+                        saveNow(); // 选中的正是当下这个文件：只需把缓冲落一次，不必换绑
+                        return;
+                    }
+                    final String previous = docUri;
+                    docUri = target;
+                    settingStale = true; // 换了写的目标＝那第七列在盘上还没落地，脏判得认这一条
+                    saveReport = ok -> reportSaveAs(ok != null && ok, target, previous);
+                    saveNow();
+                    requestStamp();
+                });
+    }
+
+    /**
+     * 另存为的回执：说**成没成**，不说"将要"——它只在 {@link #persistCurrent} 真回来那一刻发一次。
+     *
+     * <p>不成还得把绑定**退回去**（{@code previous}＝点另存为之前那格，可能是应用内、可能是另一个文件）。
+     * 不退就是拿一次失败的换绑把自动落库从此拦停：此后每一趟写都撞在同一个写不进去的目标上、
+     * 每次都整趟失败，人还在打字，盘上却一次都没落——那是把"换个文件名"这件小事变成了丢正文。
+     */
+    private void reportSaveAs(boolean ok, String target, String previous) {
+        if (!ok && target.equals(docUri)) {
+            docUri = previous; // 期间人又换了绑就什么都不动——那一趟的账归那一趟
+            persistCurrent();
+            requestStamp();
+        }
+        Context context = getContext();
+        List<DrawerContent.Item> items = new ArrayList<>(2);
+        items.add(greyRow(context.getString(ok
+                ? R.string.editor_save_as_done : R.string.editor_save_as_failed,
+                bindName(null, target))));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_lossy_ok), this::closeDrawer));
+        openDrawer(new DrawerContent(context.getString(R.string.editor_more_save_as),
+                null, null, false, items));
+    }
+
+    /** 外部文件怎么称呼：provider 报得出的名优先，报不出退回 URI 末段，连末段都没有就整串（总比空白好认）。 */
+    private String bindName(String name, String uri) {
+        if (name != null && !name.isEmpty()) {
+            return name;
+        }
+        int slash = uri.lastIndexOf('/');
+        return slash >= 0 && slash + 1 < uri.length() ? uri.substring(slash + 1) : uri;
+    }
+
+    /** 当下这篇的真身在外部文件上（E6c，索引第七列非空）——菜单那两格「重载」认它，不只认 {@code docId}。 */
+    private boolean externalDoc() {
+        return !docUri.isEmpty();
     }
 
     /**
@@ -1158,15 +1333,18 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
     /**
      * E6a 实装三格＝统计、自动换行、流畅模式；E6b 再点亮四格＝重新加载文件、以指定编码重新加载、
-     * 指定保存的编码、换行符（换行符是人后补的第 13 项，位置排在同为档位选择类的「指定保存的编码」之后）。
-     * 两格「重载」对还没落过库的新文档置灰——它没有"文件"可重读。余下仍传 null 置灰（与 {@code /} 同一口径：
-     * 整眼菜单先看全，缺的档期一眼可见）。「只读模式」要按篇存，等 E5 索引续列那一格；末尾的「翻译全文」
+     * 指定保存的编码、换行符（换行符是人后补的第 13 项，位置排在同为档位选择类的「指定保存的编码」之后）；
+     * E6c 点亮「另存为」并在**最前**加一格「打开文件…」——那一格在人给的十二项之外，按那句
+     * 「至少包含这些功能」补（等档期待人追认）。两格「重载」对既没落库、又没绑外部文件的空手新文档置灰——
+     * 它没有"文件"可重读。余下仍传 null 置灰（与 {@code /} 同一口径：
+     * 整眼菜单先看全，缺的档期一眼可见）。「只读模式」要按篇存，等索引再续一列；末尾的「翻译全文」
      * **不在**人这份清单里，是原提案留下的格子，占位等待裁。
      */
     private DrawerContent overflowContent(Context context) {
-        boolean hasFile = docId != null;
-        List<DrawerContent.Item> items = new ArrayList<>(14);
-        items.add(toolItem(R.string.editor_more_save_as, null));
+        boolean hasFile = docId != null || externalDoc();
+        List<DrawerContent.Item> items = new ArrayList<>(15);
+        items.add(toolItem(R.string.editor_more_open, this::openExternalFile));
+        items.add(toolItem(R.string.editor_more_save_as, this::saveAs));
         items.add(new DrawerContent.Item(context.getString(R.string.editor_more_reload),
                 hasFile ? this::reloadFromDisk : null));
         items.add(new DrawerContent.Item(context.getString(R.string.editor_more_reload_charset),
@@ -1615,6 +1793,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 + " sel=" + Math.abs(body.getSelectionEnd() - body.getSelectionStart())
                 + " dirty=" + (dirty() ? 1 : 0)
                 + " charset=" + docCharset + " newline=" + docNewline
+                + " uri=" + (docUri.isEmpty() ? "-" : docUri)
                 + " lossy=" + lossyCount + " gate=" + (blockedByLossy() ? "closed" : "open")
                 + " smooth=" + (prefs.smooth() ? 1 : 0) + " wrap=" + (prefs.wrap() ? 1 : 0)
                 + " drawer=" + (drawerOpen() ? "[" + drawerTitle.getText() + "]" : "closed")
@@ -1764,13 +1943,18 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      * {@code pick:<任一可点件的文案或可读音名称>} {@code rows}（读抽屉里全部条目，置灰标 {@code (=)}）
      * {@code close-drawer} {@code type:<文本>}（插在光标处，{@code \n} 算换行）
      * {@code caret:<偏移>} {@code sel:<起>:<止>} {@code save} {@code undo} {@code redo} {@code back}
+     * {@code open-uri:<uri>}／{@code save-uri:<uri>}（E6c 外部文件两格：不经选择器，直接把 URI 读进来／绑上写出去，
+     * {@code file://} 串就能测通整条通路——外部文件那一路本来要手指，这一格把它变成不要）。
      * {@code focus:<here|list|first|last|next|prev|enter|esc>}（F2 键盘通路，见 {@link #focusForTest}）。
      *
      * <p>每条都走控件自己的 {@code performClick()} 与真实 {@code Editable} 通路，所以这条只证
      * 「动作→状态」的因果；**触摸命中、键盘手感、读屏语音仍归人**（{@code back} 走的是
      * {@link #dispatchKeyEvent} 那格，与实体返回键同一支代码）。
+     * 每行都带一个 {@code ms=}＝这一条动作在主线程序完花了多久（同步代价的取证口，性能那一格靠它）。
      */
     public String runActionForTest(String spec) {
+        // 取证用的粗计时：动作在主线程序完，这一窗装得下 type:/undo 那类同步代价（O(n) 有没有摊在人身上，看它）
+        final long t0 = android.os.SystemClock.uptimeMillis();
         String verb;
         String arg;
         int colon = spec == null ? -1 : spec.indexOf(':');
@@ -1806,6 +1990,23 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             case "open-save-charset":
                 openSaveCharsetPicker();
                 outcome = "opened save-charset";
+                break;
+            case "open-uri":
+                // 取证门：不经 SAF 选择器直接把一个 URI 读进来（file:// 串就够），走的是选择器之后同一条通路
+                openUri(arg);
+                outcome = "opening " + arg;
+                break;
+            case "save-uri":
+                // 取证用的另存为：绑上就写一次，回执照发（这样"写不写得进去"也是它自己说的）
+                {
+                    final String probeTarget = arg;
+                    final String probePrevious = docUri;
+                    docUri = probeTarget;
+                    settingStale = true;
+                    saveReport = ok -> reportSaveAs(ok != null && ok, probeTarget, probePrevious);
+                    saveNow();
+                    outcome = "bound " + arg;
+                }
                 break;
             case "open-reload-charset":
                 reloadWithCharset();
@@ -1861,7 +2062,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 outcome = "unknown verb";
         }
         emitStamp();
-        return "action=" + spec + " → " + outcome + " | " + currentStamp();
+        return "action=" + spec + " → " + outcome
+                + " ms=" + (android.os.SystemClock.uptimeMillis() - t0) + " | " + currentStamp();
     }
 
     /**
