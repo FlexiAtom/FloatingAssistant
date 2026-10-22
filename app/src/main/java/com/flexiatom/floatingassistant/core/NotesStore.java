@@ -290,8 +290,11 @@ public final class NotesStore {
     }
 
     private String saveSync(String id, String text, String charset, String newline, String uri) {
-        String target = id == null || id.isEmpty() ? newId() : id;
         String body = text == null ? "" : text;
+        String target = id == null || id.isEmpty() ? idOfBoundRow(uri) : id;
+        if (target == null) {
+            target = newId();
+        }
         List<Record> next = new ArrayList<>();
         Record stale = null;
         for (Record r : NotesCodec.decode(prefs.getString(K_INDEX, ""))) {
@@ -323,6 +326,23 @@ public final class NotesStore {
         next.add(record);
         persist(NotesCodec.encode(NotesCodec.sorted(next)));
         return target;
+    }
+
+    /**
+     * 「打开文件」那一路第二次存同一份外部文件时，找回它**已经有的那一行**（{@code id==null} 才会走到这儿）。
+     * 不找就会每开一次多一行：几行都指着同一个文件，列表里同篇重复，删一篇还剩另一篇（E8 的账）。
+     * 只管这一路，**不**替「另存为」合并——两篇内部文档另存到同一个文件是两回事，那第二篇的行是真身份，吞掉就是丢数据。
+     */
+    private String idOfBoundRow(String uri) {
+        if (uri == null || uri.isEmpty()) {
+            return null;
+        }
+        for (Record r : NotesCodec.decode(prefs.getString(K_INDEX, ""))) {
+            if (uri.equals(r.uri)) {
+                return r.id;
+            }
+        }
+        return null;
     }
 
     /** 应用内那份正文：临时文件 → {@code sync()} → 原子替换（先文件后索引，见类注释的写序）。 */
