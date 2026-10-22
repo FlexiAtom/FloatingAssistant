@@ -28,10 +28,13 @@ public final class A11yProbe {
     private A11yProbe() {
     }
 
-    public static void run(AccessibilityService svc, boolean tapBall) {
+    public static void run(AccessibilityService svc, boolean tapBall, int tapChildIndex) {
         list(svc);
         if (tapBall) {
             tapBallNode(svc);
+        }
+        if (tapChildIndex >= 0) {
+            tapChildNode(svc, tapChildIndex);
         }
     }
 
@@ -60,6 +63,51 @@ public final class A11yProbe {
             return;
         }
         Log.i(TAG, "tap: 没有可点的覆盖窗根节点（球没在窗上？）");
+    }
+
+    /**
+     * 机测「扇形那一格能不能被**触发**」：对自己覆盖窗根节点的第 {@code index} 个子节点（虚拟节点）发
+     * {@code ACTION_CLICK}，再把重取到的子节点名单打一行。
+     * <p>为什么只能这样量：这些格子是 {@code ExploreByTouchHelper} 造的虚拟节点，画面与树之间没有真实
+     * View 可点，而触摸注入是本项的禁区（{@code ui-blind-operation} 禁忌）——不经过无障碍树，机侧就没有
+     * 任何一条路能碰到它们。"名字在树里" 与 "点得动、点完树会跟着换页" 是两件事，这条只答后者。
+     */
+    private static void tapChildNode(AccessibilityService svc, int index) {
+        String self = svc.getPackageName();
+        for (AccessibilityWindowInfo w : svc.getWindows()) {
+            if (w.getType() != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) {
+                continue;
+            }
+            AccessibilityNodeInfo root = w.getRoot();
+            if (root == null || !self.equals(String.valueOf(root.getPackageName()))) {
+                continue;
+            }
+            if (index >= root.getChildCount()) {
+                Log.i(TAG, "child#" + index + " 越界 kids=" + root.getChildCount());
+                return;
+            }
+            AccessibilityNodeInfo c = root.getChild(index);
+            if (c == null) {
+                Log.i(TAG, "child#" + index + "=NULL（虚拟节点解不出来＝provider 没挂上）");
+                return;
+            }
+            String before = String.valueOf(c.getContentDescription());
+            boolean delivered = c.performAction(AccessibilityNodeInfo.ACTION_CLICK);
+            AccessibilityNodeInfo after = w.getRoot();
+            StringBuilder names = new StringBuilder();
+            if (after != null) {
+                for (int i = 0; i < after.getChildCount(); i++) {
+                    AccessibilityNodeInfo k = after.getChild(i);
+                    names.append(i).append('=').append(k == null ? "?" : clip(k.getContentDescription())).append(' ');
+                }
+            }
+            Log.i(TAG, "child#" + index + " cd=[" + before + "] click=" + c.isClickable()
+                    + " b=" + bounds(c, new Rect())
+                    + " performAction=" + delivered
+                    + " after kids=" + (after == null ? "NULL" : after.getChildCount()) + " " + names);
+            return;
+        }
+        Log.i(TAG, "child: 没有自己的覆盖窗（球没上窗？）");
     }
 
     private static void list(AccessibilityService svc) {

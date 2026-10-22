@@ -100,6 +100,9 @@ public class MainActivity extends AppCompatActivity {
     /** 与 {@code p5_a11y} 同用：列完窗与节点后，再对自己那扇覆盖窗的根节点发一次 {@code ACTION_CLICK}，
      *  量的是"读屏双击能不能真的操作"（判据＝节点名字翻没翻，见 {@code A11yProbe#tapBallNode}）。 */
     public static final String EXTRA_P5_A11Y_TAP = "p5_a11y_tap";
+    /** 再补一格：对自己覆盖窗根节点的**第 N 个子节点**（扇形虚拟节点）发 {@code ACTION_CLICK}，
+     *  量「格子点得动吗、点完树换不换气」。触摸注入是禁区，机侧碰这些格子只有这一条路。 */
+    public static final String EXTRA_P5_A11Y_CHILD = "p5_a11y_child";
     /** 「关闭切换动画」叶子的机读入口：只验写权限那条通路（三键缩放翻转），扇形里点它仍归人。 */
     public static final String EXTRA_ANIM_TOGGLE = "anim_toggle";
     /** m2 第二步（{@code p6_mt}＝待译文本）：**不经截屏**直接把这句喂给模型，验语向真进了提示词。 */
@@ -584,7 +587,8 @@ public class MainActivity extends AppCompatActivity {
         if (editorSpec != null || probeA11y) {
             // 探针先排进去：它在服务里延迟一拍，为的是排在"面板开出来"那一帧之后
             if (probeA11y) {
-                svc.postA11yProbe(intent.getBooleanExtra(EXTRA_P5_A11Y_TAP, false));
+                svc.postA11yProbe(intent.getBooleanExtra(EXTRA_P5_A11Y_TAP, false),
+                        intent.getIntExtra(EXTRA_P5_A11Y_CHILD, -1));
             }
             if (editorSpec != null) {
                 svc.editorForTest(editorSpec); // 空串也要走：那是「只读状态」那一格

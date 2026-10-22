@@ -42,7 +42,15 @@
     <string name="editor_cd_search">搜索文档</string>
     <string name="panel_cd_handle">面板手柄：双击关闭，按住拖动</string>
     <string name="ball_cd_collapsed">悬浮球，双击展开菜单</string>
-    <string name="ball_cd_open">悬浮球，菜单已展开</string>
+    <string name="ball_cd_open">悬浮球，菜单已展开，双击返回上一层</string>
+    <string name="ball_cd_open_root">悬浮球，菜单已展开，双击关闭菜单</string>
+    <!-- 扇形虚拟节点（overlay-window-a11y-visibility）：格子是画出来的，读屏只有拿到这些名字才走进得去。
+         「层」＝从球向外的同心环，与画面上的环一一对应；条目一律报完整标签，不吃弧上那套「首字+…」。 -->
+    <string name="fan_cd_hub">返回上一层（球外那一圈）</string>
+    <string name="fan_cd_hub_root">关闭菜单（球外那一圈，已在最外层）</string>
+    <string name="fan_cd_close">关闭菜单（最外环之外）</string>
+    <string name="fan_cd_entry">%1$s，第%2$d层（共%3$d层）</string>
+    <string name="fan_cd_entry_container">%1$s，第%2$d层（共%3$d层），可展开</string>
 
     <!-- 编辑工具抽屉（「/」）：文案沿用 MT 管理器的短名，「xx行」的实际语义一律是「xx光标所在行」。 -->
     <string name="editor_sel_all">全选</string>

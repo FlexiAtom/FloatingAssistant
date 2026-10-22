@@ -295,8 +295,8 @@ public class SphereAccessibilityService extends AccessibilityService {
      * 延迟的理由只有一条：{@code p5_a11y} 常和 {@code p5_editor} 在同一条 {@code am start} 里给，
      * 探针得排在"面板开出来"之后，否则量的就是面板还没上窗的那一帧。
      */
-    public void postA11yProbe(boolean tapBall) {
-        mainHandler.postDelayed(() -> A11yProbe.run(this, tapBall), 600L);
+    public void postA11yProbe(boolean tapBall, int tapChildIndex) {
+        mainHandler.postDelayed(() -> A11yProbe.run(this, tapBall, tapChildIndex), 600L);
     }
 
     /**

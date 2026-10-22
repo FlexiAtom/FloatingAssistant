@@ -4,13 +4,19 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Button;
+
+import androidx.core.view.ViewCompat;
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat;
+import androidx.customview.widget.ExploreByTouchHelper;
 
 import com.flexiatom.floatingassistant.R;
 
@@ -392,39 +398,293 @@ public final class FanMenuView extends View {
     }
 
     /**
-     * 悬浮球的无障碍语义（{@code ui-blind-operation} F4 第一件）：本视图全自绘、零子节点，实测
-     * （服务侧 {@code A11YPROBE}）在无障碍树里就是 {@code cd=[] click=false foc=false kids=0} 的一个
-     * View——读屏会**整扇跳过**，等于视障用户连入口都摸不到。
+     * 虚拟节点的 id：枢纽与环外各占一格，条目按页栈线性排（偏移见 {@link #entryOffset}）。
+     * **球不在这套 id 里**——它就是宿主节点，读屏走进来的第一格（F4 已验的那条通路），不再复制一个自己。
+     */
+    private static final int VID_HUB = 0;
+    private static final int VID_OUTSIDE = 1;
+    private static final int VID_ENTRY_BASE = 2;
+
+    private FanA11y a11y;
+    /** {@link #getLocationOnScreen} 的复用缓冲：无障碍回调会成批要来边界，不每次新建数组。 */
+    private final int[] a11yScreen = new int[2];
+    private final Rect a11yBounds = new Rect();
+
+    /**
+     * 悬浮球**与扇形每一格**的无障碍语义（{@code ui-blind-operation} F4 + 卡⑩「走不进扇形那些格子」，
+     * 人 2026-10-22 裁「补虚拟节点 {@code ExploreByTouchHelper}」）。
      *
-     * <p>这里**不用** {@code setOnClickListener}：那会把 {@code clickable} 真打开、连带改
-     * {@code onTouchEvent} 的吃掉行为，而球上的拖曳/点按判定是 {@code ball-tap-hits-fan-zone}
-     * 一路实机调出来的，不为无障碍去动它。delegate 只报语义，读屏的"双击执行"由
-     * {@link #performAccessibilityAction} 直接接到既有的 {@link BallGesture#onBallTap()}。
+     * <p>本视图全自绘、零子节点，实测（服务侧 {@code A11YPROBE}）在无障碍树里原先是
+     * {@code cd=[] click=false foc=false kids=0} 的一个 View——读屏**整扇跳过**，等于视障用户连入口都摸不到；
+     * 补上宿主名字后球可读可点（已结案），但环上的格子仍不在树里，于是"有哪些工具"这件事问不出来。
      *
-     * <p>**没解决的写明白**：扇形那些格子是本视图画出来的，本方法只让球本身可读可点；环上的工具项
-     * 仍旧不在树里（要 {@code ExploreByTouchHelper} 那类虚拟节点，成本另案 pool/overlay-window-a11y-visibility）。
+     * <p>这条路是**加节点、不动触摸**：虚拟节点挂在同一个 View 上，没有 {@code addView}、不换窗类型、
+     * 不碰 {@link #onTouchEvent}。对比之下 {@code setOnClickListener} 会把 {@code clickable} 真打开、连带改
+     * 触摸事件的吃掉行为，而球上的拖曳/点按判定是 {@code ball-tap-hits-fan-zone} 一路实机调出来的，
+     * 不为无障碍去动它。宿主节点（球）的"双击执行"由 {@link FanA11y#performAccessibilityAction} 接回
+     * **手指按球那同一套判定**：收起＝{@link BallGesture#onBallTap()}（入口），展开＝{@link Listener#onHub()}（返回上一层）。
+     *
+     * <p>坐标换算只走**屏幕真值**这一路（{@link #hitAtLocal}／{@link #boundsOf} 都先减
+     * {@link #getLocationOnScreen}）：命中判定的既有正证是「窗内坐标带滞后原点，残差实测最大 236px」，
+     * 无障碍这条路若改用 {@link #centerX()} 换算等于把同一个坑再踩一遍。
+     *
+     * <p>**没解决的写明白**：① 格子是圆环扇区，虚拟节点的边界只能是矩形（{@link #arcBox} 取包围盒），
+     * 读屏的高亮框会比格子大一圈，相邻格的框必然重叠——这是 {@code ExploreByTouchHelper} 的固有近似；
+     * ② 环外那格的边界只框住最外环以外的关闭环带，实际还能命中的**背侧半圆**不在这个矩形里；
+     * ③ {@link #getVirtualViewAt} 只服务指针悬停，TalkBack 的手指探索按各节点的**边界**寻物，
+     * 所以决定"摸不摸得到"的是 {@link #boundsOf} 不是命中表；④ 念出来顺不顺仍只有人耳能判（F5）。
      */
     private void installAccessibility() {
-        setAccessibilityDelegate(new View.AccessibilityDelegate() {
-            @Override
-            public void onInitializeAccessibilityNodeInfo(View host, AccessibilityNodeInfo info) {
-                super.onInitializeAccessibilityNodeInfo(host, info);
-                info.setClickable(true);
-                info.setClassName(Button.class.getName());
-                // 名字在节点被要的那一刻现算：菜单开合两种状态读出来不一样，且不用谁去刷它
-                info.setContentDescription(host.getContext().getString(
-                        menuOpen() ? R.string.ball_cd_open : R.string.ball_cd_collapsed));
-            }
+        a11y = new FanA11y(this);
+        ViewCompat.setAccessibilityDelegate(this, a11y);
+    }
 
-            @Override
-            public boolean performAccessibilityAction(View host, int action, Bundle args) {
-                if (action == AccessibilityNodeInfo.ACTION_CLICK) {
-                    ballGesture.onBallTap();
-                    return true;
-                }
-                return super.performAccessibilityAction(host, action, args);
+    /** 树里的格子数与画面上的格子数必须同步：换页/收起之后旧 id 就不存在了，得叫helper 重取。 */
+    private void invalidateA11yTree() {
+        if (a11y != null) {
+            a11y.invalidateRoot();
+        }
+    }
+
+    /**
+     * 宿主节点（球）的读音名：开合两种状态、以及展开后所处层深都读出来不一样，全部在节点被要的那一刻
+     * 现算，不用谁去刷它。根层的球按下去是**收整个菜单**（{@code popOrCloseMenu} 那侧 size≤1 走 hide），
+     * 所以名字得跟着说关闭——说"返回上一层"会把人往一个不存在的更外层引。
+     */
+    private String ballDescription() {
+        if (!menuOpen()) {
+            return getContext().getString(R.string.ball_cd_collapsed);
+        }
+        return getContext().getString(stack.size() <= 1
+                ? R.string.ball_cd_open_root : R.string.ball_cd_open);
+    }
+
+    /** 第 {@code ring} 环之前已排了多少格＝这一环第一格的 id 偏移。 */
+    private int entryOffset(int ring) {
+        int off = 0;
+        for (int i = 0; i < ring && i < stack.size(); i++) {
+            off += stack.get(i).size();
+        }
+        return off;
+    }
+
+    /** 虚拟 id → {@code {环, 环内序号}}；不是条目（或页栈已换、这个 id 掉出界）时返回 {@code null}。 */
+    private int[] entryOfId(int id) {
+        int t = id - VID_ENTRY_BASE;
+        if (t < 0) {
+            return null;
+        }
+        for (int ring = 0; ring < stack.size(); ring++) {
+            int size = stack.get(ring).size();
+            if (t < size) {
+                return new int[]{ring, t};
             }
-        });
+            t -= size;
+        }
+        return null;
+    }
+
+    /**
+     * 一格读什么。条目用**完整标签**：画到弧上的「首字+…」（{@link #displayText}）只是为了塞进弦长，
+     * 读屏没有理由跟着吃省略号。容器额外报「可展开」，对应画面上的「 ▸」。
+     */
+    private String descriptionOf(int id) {
+        Context context = getContext();
+        if (id == VID_HUB) {
+            // 根层的枢纽按下去是**收整个菜单**（服务那侧「回根层再点=关闭」），名字得跟着说这件事，
+            // 否则读屏在最外层报"返回上一层"会把人往一个不存在的更外层引
+            return context.getString(stack.size() <= 1 ? R.string.fan_cd_hub_root : R.string.fan_cd_hub);
+        }
+        if (id == VID_OUTSIDE) {
+            return context.getString(R.string.fan_cd_close);
+        }
+        int[] ri = entryOfId(id);
+        if (ri == null) {
+            return "";
+        }
+        Entry en = stack.get(ri[0]).entries.get(ri[1]);
+        return context.getString(en.container ? R.string.fan_cd_entry_container : R.string.fan_cd_entry,
+                en.label, ri[0] + 1, stack.size());
+    }
+
+    /** 悬停/局部坐标 → 命中区：先把局部点抬回屏幕坐标，再交给唯一那份命中判定 {@link #hitAtScreen}。 */
+    private int[] hitAtLocal(float x, float y) {
+        getLocationOnScreen(a11yScreen);
+        return hitAtScreen(x + a11yScreen[0], y + a11yScreen[1]);
+    }
+
+    /**
+     * 节点边界（**宿主视图的局部坐标**）：圆心＝「球屏幕真值 − 本视图在屏幕上的位置」，两边同在一个
+     * 屏幕坐标系里，这个减法自己抵消掉窗原点追没追上这件事。
+     */
+    private void boundsOf(int id, Rect out) {
+        getLocationOnScreen(a11yScreen);
+        float cx = ballTruthCx - a11yScreen[0];
+        float cy = ballTruthCy - a11yScreen[1];
+        if (id == VID_HUB) {
+            // 枢纽是**整圆**（{@link #hitAtScreen} 在角度检验之前就判 r<innerR，背侧那半边也算），
+            // 所以取样角度得走满 360°：按扇形的 180° 取会把矩形切成半宽，框住球右边的弧边而非球本身
+            arcBox(out, cx, cy, innerR, innerR, 0f, 360f);
+        } else if (id == VID_OUTSIDE) {
+            arcBox(out, cx, cy, outerR, outerR + dp(CLOSING_GAP_DP), 0f, SWEEP_DEG);
+        } else if (entryOfId(id) == null) {
+            out.set(0, 0, getWidth(), getHeight());
+        } else {
+            int[] ri = entryOfId(id);
+            float sector = SWEEP_DEG / Math.max(1, stack.get(ri[0]).size());
+            arcBox(out, cx, cy, ringInner(ri[0]), ringOuter(ri[0]), ri[1] * sector, (ri[1] + 1) * sector);
+        }
+        if (out.isEmpty()) {
+            // 夹进视图尺寸后有可能整格被挤出窗外（真值圆心与视图位置暂时对不上那一两帧）。空矩形在树里
+            // 等于这格**不存在**，宁可退回整扇窗——多给一格顶位，也别让人摸到"少了一格"而以为是功能没了。
+            out.set(0, 0, getWidth(), getHeight());
+        }
+    }
+
+    /**
+     * 扇区（半径 {@code ri..ro}、角度 {@code a0..a1}，角度口径与 {@link #hitAtScreen} 同源：正上=0°、向开口侧增大）
+     * 的包围盒。极值只可能出现在取样角与两端角上，16 档把误差压到 1px 内；最后夹进视图尺寸——
+     * 展开态的窗是扇形外接盒，圆角之外的像素本来就不属于这扇窗。
+     */
+    private void arcBox(Rect out, float cx, float cy, float ri, float ro, float a0, float a1) {
+        float minX = cx, minY = cy, maxX = cx, maxY = cy;
+        for (int i = 0; i <= 16; i++) {
+            double phi = Math.toRadians(a0 + (a1 - a0) * i / 16f);
+            float sx = (float) Math.sin(phi);
+            float sy = (float) Math.cos(phi);
+            for (int k = 0; k < 2; k++) {
+                float r = k == 0 ? ri : ro;
+                float x = cx + dir * r * sx;
+                float y = cy - r * sy;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+        out.set(clampX(minX), clampY(minY), clampX(maxX), clampY(maxY));
+    }
+
+    private int clampX(float v) {
+        return Math.max(0, Math.min(getWidth(), Math.round(v)));
+    }
+
+    private int clampY(float v) {
+        return Math.max(0, Math.min(getHeight(), Math.round(v)));
+    }
+
+    /** 读屏"双击执行"落到某一格：接回既有的 {@link Listener}，不另开第二条动作通路。 */
+    private void activateVirtualView(int id) {
+        if (listener == null) {
+            return; // 收起态没有可提交的目标（球那一路由 performAccessibilityAction 应答）
+        }
+        if (id == VID_HUB) {
+            listener.onHub();
+        } else if (id == VID_OUTSIDE) {
+            listener.onOutside();
+        } else {
+            int[] ri = entryOfId(id);
+            if (ri != null) {
+                listener.onEntry(ri[0], ri[1]);
+            }
+        }
+    }
+
+    /**
+     * 扇形的虚拟节点表：id 由本类自定（{@code VID_*}），边界由 {@link #boundsOf} 现算，动作由
+     * {@link #activateVirtualView} 转给触摸那套既有回调——三条通路共用同一份 {@link #stack} 真值，
+     * 所以"读到的"与"画出的"与"点得到的"不可能各说一套。
+     */
+    private final class FanA11y extends ExploreByTouchHelper {
+        FanA11y(View host) {
+            super(host);
+        }
+
+        @Override
+        protected int getVirtualViewAt(float x, float y) {
+            if (!menuOpen()) {
+                return INVALID_ID; // 收起时整扇窗就是球＝宿主本身，树里没有第二格
+            }
+            int[] h = hitAtLocal(x, y);
+            if (h[0] >= 0) {
+                return VID_ENTRY_BASE + entryOffset(h[0]) + h[1];
+            }
+            if (h[0] == -1) {
+                return VID_HUB;
+            }
+            if (h[0] == -2) {
+                return VID_OUTSIDE;
+            }
+            return INVALID_ID; // ZONE_BALL
+        }
+
+        @Override
+        protected void getVisibleVirtualViews(List<Integer> virtualViewIds) {
+            if (!menuOpen()) {
+                return;
+            }
+            virtualViewIds.add(VID_HUB);
+            for (int ring = 0; ring < stack.size(); ring++) {
+                int off = entryOffset(ring);
+                int size = stack.get(ring).size();
+                for (int i = 0; i < size; i++) {
+                    virtualViewIds.add(VID_ENTRY_BASE + off + i);
+                }
+            }
+            virtualViewIds.add(VID_OUTSIDE);
+        }
+
+        @Override
+        protected void onPopulateNodeForHost(AccessibilityNodeInfoCompat info) {
+            info.setClassName(Button.class.getName());
+            info.setClickable(true);
+            info.setContentDescription(ballDescription());
+        }
+
+        @Override
+        protected void onPopulateNodeForVirtualView(int id, AccessibilityNodeInfoCompat info) {
+            // 必须整只交回去：getBoundsInParent() 给的是**副本**（AccessibilityNodeInfo 内部那份 Rect
+            // 不会被就地改到），照着它 set 等于没设，节点会以空边界进树、读屏摸不到任何东西
+            boundsOf(id, a11yBounds);
+            info.setBoundsInParent(a11yBounds);
+            info.setClassName(Button.class.getName());
+            info.setClickable(true);
+            info.setContentDescription(descriptionOf(id));
+            info.addAction(AccessibilityNodeInfoCompat.ACTION_CLICK);
+        }
+
+        @Override
+        protected void onPopulateEventForVirtualView(int id, AccessibilityEvent event) {
+            // 只报"是谁被点了"，不塞正文：setText/getContent 在 AccessibilityRecord 上是 @hide，
+            // android-35 桩里取不到；名字读屏自己会从节点（onPopulateNodeForVirtualView）拿。
+            event.setClassName(Button.class.getName());
+        }
+
+        @Override
+        protected boolean onPerformActionForVirtualView(int id, int action, Bundle args) {
+            if (action != AccessibilityNodeInfoCompat.ACTION_CLICK) {
+                return false;
+            }
+            activateVirtualView(id);
+            // helper 自己不发包（performAction 只是转调本方法），点了得自己说一声，否则读屏无声无息
+            sendEventForVirtualView(id, AccessibilityEvent.TYPE_VIEW_CLICKED);
+            return true;
+        }
+
+        @Override
+        public boolean performAccessibilityAction(View host, int action, Bundle args) {
+            if (action == AccessibilityNodeInfo.ACTION_CLICK) {
+                // 与**手指按球**同一条判定（见 onTouchEvent 的 pressedBall 分支）：收起＝入口，展开＝枢纽（返回上一层）。
+                // 旧实现无条件走 onBallTap()，于是读屏在展开态点球是整个收扇，而手指点球是退一层——两条通路各说一套。
+                if (menuOpen() && listener != null) {
+                    listener.onHub();
+                } else {
+                    ballGesture.onBallTap();
+                }
+                return true;
+            }
+            return super.performAccessibilityAction(host, action, args);
+        }
     }
 
     /**
@@ -463,6 +723,7 @@ public final class FanMenuView extends View {
         this.dir = facingLeft ? -1 : 1;
         this.outerR = fitOuterPx(getContext(), this.stack);
         this.ringWidths = solveRingWidths(getContext(), this.stack, this.outerR);
+        invalidateA11yTree(); // 格子数量随页栈变，树里那份必须跟着重取
         requestPixels();
     }
 
@@ -473,6 +734,7 @@ public final class FanMenuView extends View {
         this.ringWidths = new float[0];
         this.outerR = innerR;
         resetTouchState();
+        invalidateA11yTree();
         requestPixels();
     }
 
