@@ -8,6 +8,8 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.widget.FrameLayout;
 
+import com.flexiatom.floatingassistant.R;
+
 /**
  * 面板顶部手柄：居中一条浅灰短条，**双击=关闭面板**、**按住拖曳=移动面板窗**。
  * 触摸目标是整条 {@code FrameLayout}（高 20dp，远大于 4dp 的可见条），免得细条点不中。
@@ -35,6 +37,7 @@ final class PanelDragHandle extends FrameLayout {
 
     PanelDragHandle(Context context, int barWidthPx, Callback callback) {
         super(context);
+        setContentDescription(context.getString(R.string.panel_cd_handle));
         GradientDrawable barBg = new GradientDrawable();
         // 半透明 onSurfaceVariant：叠在容器面上是中性灰条
         barBg.setColor(M3.alpha(M3.color(context, M3.ON_SURFACE_VARIANT), 0.5f));

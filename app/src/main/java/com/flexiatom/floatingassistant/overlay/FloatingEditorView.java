@@ -18,6 +18,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.ViewConfiguration;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
@@ -169,6 +170,14 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     /** 列表刷新与搜索共用一个代次：只认最后一次请求的结果，早到的旧结果丢掉。 */
     private int listSeq;
 
+    // ---------- 免截图通路（ui-blind-operation F1）：状态一变就留一行机器读得懂的戳 ----------
+
+    /** 连珠动作（打字、挪光标）静默这么久才发一条——离散动作不等它，当场发。 */
+    private static final long STAMP_QUIET_MS = 150L;
+    /** 上一条发出去的戳：与新算的相同就不重复占日志。 */
+    private String lastStamp = "";
+    private final Runnable stampTick = this::emitStamp;
+
     public FloatingEditorView(Context context, Listener listener) {
         super(context);
         this.listener = listener;
@@ -253,6 +262,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         body = new BodyEditText(context);
         body.setTextColor(onSurface);
         body.setHintTextColor(onVariant);
+        body.setContentDescription(context.getString(R.string.editor_cd_body));
         body.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         body.setBackground(null);
         body.setGravity(Gravity.TOP | Gravity.START);
@@ -308,6 +318,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         scrim = new View(context);
         scrim.setBackgroundColor(M3.alpha(0xFF000000, SCRIM_ALPHA));
         scrim.setClickable(true);
+        scrim.setContentDescription(context.getString(R.string.editor_cd_scrim));
         scrim.setOnClickListener(v -> closeDrawer());
         scrim.setVisibility(GONE);
         addView(scrim, new LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT));
@@ -340,6 +351,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
         drawerSearch = new EditText(context);
         drawerSearch.setHint(R.string.editor_search_hint);
+        drawerSearch.setContentDescription(context.getString(R.string.editor_cd_search));
         drawerSearch.setTextColor(onSurface);
         drawerSearch.setHintTextColor(onVariant);
         drawerSearch.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
@@ -468,6 +480,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      * 所以上边放不下时翻到选区下方，而正文滚动也不重算位置（人裁：跟了反而可能滚出窗口）。
      */
     private void updateBubbleForSelection() {
+        requestStamp(); // 光标一动就是一格状态（气泡的藏与露也算），合并到停手后发一条
         int start = body.getSelectionStart();
         int end = body.getSelectionEnd();
         android.text.Layout layout = body.getLayout();
@@ -565,6 +578,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         bindDrawer(content);
         scrim.setVisibility(VISIBLE);
         drawer.setVisibility(VISIBLE);
+        emitStamp();
     }
 
     private void bindDrawer(DrawerContent content) {
@@ -585,11 +599,13 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         for (DrawerContent.Item item : content.items) {
             drawerList.addView(drawerRow(item));
         }
+        requestStamp(); // 就地换内容（≡↔/ 之间、平滑开关后重装）也要留痕；用合并那条，避免读到还没亮起来的抽屉
     }
 
     private void closeDrawer() {
         scrim.setVisibility(GONE);
         drawer.setVisibility(GONE);
+        emitStamp();
     }
 
     /** 条目＝整行宽的扁平菜单项。**不吃焦点**，否则点一次就把正文光标与键盘让出去（收起后没法连打）。 */
@@ -812,9 +828,12 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
     /** 数一次坏字，顺手刷新信息带上的 ⚠N——闸机的状态和那格数字都从这一条来。 */
     private int lossyIn(String text) {
-        lossyCount = NotesCodec.countLossy(text);
-        updateEncodingLabel();
-        return lossyCount;
+        int count = NotesCodec.countLossy(text);
+        if (count != lossyCount) {
+            lossyCount = count; // 没变就不刷标签：标签只由这两档与这个数决定，而刷新会带动状态戳
+            updateEncodingLabel();
+        }
+        return count;
     }
 
     /** 闸机关着＝缓冲里有解不出来的字，而这个人还没明确说过「就存这一版」。 */
@@ -881,6 +900,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     /** 标题＝正文首行（存储层同一口径），空白篇显示「未命名」。 */
     private void updateDocName() {
         docName.setText(titleOf(NotesCodec.deriveTitle(body.getText().toString())));
+        requestStamp();
     }
 
     private String titleOf(String title) {
@@ -901,6 +921,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         String base = docCharset + "·" + docNewline;
         encodingLabel.setText(lossyCount > 0
                 ? getContext().getString(R.string.editor_info_lossy, base, lossyCount) : base);
+        requestStamp();
     }
 
     /** 缓冲与盘上不一致＝有未保存的改动（重载那两格先拿它问一次人，人裁 2026-10-22）。换档也算：档还没落到盘上。 */
@@ -1176,12 +1197,13 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         body.invalidate();
     }
 
-    /** 统计（E6a）：整屏都是置灰行——这一格只给人看一眼，不该有任何可点的东西。 */
-    private void openStats() {
-        String text = body.getText().toString();
+    /**
+     * 行数／非空白字形数／光标所在行列（{@code {lines, glyphs, caretLine, caretCol}}）。
+     * 统计那格与状态戳共用这一套口径——两处各数各的，早晚会给出两个不同的行数。
+     */
+    private static int[] textMetrics(String text, int caret) {
         int lines = 1;
         int glyphs = 0;
-        int caret = Math.max(0, Math.min(body.getSelectionStart(), text.length()));
         int caretLine = 1;
         int lineStart = 0;
         for (int i = 0; i < text.length(); i++) {
@@ -1196,15 +1218,23 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 glyphs++;
             }
         }
+        return new int[]{lines, glyphs, caretLine, caret - lineStart + 1};
+    }
+
+    /** 统计（E6a）：整屏都是置灰行——这一格只给人看一眼，不该有任何可点的东西。 */
+    private void openStats() {
+        String text = body.getText().toString();
+        int caret = Math.max(0, Math.min(body.getSelectionStart(), text.length()));
+        int[] m = textMetrics(text, caret);
         Context context = getContext();
         List<DrawerContent.Item> items = new ArrayList<>(7);
-        items.add(greyRow(context.getString(R.string.editor_stat_lines, lines)));
-        items.add(greyRow(context.getString(R.string.editor_stat_glyphs, glyphs)));
+        items.add(greyRow(context.getString(R.string.editor_stat_lines, m[0])));
+        items.add(greyRow(context.getString(R.string.editor_stat_glyphs, m[1])));
         items.add(greyRow(context.getString(R.string.editor_stat_chars, text.length())));
         // 字节数按**这篇的编码档与换行档**算：同一篇正文 GBK 比 UTF-8 少三成，硬标 UTF-8 就不是它落盘的大小了
         items.add(greyRow(context.getString(R.string.editor_stat_bytes,
                 NotesCodec.encodeBytes(text, docCharset, docNewline).length, docCharset)));
-        items.add(greyRow(context.getString(R.string.editor_stat_caret, caretLine, caret - lineStart + 1)));
+        items.add(greyRow(context.getString(R.string.editor_stat_caret, m[2], m[3])));
         items.add(greyRow(context.getString(R.string.editor_stat_encoding, docCharset)));
         items.add(greyRow(context.getString(R.string.editor_stat_newline, docNewline)));
         openDrawer(new DrawerContent(context.getString(R.string.editor_more_stats),
@@ -1533,6 +1563,246 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private void syncEditState() {
         undoButton.setAlpha(undoStack.isEmpty() && pendingUndoBase == null ? 0.38f : 1f);
         redoButton.setAlpha(redoStack.isEmpty() ? 0.38f : 1f);
+        requestStamp();
+    }
+
+    /** 连珠变化的入口：合并成一戳再发（打字期间一条也不发，停手 150 ms 后只剩最后一条）。 */
+    private void requestStamp() {
+        mainHandler.removeCallbacks(stampTick);
+        mainHandler.postDelayed(stampTick, STAMP_QUIET_MS);
+    }
+
+    /**
+     * 当下这一屏的全部可机读事实，摊成一行。它存在的唯一理由：**悬浮面板是
+     * {@code TYPE_ACCESSIBILITY_OVERLAY}，{@code uiautomator dump} 里根本没有它**（本机实测 2026-10-22），
+     * 所以不看截屏就没有第二条通路——状态、抽屉里有什么、闸门开合都只能从这儿读。
+     */
+    private String currentStamp() {
+        String text = body.getText().toString();
+        int caret = Math.max(0, Math.min(body.getSelectionStart(), text.length()));
+        int[] m = textMetrics(text, caret);
+        return "doc=" + (docId == null ? "new" : docId)
+                + " title=[" + docName.getText() + "]"
+                + " chars=" + text.length() + " lines=" + m[0] + " glyphs=" + m[1]
+                + " caret=" + m[2] + ":" + m[3]
+                + " sel=" + Math.abs(body.getSelectionEnd() - body.getSelectionStart())
+                + " dirty=" + (dirty() ? 1 : 0)
+                + " charset=" + docCharset + " newline=" + docNewline
+                + " lossy=" + lossyCount + " gate=" + (blockedByLossy() ? "closed" : "open")
+                + " smooth=" + (prefs.smooth() ? 1 : 0) + " wrap=" + (prefs.wrap() ? 1 : 0)
+                + " drawer=" + (drawerOpen() ? "[" + drawerTitle.getText() + "]" : "closed")
+                + " bubble=" + (bubble.getVisibility() == VISIBLE ? bubbleItems : 0)
+                + " undo=" + undoStack.size() + " redo=" + redoStack.size();
+    }
+
+    /** 只在真变了时落一行（差分）：否则自动落库回调每次都会刷一条一模一样的。 */
+    private void emitStamp() {
+        String stamp = currentStamp();
+        if (stamp.equals(lastStamp)) {
+            return;
+        }
+        lastStamp = stamp;
+        android.util.Log.i("EDITORSTATE", stamp);
+    }
+
+    /**
+     * 量测用（ui-blind-operation F1/F3）：**不经触摸**执行一条编辑器动作，回「动作结果 + 当时状态戳」一行。
+     *
+     * <p>语法 {@code <verb>[:<arg>]}，空串＝只读状态：
+     * {@code open-list} {@code open-tools} {@code open-more} {@code open-newline}
+     * {@code open-save-charset} {@code open-reload-charset} {@code open-stats}
+     * {@code pick:<任一可点件的文案或可读音名称>} {@code rows}（读抽屉里全部条目，置灰标 {@code (=)}）
+     * {@code close-drawer} {@code type:<文本>}（插在光标处，{@code \n} 算换行）
+     * {@code caret:<偏移>} {@code sel:<起>:<止>} {@code save} {@code undo} {@code redo} {@code back}。
+     *
+     * <p>每条都走控件自己的 {@code performClick()} 与真实 {@code Editable} 通路，所以这条只证
+     * 「动作→状态」的因果；**触摸命中、键盘手感、读屏语音仍归人**（{@code back} 走的是
+     * {@link #dispatchKeyEvent} 那格，与实体返回键同一支代码）。
+     */
+    public String runActionForTest(String spec) {
+        String verb;
+        String arg;
+        int colon = spec == null ? -1 : spec.indexOf(':');
+        if (colon < 0) {
+            verb = spec == null ? "" : spec.trim();
+            arg = "";
+        } else {
+            verb = spec.substring(0, colon);
+            arg = spec.substring(colon + 1);
+        }
+        String outcome;
+        switch (verb) {
+            case "":
+            case "state":
+                outcome = "read";
+                break;
+            case "open-list":
+                openDocDrawer();
+                outcome = "opened list";
+                break;
+            case "open-tools":
+                openDrawer(editToolsContent(getContext()));
+                outcome = "opened tools";
+                break;
+            case "open-more":
+                openDrawer(overflowContent(getContext()));
+                outcome = "opened more";
+                break;
+            case "open-newline":
+                openNewlinePicker();
+                outcome = "opened newline";
+                break;
+            case "open-save-charset":
+                openSaveCharsetPicker();
+                outcome = "opened save-charset";
+                break;
+            case "open-reload-charset":
+                reloadWithCharset();
+                outcome = "opened reload-charset";
+                break;
+            case "open-stats":
+                openStats();
+                outcome = "opened stats";
+                break;
+            case "pick":
+                outcome = pickByName(arg);
+                break;
+            case "rows":
+                outcome = listDrawerRows();
+                break;
+            case "close-drawer":
+                closeDrawer();
+                outcome = "drawer closed";
+                break;
+            case "type":
+                // 插在光标处、不整篇替换：这样「闸后再打字」量的才是人那一条通路（替换会把坏字连根换掉）
+                body.getText().insert(Math.max(0, Math.min(body.getSelectionStart(),
+                        body.getText().length())), arg.replace("\\n", "\n"));
+                requestStamp();
+                outcome = "typed " + body.getText().length();
+                break;
+            case "caret":
+                outcome = setCaret(arg);
+                break;
+            case "sel":
+                outcome = setSelection(arg);
+                break;
+            case "save":
+                saveNow();
+                outcome = "saveNow";
+                break;
+            case "undo":
+                undo();
+                outcome = "undo";
+                break;
+            case "redo":
+                redo();
+                outcome = "redo";
+                break;
+            case "back":
+                outcome = dispatchKeyEvent(new KeyEvent(0L, 0L,
+                        KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BACK, 0, 0)) ? "back consumed" : "back passed";
+                break;
+            default:
+                outcome = "unknown verb";
+        }
+        emitStamp();
+        return "action=" + spec + " → " + outcome + " | " + currentStamp();
+    }
+
+    /**
+     * 按名称点**整块面板**里的一个可点件：可见文案或可读音名称命中即点，返回点到了谁。
+     * 抽屉行、栏头那颗、顶栏六个图标钮、气泡六项因此都在同一扇门里——这也是补
+     * {@code contentDescription} 的用处所在（图标钮没文案，只有名称，光看 dump 永远点不到）。
+     */
+    private String pickByName(String needle) {
+        if (needle.isEmpty()) {
+            return "empty needle";
+        }
+        View hit = findClickableByName(this, needle);
+        if (hit == null) {
+            return "no control matching [" + needle + "]";
+        }
+        hit.performClick();
+        return "clicked [" + labelOf(hit) + "]";
+    }
+
+    /**
+     * 抽屉当前每一条的名字，置灰的带 {@code (=)} 前缀——这是「不看屏也能读到菜单」的那半，
+     * 与 {@link #pickByName} 配对：先 {@code rows} 看清有什么，再按名点。栏头那颗用 {@code (+)} 标出。
+     */
+    private String listDrawerRows() {
+        if (!drawerOpen()) {
+            return "rows: no drawer";
+        }
+        StringBuilder out = new StringBuilder(96);
+        if (drawerHeaderAction.getVisibility() == VISIBLE) {
+            out.append(" (+)").append(drawerHeaderAction.getContentDescription());
+        }
+        for (int i = 0; i < drawerList.getChildCount(); i++) {
+            if (drawerList.getChildAt(i) instanceof Button b) {
+                out.append(b.isEnabled() ? " | " : " | (=)").append(b.getText());
+            }
+        }
+        return "rows:" + out;
+    }
+
+    /** 深度优先：先遇到编辑器层，再遮罩、抽屉、气泡（添加序即层级序），置灰与隐藏的件一律跳过。 */
+    private View findClickableByName(View view, String needle) {
+        if (view != this && view.isShown() && view.isEnabled() && view.isClickable()
+                && labelOf(view).contains(needle)) {
+            return view;
+        }
+        if (view instanceof ViewGroup group) {
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View hit = findClickableByName(group.getChildAt(i), needle);
+                if (hit != null) {
+                    return hit;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** 一个控件的可读音名称＝有文案取文案，没文案取 {@code contentDescription}（图标钮那一类）。 */
+    private static String labelOf(View view) {
+        if (view instanceof TextView tv && tv.getText().length() > 0) {
+            return tv.getText().toString();
+        }
+        Object desc = view.getContentDescription();
+        return desc == null ? "" : desc.toString();
+    }
+
+    private String setCaret(String arg) {
+        int offset = parseIntOr(arg, -1);
+        if (offset < 0) {
+            return "bad offset";
+        }
+        body.setSelection(Math.min(offset, body.getText().length()));
+        return "caret " + offset;
+    }
+
+    private String setSelection(String arg) {
+        int cut = arg.indexOf(':');
+        if (cut < 0) {
+            return "bad range";
+        }
+        int start = parseIntOr(arg.substring(0, cut), -1);
+        int end = parseIntOr(arg.substring(cut + 1), -1);
+        if (start < 0 || end < 0) {
+            return "bad range";
+        }
+        int len = body.getText().length();
+        body.setSelection(Math.min(start, len), Math.min(end, len));
+        return "sel " + start + ":" + end;
+    }
+
+    private static int parseIntOr(String s, int fallback) {
+        try {
+            return Integer.parseInt(s.trim());
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
     }
 
     /** 正文当前文本：机读与 E2 插入口（§4.4-3）的落点，形状同 {@link TextPanelView#bodyText()}。 */

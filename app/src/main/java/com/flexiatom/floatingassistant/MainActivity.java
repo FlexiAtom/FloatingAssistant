@@ -83,6 +83,14 @@ public class MainActivity extends AppCompatActivity {
     public static final String EXTRA_P5_JITTER_SEC = "p5_jitter_sec";
     /** 量测「翻译设置」面板的存储半段（T2）：在面板里点一行，值就是语言缩写（如 {@code ja}）。走行的 OnClickListener，触摸命中仍归人。 */
     public static final String EXTRA_P5_PANEL_PICK = "p5_panel_pick";
+    /**
+     * 编辑器动作入口（{@code p5_editor}，ui-blind-operation F1/F3）：字符串就是动作语法
+     * （{@code open-list}／{@code pick:<行文案>}／{@code type:<文本>}…，全表见
+     * {@link com.flexiatom.floatingassistant.overlay.FloatingEditorView#runActionForTest}），空串＝只读当下状态。
+     * 这条之所以必须存在：悬浮面板是 {@code TYPE_ACCESSIBILITY_OVERLAY}，{@code uiautomator dump} 里查不到它，
+     * 于是「不看截屏也能操作」只剩日志一读——动作与判据都得从这条进来。
+     */
+    public static final String EXTRA_P5_EDITOR = "p5_editor";
     /** 「关闭切换动画」叶子的机读入口：只验写权限那条通路（三键缩放翻转），扇形里点它仍归人。 */
     public static final String EXTRA_ANIM_TOGGLE = "anim_toggle";
     /** m2 第二步（{@code p6_mt}＝待译文本）：**不经截屏**直接把这句喂给模型，验语向真进了提示词。 */
@@ -560,6 +568,11 @@ public class MainActivity extends AppCompatActivity {
         String pick = intent.getStringExtra(EXTRA_P5_PANEL_PICK);
         if (pick != null && !pick.isEmpty()) {
             svc.pickTranslateRowForTest(pick);
+            return;
+        }
+        String editorSpec = intent.getStringExtra(EXTRA_P5_EDITOR);
+        if (editorSpec != null) {
+            svc.editorForTest(editorSpec); // 空串也要走：那是「只读状态」那一格
             return;
         }
         final int[] ball = parsePair(intent.getStringExtra(EXTRA_P5_BALL), 0, 0);

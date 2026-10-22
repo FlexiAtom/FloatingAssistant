@@ -291,6 +291,25 @@ public class SphereAccessibilityService extends AccessibilityService {
     }
 
     /**
+     * 量测用（ui-blind-operation F1/F3）：**不碰屏幕**地驱动编辑器——面板不在（或开的是别种面板）
+     * 就先把编辑器挂上，再执行一条 {@code spec}，结果连同当时的状态戳打一行 {@code P5EDITOR}。
+     * 现取在屏面板、不留字段引用（同 {@link #updateEditorBubbleSpeakLabel}），所以换面板不需要谁记着清它。
+     */
+    public void editorForTest(String spec) {
+        mainHandler.post(() -> {
+            if (!(overlayManager.currentPanel() instanceof FloatingEditorView)) {
+                overlayManager.hidePanel();
+                openEditor();
+            }
+            if (overlayManager.currentPanel() instanceof FloatingEditorView editor) {
+                android.util.Log.i("P5EDITOR", editor.runActionForTest(spec));
+            } else {
+                android.util.Log.e("P5EDITOR", "editor not on window; spec=" + spec);
+            }
+        });
+    }
+
+    /**
      * 当前**目标语言**缩写（{@code LangCatalog} 的 code），供翻译路径每次取用。
      *
      * <p>源语言不在这条链上：Hy-MT2 官方所有句式都只有 {@code {target_lang}}、没有源语言槽，
