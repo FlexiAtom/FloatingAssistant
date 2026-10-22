@@ -87,10 +87,16 @@ public class MainActivity extends AppCompatActivity {
      * 编辑器动作入口（{@code p5_editor}，ui-blind-operation F1/F3）：字符串就是动作语法
      * （{@code open-list}／{@code pick:<行文案>}／{@code type:<文本>}…，全表见
      * {@link com.flexiatom.floatingassistant.overlay.FloatingEditorView#runActionForTest}），空串＝只读当下状态。
-     * 这条之所以必须存在：悬浮面板是 {@code TYPE_ACCESSIBILITY_OVERLAY}，{@code uiautomator dump} 里查不到它，
-     * 于是「不看截屏也能操作」只剩日志一读——动作与判据都得从这条进来。
+     * 这条之所以必须存在：{@code uiautomator dump} 只出**活动窗**的节点（{@code --windows all} 也拿不到我们
+     * 覆盖窗的节点树，见 F1c 的 {@code p5_a11y}），于是悬浮面板上的动作没有第二条不经手指的进来路。
      */
     public static final String EXTRA_P5_EDITOR = "p5_editor";
+    /**
+     * 无障碍自证探针（{@code p5_a11y}，ui-blind-operation F1c）：让服务自己把「看得见哪些窗、
+     * 每扇窗的节点树里有什么」打进 {@code A11YPROBE}。这条是给"读屏到底能不能看见悬浮 UI"
+     * 那个问题一个机读答案的，不代替人耳——人耳那半在 F5。
+     */
+    public static final String EXTRA_P5_A11Y = "p5_a11y";
     /** 「关闭切换动画」叶子的机读入口：只验写权限那条通路（三键缩放翻转），扇形里点它仍归人。 */
     public static final String EXTRA_ANIM_TOGGLE = "anim_toggle";
     /** m2 第二步（{@code p6_mt}＝待译文本）：**不经截屏**直接把这句喂给模型，验语向真进了提示词。 */
@@ -571,8 +577,15 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         String editorSpec = intent.getStringExtra(EXTRA_P5_EDITOR);
-        if (editorSpec != null) {
-            svc.editorForTest(editorSpec); // 空串也要走：那是「只读状态」那一格
+        boolean probeA11y = intent.getBooleanExtra(EXTRA_P5_A11Y, false);
+        if (editorSpec != null || probeA11y) {
+            // 探针先排进去：它在服务里延迟一拍，为的是排在"面板开出来"那一帧之后
+            if (probeA11y) {
+                svc.postA11yProbe();
+            }
+            if (editorSpec != null) {
+                svc.editorForTest(editorSpec); // 空串也要走：那是「只读状态」那一格
+            }
             return;
         }
         final int[] ball = parsePair(intent.getStringExtra(EXTRA_P5_BALL), 0, 0);

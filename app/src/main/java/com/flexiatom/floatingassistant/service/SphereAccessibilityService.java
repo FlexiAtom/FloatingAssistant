@@ -291,6 +291,15 @@ public class SphereAccessibilityService extends AccessibilityService {
     }
 
     /**
+     * 量测用（ui-blind-operation F1c）：延迟一拍跑 {@link A11yProbe}，把本服务看得见的窗与节点树打出来。
+     * 延迟的理由只有一条：{@code p5_a11y} 常和 {@code p5_editor} 在同一条 {@code am start} 里给，
+     * 探针得排在"面板开出来"之后，否则量的就是面板还没上窗的那一帧。
+     */
+    public void postA11yProbe() {
+        mainHandler.postDelayed(() -> A11yProbe.run(this), 600L);
+    }
+
+    /**
      * 量测用（ui-blind-operation F1/F3）：**不碰屏幕**地驱动编辑器——面板不在（或开的是别种面板）
      * 就先把编辑器挂上，再执行一条 {@code spec}，结果连同当时的状态戳打一行 {@code P5EDITOR}。
      * 现取在屏面板、不留字段引用（同 {@link #updateEditorBubbleSpeakLabel}），所以换面板不需要谁记着清它。
