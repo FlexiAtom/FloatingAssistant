@@ -92,6 +92,17 @@
     <string name="editor_charset_refused">这一档装不下</string>
     <string name="editor_charset_nofit">%1$s 里没有这 %2$d 个字：%3$s（正文保持不动）</string>
     <string name="editor_charset_repick">换一档重选</string>
+    <string name="editor_info_lossy">%1$s ⚠%2$d</string>
+    <string name="editor_lossy_title">有还原不出来的字</string>
+    <string name="editor_lossy_hint">这一档解出 %1$d 个字还原不出来（编码多半选错了）。盘上那一版一个字没动，自动保存已停。</string>
+    <string name="editor_lossy_repick">换一档重解</string>
+    <string name="editor_lossy_ok">知道了（先不动）</string>
+    <string name="editor_lossy_force_title">要存这一版吗</string>
+    <string name="editor_lossy_force_hint">存下去就把这 %1$d 个字按 %2$s 写进盘，原来那一版救不回来</string>
+    <string name="editor_lossy_force_go">仍要存</string>
+    <string name="editor_lossy_switch_hint">这篇里有 %1$d 个字还原不出来，而自动保存停着——切走就先丢掉这些改动</string>
+    <string name="editor_lossy_switch_save">存了再走</string>
+    <string name="editor_lossy_switch_drop">不存，直接切</string>
     <string name="editor_discard_hint">有未保存的改动，重载会丢掉它们</string>
     <string name="editor_discard_confirm">放弃并重载</string>
 

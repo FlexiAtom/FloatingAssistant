@@ -155,6 +155,13 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private String savedText = "";
     /** 一次写只在途一份：回调之后再做脏判补写，免得同一篇被并发写出两个身份。 */
     private boolean saveInFlight;
+    /**
+     * 缓冲里**解不出来的字**（{@code U+FFFD}）的个数——载入/重载时数一次，落库前再数一次，非 0 就挂进信息带。
+     * 人裁 2026-10-22「要装闸」：带着这些字把缓冲写回盘，盘上那一版就救不回来了，所以自动通路一律停写。
+     */
+    private int lossyCount;
+    /** 人已经在确认格里明确选过「仍要存」：这一片的闸门就此放开，之后自动落库照常（正文真含 {@code U+FFFD} 的人不被锁死）。 */
+    private boolean lossyAcked;
     /** 构造时那次「取最近一篇」是否仍有效：人已经动过正文就作废，不把输入盖掉。 */
     private boolean initialLoadPending = true;
     /** 当前抽屉装的是否文档列表——搜索框只对它有反应，{@code /} 菜单那格没有搜索框。 */
@@ -212,7 +219,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         toolbar.addView(redoButton);
         // 💾 随 E5 点亮（人裁 2026-10-21：□＝软盘保存钮）
         toolbar.addView(toolButton(context, icon(context, R.drawable.ic_floppy, onSurface),
-                R.string.editor_cd_save, v -> persistCurrent()));
+                R.string.editor_cd_save, v -> saveNow()));
         toolbar.addView(toolButton(context, SketchIcons.of(SketchIcons.SLASH, onSurface, density),
                 R.string.editor_cd_tools, v -> openDrawer(editToolsContent(context))));
         // ⋮ 随 E6 点亮（人 2026-10-22 定终版清单）：E6a 这一档实装三格，其余在同一格里置灰看全。
@@ -678,20 +685,32 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
     /** 换文档前先落库当下这篇（人裁 §4c：宁多存不误丢）；两次写都排在同一条 {@code notes-io} 上，先后有保证。 */
     private void openNote(String id) {
-        persistCurrent();
-        notes.open(id, doc -> {
+        Runnable go = () -> notes.open(id, doc -> {
             if (doc == null) {
                 return; // 读挂了就保持现状，不要把正文换成空、也不收起抽屉——让人的编辑现场原样留着
             }
             installDoc(doc.record.id, doc.text, doc.record.charset, doc.record.newline, false);
-            closeDrawer();
+            settleAfterReload();
         });
+        if (blockedByLossy()) {
+            confirmSwitchAway(go); // 闸门拦住了那次落库，切过去就是白丢改动 → 问
+            return;
+        }
+        persistCurrent();
+        go.run();
     }
 
     private void newDocument() {
+        Runnable go = () -> {
+            installDoc(null, "", NotesCodec.DEFAULT_CHARSET, NotesCodec.DEFAULT_NEWLINE, true);
+            closeDrawer();
+        };
+        if (blockedByLossy()) {
+            confirmSwitchAway(go);
+            return;
+        }
         persistCurrent();
-        installDoc(null, "", NotesCodec.DEFAULT_CHARSET, NotesCodec.DEFAULT_NEWLINE, true);
-        closeDrawer();
+        go.run();
     }
 
     private void togglePin(String id, boolean pinned) {
@@ -708,6 +727,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         docCharset = charset;
         docNewline = newline;
         settingStale = false;
+        lossyAcked = false; // 换了一篇＝重新问起，上一篇的「仍要存」不延续
+        lossyCount = NotesCodec.countLossy(text);
         docSeq++; // 在途的那一趟落库从此不属于当下这篇，回调只许改它的簿记
         savedText = text;
         initialLoadPending = false;
@@ -748,12 +769,16 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     }
 
     /**
-     * 落库当下这篇（💾 与自动落库与关面板与换档同一条通路）。三种情况不写盘：在途一次没回、
-     * 正文与上次落库相同**且档位已与盘上一致**、空正文的新文档（那还不是一篇"文档"，生成一条空记录只是脏列表）。
+     * 落库当下这篇（💾 与自动落库与关面板与换档同一条通路）。四种情况不写盘：在途一次没回、
+     * 正文与上次落库相同**且档位已与盘上一致**、空正文的新文档（那还不是一篇"文档"，生成一条空记录只是脏列表）、
+     * **闸机关着**（缓冲里有解不出来的字而人还没说要存，见 {@link #blockedByLossy}）。
      */
     private void persistCurrent() {
         mainHandler.removeCallbacks(autosaveTick);
         String text = body.getText().toString();
+        if (!lossyAcked && lossyIn(text) > 0) {
+            return; // 装闸：自动通路不打断人，只是**不写盘**——要存这一版得人自己按软盘（见 saveNow）
+        }
         if (saveInFlight || (text.equals(savedText) && !settingStale)
                 || (text.isEmpty() && docId == null)) {
             return;
@@ -785,6 +810,74 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         });
     }
 
+    /** 数一次坏字，顺手刷新信息带上的 ⚠N——闸机的状态和那格数字都从这一条来。 */
+    private int lossyIn(String text) {
+        lossyCount = NotesCodec.countLossy(text);
+        updateEncodingLabel();
+        return lossyCount;
+    }
+
+    /** 闸机关着＝缓冲里有解不出来的字，而这个人还没明确说过「就存这一版」。 */
+    private boolean blockedByLossy() {
+        return !lossyAcked && lossyIn(body.getText().toString()) > 0;
+    }
+
+    /** 💾＝人主动要存，所以带坏字时**问一次**；自动落库那条通路不问人，直接停写（见 {@link #persistCurrent}）。 */
+    private void saveNow() {
+        if (!lossyAcked && lossyIn(body.getText().toString()) > 0) {
+            Context context = getContext();
+            List<DrawerContent.Item> items = new ArrayList<>(3);
+            items.add(greyRow(context.getString(R.string.editor_lossy_force_hint, lossyCount, docCharset)));
+            items.add(new DrawerContent.Item(context.getString(R.string.editor_lossy_force_go), () -> {
+                lossyAcked = true; // 这一篇此后照常打字照常存，不再每 1.2 秒问一遍
+                persistCurrent();
+                closeDrawer();
+            }));
+            items.add(new DrawerContent.Item(context.getString(R.string.action_cancel), this::closeDrawer));
+            openDrawer(new DrawerContent(context.getString(R.string.editor_lossy_force_title),
+                    null, null, false, items));
+            return;
+        }
+        persistCurrent();
+    }
+
+    /**
+     * 换篇/新建那一下也要落库，闸门拦住了就得问：三选一（存了再走／不存就走／留下不动）。
+     * 不替人决定，因为「丢掉这些改动」和「把乱码存进去」两种损失，谁轻谁重只有人自己知道。
+     */
+    private void confirmSwitchAway(Runnable switchAway) {
+        Context context = getContext();
+        List<DrawerContent.Item> items = new ArrayList<>(4);
+        items.add(greyRow(context.getString(R.string.editor_lossy_switch_hint, lossyCount)));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_lossy_switch_save), () -> {
+            lossyAcked = true;
+            persistCurrent();
+            switchAway.run();
+        }));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_lossy_switch_drop), switchAway));
+        items.add(new DrawerContent.Item(context.getString(R.string.action_cancel), this::closeDrawer));
+        openDrawer(new DrawerContent(context.getString(R.string.editor_lossy_title), null, null, false, items));
+    }
+
+    /** 解出坏字当场说清三件事：几个字、盘上那版没动、自动保存已停；给一条「换一档重解」回去。 */
+    private void warnLossy() {
+        Context context = getContext();
+        List<DrawerContent.Item> items = new ArrayList<>(3);
+        items.add(greyRow(context.getString(R.string.editor_lossy_hint, lossyCount)));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_lossy_repick), this::reloadWithCharset));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_lossy_ok), this::closeDrawer));
+        openDrawer(new DrawerContent(context.getString(R.string.editor_lossy_title), null, null, false, items));
+    }
+
+    /** 重载完的收尾：有坏字就把话说在眼前，没坏字就收起抽屉。 */
+    private void settleAfterReload() {
+        if (lossyCount > 0) {
+            warnLossy();
+        } else {
+            closeDrawer();
+        }
+    }
+
     /** 标题＝正文首行（存储层同一口径），空白篇显示「未命名」。 */
     private void updateDocName() {
         docName.setText(titleOf(NotesCodec.deriveTitle(body.getText().toString())));
@@ -805,7 +898,9 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             NotesCodec.DEFAULT_CHARSET, NotesCodec.BOM_LABEL, "GBK", "GB18030", "Big5", "ISO-8859-1"};
 
     private void updateEncodingLabel() {
-        encodingLabel.setText(docCharset + "·" + docNewline);
+        String base = docCharset + "·" + docNewline;
+        encodingLabel.setText(lossyCount > 0
+                ? getContext().getString(R.string.editor_info_lossy, base, lossyCount) : base);
     }
 
     /** 缓冲与盘上不一致＝有未保存的改动（重载那两格先拿它问一次人，人裁 2026-10-22）。换档也算：档还没落到盘上。 */
@@ -826,7 +921,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                     return; // 读挂了保持现状；等结果的这段时间人已经换了篇，别把另一篇盖进来
                 }
                 installDoc(id, doc.text, doc.record.charset, doc.record.newline, false);
-                closeDrawer();
+                settleAfterReload();
             });
         };
         if (dirty()) {
@@ -850,7 +945,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                         return;
                     }
                     installDoc(id, doc.text, doc.record.charset, doc.record.newline, false);
-                    closeDrawer();
+                    settleAfterReload();
                 });
             };
             if (dirty()) {
@@ -901,6 +996,10 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private DrawerContent.Item newlineRow(Context context, int labelRes, String tag) {
         return checkRow(context.getString(labelRes), tag.equals(docNewline),
                 () -> {
+                    if (blockedByLossy()) {
+                        warnLossy(); // 换行档也要靠一次真写才成立，写不出去就别让标签跑在字节前头
+                        return;
+                    }
                     docNewline = tag;
                     applyDocSettings();
                 });
@@ -933,6 +1032,10 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      */
     private void openSaveCharsetPicker() {
         openCharsetPicker(R.string.editor_more_save_charset, charset -> {
+            if (blockedByLossy()) {
+                warnLossy(); // 换档＝用这缓冲里的字重出字节，字是乱码出来的字节也是 → 先拦，理由说在前头
+                return;
+            }
             String missing = NotesCodec.unmappable(body.getText().toString(), charset);
             if (!missing.isEmpty()) {
                 refuseCharset(charset, missing);

@@ -41,6 +41,8 @@ public final class NotesCodec {
      */
     public static final String BOM_LABEL = "UTF-8 BOM";
     static final byte[] UTF8_BOM = {(byte) 0xEF, (byte) 0xBB, (byte) 0xBF};
+    /** 替换字符：字节解不出来时缓冲里就长这个样。写成字面量会让源码自己也停在那一处乱码上。 */
+    private static final int REPLACEMENT_CHAR = 0xFFFD;
 
     private NotesCodec() {
     }
@@ -191,6 +193,25 @@ public final class NotesCodec {
             out.appendCodePoint(codePoint);
         }
         return out.toString();
+    }
+
+    /**
+     * 缓冲里 {@code U+FFFD}（替换字符）的个数——**盘上字节按这一档解不出来的字**就长这样。
+     * 读方向的闸门只看它（人裁 2026-10-22「要装闸」）：带着这些字把缓冲写回盘，原来那一版就救不回来了。
+     */
+    public static int countLossy(String buffer) {
+        if (buffer == null || buffer.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (int i = 0; i < buffer.length(); ) {
+            int codePoint = buffer.codePointAt(i);
+            i += Character.charCount(codePoint);
+            if (codePoint == REPLACEMENT_CHAR) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /**
