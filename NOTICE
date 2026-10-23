@@ -24,6 +24,13 @@ Copyright (C) 2026 FlexiAtom
    全文（含 "How to Apply These Terms to Your New Programs" 一节）见 `LICENSE`。
    每个自有源文件的头部带这段传统 boilerplate 与 `SPDX-License-Identifier: GPL-3.0-or-later`。
 
+   `LICENSE` 是 Free Software Foundation 发布的 GPL-3.0 正文**逐字节原文**，未改写、未重排、未折叠换行：
+   取自 <https://www.gnu.org/licenses/gpl-3.0.txt>，35,149 字节，
+   `sha256:3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986`。
+   FSF 不为 "-or-later" 单发一份正文——`only` 与 `or-later` 的差别只在应用声明里
+   （见 <https://www.gnu.org/licenses/gpl-howto.html>），所以上面那段 boilerplate 里的
+   "either version 3 … or (at your option) any later version" 就是本程序选择 `or-later` 的明示声明。
+
    无担保：本程序不提供任何形式的担保，法律允许的范围内作者对因使用本程序造成的损失不负责任
    （GPL-3.0 第 15、16 条）。使用者在支持设备上重新修改本程序须自备安装信息（第 6 条 "安装信息"）。
 
