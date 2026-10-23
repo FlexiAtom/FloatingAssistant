@@ -1,3 +1,24 @@
+/*
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This file is part of FloatingAssistant.
+ *
+ * Copyright (C) 2026 FlexiAtom
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 // 悬浮助手 · P2-T：STQ 特化 libllama 的薄 JNI 桥（端侧整屏 MT）。
 // 语向不在此层：入参即完整 user 消息，提示词由 Java 侧 MtPrompt 按官方句式组装。
 // 只链引擎四库（llama/ggml/ggml-cpu/ggml-base）+ log；聊天模板走 llama_chat_apply_template

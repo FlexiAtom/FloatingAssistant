@@ -1,0 +1,149 @@
+悬浮助手 · FloatingAssistant
+Copyright (C) 2026 FlexiAtom
+
+本文件是第三方组件的许可与出处清单（NOTICE）。本程序本身的授权条款见同目录 `LICENSE`。
+
+
+0. 本程序的许可
+
+   FloatingAssistant 以 GNU General Public License version 3（或你选择的更新版本）发布：
+
+     This program is free software: you can redistribute it and/or modify
+     it under the terms of the GNU General Public License as published by
+     the Free Software Foundation, either version 3 of the License, or
+     (at your option) any later version.
+
+     This program is distributed in the hope that it will be useful,
+     but WITHOUT ANY WARRANTY; without even the implied warranty of
+     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+     GNU General Public License for more details.
+
+     You should have received a copy of the GNU General Public License
+     along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+   全文（含 "How to Apply These Terms to Your New Programs" 一节）见 `LICENSE`。
+   每个自有源文件的头部带这段传统 boilerplate 与 `SPDX-License-Identifier: GPL-3.0-or-later`。
+
+   无担保：本程序不提供任何形式的担保，法律允许的范围内作者对因使用本程序造成的损失不负责任
+   （GPL-3.0 第 15、16 条）。使用者在支持设备上重新修改本程序须自备安装信息（第 6 条 "安装信息"）。
+
+
+1. 随产物（APK）分发的第三方组件
+
+1) llama.cpp / ggml
+   许可：MIT License
+   用途：端侧整屏翻译的推理引擎（`libllama.so` / `libggml*.so` / `libggml-cpu.so` / `libmtjni.so`）
+   来源：llama.cpp PR #22836 head `1e411d8f5a1e23525fa3265dfb4bd76265465397`（分支 `sjl623:STQ_0`）
+   版权：Georgi Gerganov 及 llama.cpp 贡献者
+   我们的改动：`native/llama-stq/stq-renumber.patch`（把 `GGML_TYPE_STQ1_0` 与 `Q2_0` 的编号对调，
+   以上厂权重文件的 raw type 为准）；JNI 薄桥 `native/llama-stq/jni/mt-jni.cpp` 为自写文件。
+   重建路径：`native/llama-stq/build-android.sh`（锁定上表 commit，交叉编译到 android/arm64-v8a）。
+   **为什么这份 .so 不入 git**：体积与可重建性（`.gitignore` 排除 `app/src/main/jniLibs/**/*.so`）。
+   按 GPL-3.0 第 6 条，"对应源码" = 上表 commit + 本仓库的补丁与脚本，克隆仓库即可逐字节重现；
+   构建校验见 `native/llama-stq/verify-stq.sh` 与 `app/build.gradle.kts` 的 `verifyStqSo` 任务。
+
+   MIT License
+
+   Permission is hereby granted, free of charge, to any person obtaining a copy
+   of this software and associated documentation files (the "Software"), to deal
+   in the Software without restriction, including without limitation the rights
+   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+   copies of the Software, and to permit persons to whom the Software is
+   furnished to do so, subject to the following conditions:
+
+   The above copyright notice and this permission notice shall be included in all
+   copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+   SOFTWARE.
+
+2) ONNX Runtime (Android)
+   许可：MIT License（`onnxruntime-android-1.29.0.pom` 的 `<licenses>` 声明）
+   用途：OCR 推理后端（PaddleOCR 模型的检测/识别）
+   来源：`com.microsoft.onnxruntime:onnxruntime-android:1.29.0`（Maven Central）
+   版权：Microsoft Corporation
+
+3) sherpa-onnx (Android AAR, static-link-onnxruntime)
+   许可：Apache License 2.0
+   用途：端侧朗读（TTS）推理
+   来源：github.com/k2-fsa/sherpa-onnx 的 v1.13.8 release，取 `static-link-onnxruntime` 那份 AAR
+   版权：k2-fsa/sherpa-onnx 贡献者
+   我们的改动：**只删不改**——`zip -d` 移除 `jni/armeabi-v7a`、`jni/x86`、`jni/x86_64` 三类条目，
+   其余条目原样保留（`classes.jar` 238,706 B，与常规 fat AAR 的类集合实测同一：122 个 class、`diff` 空）。
+   原始与派生两份的 sha256、尺寸与选型理由见 `bench/models/MANIFEST.md` 的 TTS 段；AAR 本体不入 git
+   （`.gitignore` 排除 `app/libs/*.aar`），按上一节的同一理由提供重建路径。
+   另记一条实测事实：该 AAR 内**没有**随附 LICENSE/NOTICE 条目（`unzip -l` 命中 0），
+   故其条款文本按上游仓库的 Apache-2.0 文本在此声明。
+
+4) AndroidX、Material、Kotlin 标准库等 Maven 依赖
+   许可：Apache License 2.0（一处 MIT，见下 2)）
+   直接声明的坐标：`androidx.core:core:1.13.1`、`androidx.appcompat:appcompat:1.7.0`、
+   `com.google.android.material:material:1.12.0`、`androidx.constraintlayout:constraintlayout:2.0.1`、
+   `androidx.lifecycle:lifecycle-runtime:2.8.3`（`app/build.gradle.kts` + `gradle/libs.versions.toml`）
+   版权：The Android Open Source Project、JetBrains 及各组件贡献者
+
+   全量核对（本机实测，不是照抄官方说法）：`gradlew :app:dependencies --configuration
+   debugRuntimeClasspath` 解析出 **117 个构件**（含所有传递依赖）。两份 Gradle 缓存里能取到 POM 的
+   94 个，其 `<licenses>` 声明的分布是 **Apache-2.0 系 92 个 + MIT 1 个（就是上表 2) 的
+   onnxruntime）+ 1 个 POM 里没有 licenses 段**（`com.google.guava:listenablefuture:1.0`，一个空实现
+   存根，随 Guava 以 Apache-2.0 发布）。剩下 **22 个没有 POM**（Gradle 走 `.module` 元数据抓的，
+   全是 androidx.* 与旧版 kotlin-stdlib）——这一族**没有逐份核到许可正文**，只是按它们所属项目的
+   统一声明（AndroidX 与 Kotlin 均为 Apache-2.0）记在这里。
+   结论：产物里没有任何 GPL 不兼容（EPL/LGPL/AGPL）的运行时组件。
+
+5) PP-OCRv4 mobile 模型（det/rec + 字典）
+   许可：Apache License 2.0
+   用途：端侧文本检测与识别的权重
+   来源：RapidOCR / PaddleOCR（`ch_PP-OCRv4_det_infer.onnx`、`rec` 同系 + 字典）
+   版权：PaddlePaddle / RapidOCR 贡献者
+   投递方式：模型文件不入 git（`.gitignore` 排除 `bench/models/*.onnx`），由用户 out-of-band
+   放到应用的外部文件目录；出处与 sha256 见 `bench/models/MANIFEST.md`。
+
+6) Hy-MT2-1.8B GGUF 翻译模型（两档并存）
+   许可：Apache License 2.0（包内 `LICENSE.txt` 实测为纯 Apache-2.0，无附加限制）
+   用途：端侧整屏翻译权重（`Hy-MT2-1.8B-1.25Bit.gguf` 轻量档 / `Hy-MT2-1.8B-Q4_K_M.gguf` 重载档）
+   来源：AngelSlim/Hy-MT2-1.8B-1.25bit-GGUF
+   版权：模型作者
+   投递方式：同上一节，out-of-band，不随 APK 分发。
+
+7) vits-melo-tts-zh_en 中文+英文女声权重
+   许可：MIT License（包内 `LICENSE` 实测为 MIT，署名 MyShell.ai）
+   用途：端侧朗读的合成模型
+   来源：github.com/k2-fsa/sherpa-onnx releases（`tts-models/vits-melo-tts-zh_en.tar.bz2`）
+   版权：MyShell.ai 及相关模型贡献者
+   投递方式：out-of-band，不随 APK 分发；体积账与 sha256 见 `bench/models/MANIFEST.md`。
+
+
+2. 构建期与测试期组件（不进入分发产物，故不产生组合许可问题）
+
+   - Android Gradle Plugin 8.11.2 —— Apache License 2.0（仅构建时使用）
+   - Gradle wrapper（`gradlew`、`gradle/wrapper/*`）—— Apache License 2.0；
+     这两份是 Gradle 生成的上游文件，**不带**本项目的 GPL 文件头，也不因本项目的授权而改变其条款
+   - junit 4.13.2 —— Eclipse Public License 1.0（`junit-4.13.2.pom` 声明），
+     只在 `lib/beast` 的单元测试里用，不打进 APK
+
+
+3. 兼容性结论
+
+   MIT 与 Apache-2.0 均与 GPL-3.0 兼容（FSF 的许可证列表把 Apache-2.0 列为与 GPL version 3 兼容，
+   方向是"上游宽松许可 → 下游 GPL 作品"，本项目的用法正是这一方向）。
+   因此把上表组件链入 GPL-3.0-or-later 的本程序并整体分发是合法的；条件是：
+
+   - 随产物附上第三方许可正文（见 `app/src/main/assets/THIRD-PARTY-NOTICES`，已打进 APK，
+     应用内可读），以及本 NOTICE 的出处与重建路径；
+   - 提供本程序与所涉派生组件（第 1 节 1)、3)）的对应源码与重建方式（同一节内已说明）；
+   - 衍生部分整体沿用 GPL-3.0-or-later，不得撤掉上游的版权与许可声明。
+
+   模型权重（第 1 节 5)–7)）按各自条款作为独立作品分发，本项目不重授权它们；用户须自行从上游取得。
+
+
+4. 与随 APK 分发的声明文件的关系
+
+   `app/src/main/assets/THIRD-PARTY-NOTICES` 是本文件的**分发形态**：内容一致，另外附带 MIT 与
+   Apache-2.0 的正文，好让拿到 APK 而没有仓库的人也能读到条款原文。两处改动须同步——
+   以本 NOTICE 的出处清单为准，缺一条就是缺一条。

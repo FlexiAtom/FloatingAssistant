@@ -46,4 +46,33 @@
    来源：AngelSlim/Hy-MT2-1.8B-1.25bit-GGUF
    版权：模型作者
 
+5) sherpa-onnx (Android AAR, static-link-onnxruntime 1.13.8)
+   许可：Apache License 2.0
+   用途：端侧 TTS 推理（libsherpa-onnx-jni.so + classes.jar）
+   来源：github.com/k2-fsa/sherpa-onnx（v1.13.8 release 的 static-link-onnxruntime AAR）
+   版权：k2-fsa/sherpa-onnx 贡献者
+   随附形态：本仓库构建实际用的是它的**派生文件**——只 zip -d 删掉非 arm64 的 JNI 目录，其余字节
+   不动（改法、尺寸与三方 sha256 见 bench/models/MANIFEST.md 的 TTS 段）。该 AAR 内**没有**随附
+   LICENSE/NOTICE 条目（unzip -l 实测 0 命中），故其正文按上游仓库的 Apache-2.0 文本在此声明。
+
+6) vits-melo-tts-zh_en 中文+英文女声权重
+   许可：MIT License（包内 LICENSE 实测，MyShell.ai）
+   用途：端侧朗读的合成模型（权重文件由用户 out-of-band 投递，不随 APK 分发）
+   来源：github.com/k2-fsa/sherpa-onnx releases（tts-models/vits-melo-tts-zh_en.tar.bz2）
+   版权：MyShell.ai / OpenBMB 及模型贡献者
+
+7) AndroidX、Kotlin 标准库与 Material 等 Maven 组件
+   许可：Apache License 2.0（POM 的 <licenses> 声明逐条核过）
+   用途：界面与生命周期基座（androidx.core、androidx.appcompat、com.google.android.material、
+   androidx.constraintlayout、androidx.lifecycle:lifecycle-runtime），打进 APK
+   来源：Google AndroidX / Material Components / JetBrains
+   版权：The Android Open Source Project、JetBrains 及各组件贡献者
+   传递依赖：Kotlin 标准库与协程、Guava、ErrorProne 注解等一并打进 APK，许可同为 Apache-2.0。
+   逐构件核对的数字（debugRuntimeClasspath 解析出 117 个构件、94 份可读 POM，其中 MIT 只有
+   ONNX Runtime 一条）见仓库根 NOTICE 第 1 节 4)。
+
+   构建期与测试期组件（不进产物，故不产生组合许可问题）：Android Gradle Plugin 8.11.2、
+   Gradle wrapper（Apache-2.0）；junit 4.13.2（EPL-1.0，只在 lib/beast 的单元测试里用）。
+
 Apache License 2.0 全文见 http://www.apache.org/licenses/LICENSE-2.0
+本应用的许可（GPL-3.0-or-later）与逐条出处清单，见仓库根的 LICENSE 与 NOTICE。

@@ -1,4 +1,23 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# This file is part of FloatingAssistant.
+#
+# Copyright (C) 2026 FlexiAtom
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 # 构建时校验 STQ 特化是否到位。三种模式：
 #   verify-stq.sh source <ggml.h>            # 编译前：枚举值必须 STQ1_0=42 / Q2_0=43 / COUNT=44
 #   verify-stq.sh so <libggml-cpu.so>        # 编译后：必须是 aarch64 ELF 且含 NEON ggml_vec_dot_stq1_0_q8_K

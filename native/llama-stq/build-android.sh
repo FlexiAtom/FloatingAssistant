@@ -1,4 +1,23 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# This file is part of FloatingAssistant.
+#
+# Copyright (C) 2026 FlexiAtom
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 # 悬浮助手 · P2-S：把 STQ 特化 llama.cpp 交叉编译到 Android/arm64-v8a。
 # 锁定源：llama.cpp PR #22836 head 1e411d8f5a1e23525fa3265dfb4bd76265465397 (sjl623:STQ_0)。
 # 该 PR 引入 GGML_TYPE_STQ1_0，但出厂 1.25-bit GGUF 的量化张量 raw type=42（AngelSlim 内部构建里 STQ 落在 42）,
