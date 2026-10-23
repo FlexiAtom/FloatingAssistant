@@ -17,3 +17,6 @@ app/src/main/jniLibs/**/*.so
 
 # TTS 依赖（sherpa-onnx 派生 AAR，体积；来源/哈希/改法见 bench/models/MANIFEST.md）
 app/libs/*.aar
+
+# Athena 协议入口的本地副本（由 `athena init` 从模板铺出，内容随模板漂移，不进版本库）
+AGENTS.md
