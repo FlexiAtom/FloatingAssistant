@@ -103,10 +103,41 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     /** 连续敲字合并成一笔撤销的静默窗口：600 ms 内的多次输入算一步。 */
     private static final long UNDO_MERGE_MS = 600L;
     private static final int UNDO_LIMIT = 50;
+    /** 慢帧门限：一次量测超过这么久才留一行 P5LAYOUT（低于它的没必要淹掉日志）。 */
+    private static final int SLOW_MEASURE_MS = 100;
     /** 抽屉宽＝窗宽 1/3（草图比例）。 */
     private static final int DRAWER_WIDTH_DP = 100;
     /** 遮罩黑度：标准抽屉 scrim 档。 */
     private static final float SCRIM_ALPHA = 0.32f;
+
+    // ---------- 大文档分页（editor-huge-doc-paging · 人 2026-10-23「应当先检查文件大小，按字数分页」）----------
+
+    /**
+     * 一页喂给 {@code body} 的字数上限。立论是实测曲线（该项 §2 正证）：一次 {@code TextView.onMeasure}
+     * ≈ 12 ms + 3.4 µs/字，而**拖动手柄时每个 {@code MotionEvent(MOVE)} 都要付一遍**——1.8 MB 那篇
+     * 就是这么把输入通路拖到 ANR（{@code Waited 10000ms for MotionEvent(action=MOVE)}）。
+     * 6,000 字 ≈ 32 ms 一页：代价与文档大小脱钩，一屏也就翻得动。
+     */
+    private static final int PAGE_CHARS = 6000;
+    /**
+     * 载入前先查大小：超过这个字节数（也是字数上限，UTF-8 下字节 ≥ 字符，所以一条两用）**连读都不读**。
+     * 挡的不是 1.8 MB 那种（它读完解完内存压力不大），是几十 MB——{@code readExternal} 整篇进
+     * {@code ByteArrayOutputStream}，撑爆了是崩溃，比卡死更坏；静默截断则会把「存回去」变成丢正文。
+     */
+    private static final long LOAD_LIMIT = 16L << 20;
+    /** 全篇正文。{@code body} 从这一版起**只是它的一个窗口**，绕开母本直接读 body 就等于只看一页。 */
+    private StringBuilder master = new StringBuilder();
+    /** 当前页在 {@link #master} 里的起点。 */
+    private int pageStart;
+    /** 当前页**上一次拼回时**占掉的长度——改动过后由 {@link #syncPage} 校正，所以它不是"页的字数上限"。 */
+    private int pageLen;
+    /**
+     * 上一次拼进母本的那一页正文。两用：{@link #syncPage} 拿它判"这页动过没有"（动过才重拼——一条
+     * {@code MotionEvent} 之内 {@code syncPage} 会被问好几遍），{@link #pageLossy} 拿它作坏字的**减数基准**。
+     */
+    private String pageSnapshot = "";
+    /** {@link #pageSnapshot} 里 {@code U+FFFD} 的个数——母本那笔 {@link #lossyCount} 按差量维护，不每趟扫全篇。 */
+    private int pageLossy;
 
     private final Listener listener;
     private final LinearLayout editor;
@@ -152,6 +183,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private final TextView docName;
     /** 信息带右格＝当下这篇的「编码·换行」两档（E6b）：一格装两个标签，省一行。 */
     private final TextView encodingLabel;
+    /** 信息带中格＝页码（大文档分页才露出来，单页文档不该多出这一味噪声）。 */
+    private final TextView pageLabel;
     private final Runnable autosaveTick = this::persistCurrent;
     /** 写成方法引用而不是就地 lambda：字段初始化期 {@code drawerSearch} 还没赋值，javac 按 definite assignment 会拒。 */
     private final Runnable docSearchTick = this::runDocSearch;
@@ -174,12 +207,18 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     private boolean settingStale;
     /** 换文档就自增：落库回调只对**当下这篇**有意义，旧一趟的结果一律丢掉。 */
     private int docSeq;
-    /** 上一次落库的内容——与正文相等就不写盘。 */
-    private String savedText = "";
+    /**
+     * 母本自上一次落库后**是否被改过**。分页之前这一格是拿正文与上一次落库的内容逐字比（1.8 MB 那篇
+     * 实测一次 63 ms），而它每戳、每次自动落库都要跑；现在改记一笔布尔——母本只由 {@link #syncPage} 改动，
+     * 而那里正好看得见"这一页的字变了"。代价是"打了字又删回去"也算改过：多写一次同样的字节，
+     * 比每戳扫一遍全篇便宜，而且不会丢正文。
+     */
+    private boolean editedSinceSave;
     /** 一次写只在途一份：回调之后再做脏判补写，免得同一篇被并发写出两个身份。 */
     private boolean saveInFlight;
     /**
-     * 缓冲里**解不出来的字**（{@code U+FFFD}）的个数——载入/重载时数一次，落库前再数一次，非 0 就挂进信息带。
+     * **全篇**里解不出来的字（{@code U+FFFD}）的个数——载入时由存储层在那条 IO 上数好，此后只按页差量维护
+     * （见 {@link #pageLossy}），非 0 就挂进信息带。
      * 人裁 2026-10-22「要装闸」：带着这些字把缓冲写回盘，盘上那一版就救不回来了，所以自动通路一律停写。
      */
     private int lossyCount;
@@ -271,6 +310,13 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
         docName = title;
         strip.addView(title, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
+        pageLabel = new TextView(context);
+        pageLabel.setTextColor(onVariant);
+        pageLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        pageLabel.setPadding(dp(6), 0, dp(6), 0);
+        pageLabel.setVisibility(GONE); // 单页文档不露这一格，分页装上后才由 updatePageLabel 决定
+        pageLabel.setOnClickListener(v -> openPageDrawer());
+        strip.addView(pageLabel);
         encodingLabel = new TextView(context);
         encodingLabel.setTextColor(onVariant);
         encodingLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
@@ -755,7 +801,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             if (doc == null) {
                 return; // 读挂了就保持现状，不要把正文换成空、也不收起抽屉——让人的编辑现场原样留着
             }
-            installDoc(doc.record.id, doc.text, doc.record.charset, doc.record.newline, doc.record.uri, false);
+            installDoc(doc.record.id, doc.text, doc.record.charset, doc.record.newline, doc.record.uri,
+                    doc.lossy, false);
             settleAfterReload();
         });
         if (blockedByLossy()) {
@@ -768,7 +815,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
 
     private void newDocument() {
         Runnable go = () -> {
-            installDoc(null, "", NotesCodec.DEFAULT_CHARSET, NotesCodec.DEFAULT_NEWLINE, "", true);
+            installDoc(null, "", NotesCodec.DEFAULT_CHARSET, NotesCodec.DEFAULT_NEWLINE, "", 0, true);
             closeDrawer();
         };
         if (blockedByLossy()) {
@@ -787,9 +834,17 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         });
     }
 
-    /** 把正文换成另一篇：清撤销栈、认作已落库（载入不是用户的编辑，不该进撤销、也不该被自动落库写回）。 */
+    /**
+     * 把正文换成另一篇：清撤销栈、认作已落库（载入不是用户的编辑，不该进撤销、也不该被自动落库写回）。
+     * <p>{@code lossy}＝这一篇**全篇**的 {@code U+FFFD} 个数，由存储层在那条 IO 上数好带回来：母本换成
+     * 1.8 MB 那篇之后，在主线程扫一遍全篇是实测到的 371 ms，而这一趟本来就是异步的。
+     */
     private void installDoc(String id, String text, String charset, String newline, String uri,
-                            boolean caretToEnd) {
+                            int lossy, boolean caretToEnd) {
+        if (text.length() > LOAD_LIMIT) {
+            reportTooBig(bindName(null, uri), text.length()); // 母本先不动：这一篇一个字都不装，手上那篇照旧
+            return;
+        }
         docId = id;
         docCharset = charset;
         docNewline = newline;
@@ -797,23 +852,218 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         saveReport = null; // 上一篇的「另存为」回执不跨篇有效：它认的是那一次写
         settingStale = false;
         lossyAcked = false; // 换了一篇＝重新问起，上一篇的「仍要存」不延续
-        lossyCount = NotesCodec.countLossy(text);
+        lossyCount = lossy;
+        editedSinceSave = false; // 载入不是编辑
         docSeq++; // 在途的那一趟落库从此不属于当下这篇，回调只许改它的簿记
-        savedText = text;
         initialLoadPending = false;
+        mainHandler.removeCallbacks(undoFlush);
+        mainHandler.removeCallbacks(autosaveTick);
+        clearHistory();
+        loadMaster(text, caretToEnd); // caretToEnd＝"接着上次写到哪儿"＝落在最后一页，单页文档两读同值
+        updateDocName();
+        updateEncodingLabel();
+    }
+
+    // ---------- 分页内核：母本在内存，body 只是它的一页 ----------
+
+    /**
+     * 装全篇并显示该显示的那一页。{@code caretToEnd} 那一篇从最后一页开（接着上次的笔），其余从第一页开。
+     * <p>整篇替换**只有这一条和翻页那几条**能碰 {@code body}：直接 {@code body.setText} 等于把页外正文丢掉
+     * ——存回去的就是那一条被盖住的页。
+     */
+    private void loadMaster(String text, boolean caretToEnd) {
+        master = new StringBuilder(text);
+        // 这里**不走 pageCount()**：那一格先拼页，而此刻 body 里还是上一篇的字，拼进来就是拿上一篇盖下一篇
+        showPage(caretToEnd ? (masterPages() - 1) * PAGE_CHARS : 0, caretToEnd);
+    }
+
+    /** 显示第 {@code start} 字起的那一页；{@code body} 换内容算程序改的，不进撤销、不排自动落库。 */
+    private void showPage(int start, boolean caretToEnd) {
+        pageStart = Math.max(0, Math.min(start, master.length()));
+        pageLen = Math.min(PAGE_CHARS, master.length() - pageStart);
+        pageSnapshot = master.substring(pageStart, pageStart + pageLen);
+        pageLossy = NotesCodec.countLossy(pageSnapshot);
+        applyingUndo = true;
+        body.setText(pageSnapshot);
+        applyingUndo = false;
+        body.setSelection(caretToEnd ? pageLen : 0);
+        bodyScroll.scrollTo(0, 0);
+        updatePageLabel();
+    }
+
+    /**
+     * 把 {@code body} 这一页的改动拼回母本。**任何要读全篇的地方都得先走这一步**（落库、脏判、标题、
+     * 坏字闸、编码可映射检查、翻页、页码读数），否则页外那些字看不见页内的改动——那是把卡顿换成丢正文。
+     * <p>边界用 {@link #pageLen}（上一次拼回时这一页占多长）而不是按字数重算：人在页里打字之后长度会变，
+     * 只有这个记账值指得准"母本里哪一段是这一页"。
+     * <p>页没动就直接返回：一条 MOVE 里 {@code syncPage} 会被问好几遍（页数、脏判、闸门、戳各问一次），
+     * 而"重拼"是往 1.8 MB 的母本里搬一次尾巴。坏字也只在真的重拼时按差量更新——全篇那一趟扫描是
+     * 实测的 371 ms，它从此只活在存储层那条 IO 上。
+     */
+    private void syncPage() {
+        String page = body.getText().toString(); // 复制的是**一页**（≤PAGE_CHARS），不是全篇
+        if (page.equals(pageSnapshot)) {
+            return;
+        }
+        int pageNow = NotesCodec.countLossy(page);
+        int total = lossyCount - pageLossy + pageNow; // 页外那些字不会因为这一页改写而变
+        master.replace(pageStart, pageStart + pageLen, page);
+        pageLen = page.length();
+        pageSnapshot = page;
+        pageLossy = pageNow;
+        editedSinceSave = true; // 母本只在这里被改（换篇/翻页都不改内容），这一笔就是"与盘上不一致"
+        if (total != lossyCount) {
+            lossyCount = total; // 数字没变就不刷标签：标签刷新会带动状态戳
+            updateEncodingLabel();
+        }
+    }
+
+    /** 全篇正文（含当前页还没拼回的改动）。要写盘、要比字节、要给存储层取名都从这里取。 */
+    private String fullText() {
+        syncPage();
+        return master.toString();
+    }
+
+    /** 页数（不足一页＝1，也**不是一页都没有**：空文档有一页，翻页那条据此判"这篇不该分页"）。 */
+    private int pageCount() {
+        syncPage();
+        return masterPages();
+    }
+
+    /** 只按母本算页数，**不拼页**——给载入那一条用（那时 {@code body} 里还是上一篇的字）。 */
+    private int masterPages() {
+        return Math.max(1, (master.length() + PAGE_CHARS - 1) / PAGE_CHARS);
+    }
+
+    /** 当前页页码，1 起。 */
+    private int pageIndex() {
+        return pageStart / PAGE_CHARS + 1;
+    }
+
+    /**
+     * 翻一页（{@code delta}＝±1）。边界外不翻且回 {@code false}——单页文档永远 {@code false}，
+     * 所以这一条对小文档是纯 no-op。
+     */
+    private boolean turnPage(int delta) {
+        syncPage();
+        int pages = pageCount();
+        int target = pageIndex() + delta;
+        if (pages <= 1 || target < 1 || target > pages) {
+            updatePageLabel();
+            return false;
+        }
+        movePage(target);
+        return true;
+    }
+
+    /** 直跳某一页（越界按端点收）；单页或已在目标页＝no-op。 */
+    private boolean gotoPage(int oneBased) {
+        syncPage();
+        int pages = pageCount();
+        if (pages <= 1) {
+            return false;
+        }
+        int target = Math.max(1, Math.min(oneBased, pages));
+        if (target == pageIndex()) {
+            return false;
+        }
+        movePage(target);
+        return true;
+    }
+
+    /**
+     * 落页。**换页先清撤销栈**：栈里存的是「页」的快照，跨页回滚会把另一页的字整段盖进当前页——
+     * 那比"翻页后撤销不回上一页"这个损失坏得多。代价写进该项 §5 第 3 条。
+     */
+    private void movePage(int oneBased) {
+        clearHistory();
+        showPage((oneBased - 1) * PAGE_CHARS, oneBased < pageIndex()); // 往前翻＝光标落在页尾，接着上次的读
+    }
+
+    private void clearHistory() {
         undoStack.clear();
         redoStack.clear();
         pendingUndoBase = null;
         mainHandler.removeCallbacks(undoFlush);
-        mainHandler.removeCallbacks(autosaveTick);
-        applyingUndo = true;
-        body.setText(text);
-        applyingUndo = false;
-        body.setSelection(caretToEnd ? text.length() : 0);
-        updateDocName();
-        updateEncodingLabel();
         syncEditState();
     }
+
+    /** 信息带那一格：单页收掉，分页才露「第 k/n 页」（点它进翻页抽屉）。 */
+    private void updatePageLabel() {
+        int pages = pageCount();
+        if (pages <= 1) {
+            pageLabel.setVisibility(GONE);
+            return;
+        }
+        pageLabel.setVisibility(VISIBLE);
+        pageLabel.setText(getContext().getString(R.string.editor_page_of, pageIndex(), pages));
+    }
+
+    /** 翻页抽屉的读数行：页码、这一页占的字数区间、全篇字数。 */
+    private String pageBrief() {
+        syncPage();
+        return "page=" + pageIndex() + "/" + pageCount() + " range=" + pageStart + "-"
+                + (pageStart + pageLen) + " all=" + master.length() + " cap=" + PAGE_CHARS;
+    }
+
+    /**
+     * 翻页那张抽屉（信息带那格点的就是它）：相邻跳三颗 + 一格页码直跳。
+     * 每颗按完就地重绑一次内容——页码读数不能停在翻走之前那一页。
+     */
+    private void openPageDrawer() {
+        openDrawer(pageContent());
+        fillPageField();
+    }
+
+    private DrawerContent pageContent() {
+        Context context = getContext();
+        syncPage();
+        int pages = pageCount();
+        List<DrawerContent.Item> items = new ArrayList<>(6);
+        items.add(greyRow(context.getString(R.string.editor_page_now,
+                pageIndex(), pages, pageStart, pageStart + pageLen, master.length())));
+        items.add(toolItem(R.string.editor_page_prev, () -> {
+            turnPage(-1);
+            bindDrawer(pageContent());
+            fillPageField();
+        }));
+        items.add(toolItem(R.string.editor_page_next, () -> {
+            turnPage(1);
+            bindDrawer(pageContent());
+            fillPageField();
+        }));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_page_last, pages), () -> {
+            gotoPage(pages);
+            bindDrawer(pageContent());
+            fillPageField();
+        }));
+        items.add(toolItem(R.string.editor_page_go, () -> {
+            int target = parseIntOr(drawerSearch.getText().toString(), 1);
+            gotoPage(target);
+            bindDrawer(pageContent());
+            fillPageField();
+        }));
+        return new DrawerContent(context.getString(R.string.editor_page_title), null, null, true, items);
+    }
+
+    /** 页码那一格：预填当下页码并整段选中（改名那格同一处置，光标搁末尾会把人打的数字接在后面）。 */
+    private void fillPageField() {
+        drawerSearch.setHint(R.string.editor_page_hint);
+        drawerSearch.setText(String.valueOf(pageIndex()));
+        drawerSearch.setSelection(0, drawerSearch.length());
+        showImeFor(drawerSearch);
+    }
+
+    /** 太大那格的实话：多大、上限多少、为什么不是"读一半"。 */
+    private void reportTooBig(String name, long size) {
+        Context context = getContext();
+        List<DrawerContent.Item> items = new ArrayList<>(2);
+        items.add(greyRow(context.getString(R.string.editor_doc_too_big, name,
+                size / (1024 * 1024), LOAD_LIMIT / (1024 * 1024))));
+        items.add(new DrawerContent.Item(context.getString(R.string.editor_lossy_ok), this::closeDrawer));
+        openDrawer(new DrawerContent(context.getString(R.string.editor_more_open), null, null, false, items));
+    }
+
 
     /** 打开编辑器＝接着上次那篇读（取更新时间最新的一篇——置顶是给列表排序用的，不代表"这篇在写"）。 */
     private void loadLastDoc() {
@@ -832,28 +1082,31 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 if (doc == null || !initialLoadPending) {
                     return; // 等结果的这段时间里人已经打了字，就别把输入盖掉
                 }
-                installDoc(id, doc.text, doc.record.charset, doc.record.newline, doc.record.uri, true);
+                installDoc(id, doc.text, doc.record.charset, doc.record.newline, doc.record.uri,
+                        doc.lossy, true);
             });
         });
     }
 
     /**
      * 落库当下这篇（💾 与自动落库与关面板与换档同一条通路）。四种情况不写盘：在途一次没回、
-     * 正文与上次落库相同**且档位已与盘上一致**、空正文的新文档（那还不是一篇"文档"，生成一条空记录只是脏列表）、
+     * 这一版正文没有待落的改动**且档位已与盘上一致**、空正文的新文档（那还不是一篇"文档"，生成一条空记录只是脏列表）、
      * **闸机关着**（缓冲里有解不出来的字而人还没说要存，见 {@link #blockedByLossy}）。
      * <p>第三条那个"空正文"只挡**应用内**的空白草稿：另存为空文件是人明确点过的事（E6c），
      * 那时 {@code docUri} 非空，写出去的正是系统里那个空文件。
      */
     private void persistCurrent() {
         mainHandler.removeCallbacks(autosaveTick);
-        String text = body.getText().toString();
-        if (!lossyAcked && lossyIn(text) > 0) {
+        syncPage(); // **落库落的是全篇**：这一页的改动先收进母本，否则大文档存一次就只剩眼前这一页
+        if (!lossyAcked && lossyCount > 0) {
             return; // 装闸：自动通路不打断人，只是**不写盘**——要存这一版得人自己按软盘（见 saveNow）
         }
-        if (saveInFlight || (text.equals(savedText) && !settingStale)
-                || (text.isEmpty() && docId == null && docUri.isEmpty())) {
+        if (saveInFlight || !dirty()
+                || (master.length() == 0 && docId == null && docUri.isEmpty())) {
             return;
         }
+        String text = master.toString();
+        editedSinceSave = false; // 这一份快照就是"要落盘的那一版"；此后再动母本会重新把这一格翻真
         saveInFlight = true;
         final int seq = docSeq;
         final String pendingId = docId;
@@ -868,18 +1121,21 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             if (report != null) {
                 report.accept(savedId != null); // 成没成都说得出：失败也是人那一刻该知道的事实
             }
-            if (savedId == null || seq != docSeq) {
-                return; // 写挂了：正文一个字都不动，停手后下一次自动落库自会再试；换了篇：这一趟的簿记不再归当下这篇
+            if (savedId == null) {
+                editedSinceSave = true; // 盘上还是旧版：这一版没落下去，别让它冒充"已存"，停手后自会再试
+                return;
+            }
+            if (seq != docSeq) {
+                return; // 换了篇：这一趟的簿记不再归当下这篇
             }
             if (docId == null) {
                 docId = savedId;
             }
-            savedText = text;
             if (charset.equals(docCharset) && newline.equals(docNewline) && uri.equals(docUri)) {
                 settingStale = false; // 这一趟的字节真按当下的两档与那个目标出去了
             }
             updateDocName(); // 信息带从「未命名」换成标题＝落库成功的人眼凭据
-            if (!body.getText().toString().equals(savedText) || settingStale) {
+            if (dirty()) {
                 mainHandler.postDelayed(autosaveTick, AUTOSAVE_MERGE_MS); // 期间又打了字或又换了档，补一次
             }
             if (docListShowing && drawerOpen()) {
@@ -888,24 +1144,19 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         });
     }
 
-    /** 数一次坏字，顺手刷新信息带上的 ⚠N——闸机的状态和那格数字都从这一条来。 */
-    private int lossyIn(String text) {
-        int count = NotesCodec.countLossy(text);
-        if (count != lossyCount) {
-            lossyCount = count; // 没变就不刷标签：标签只由这两档与这个数决定，而刷新会带动状态戳
-            updateEncodingLabel();
-        }
-        return count;
-    }
-
-    /** 闸机关着＝缓冲里有解不出来的字，而这个人还没明确说过「就存这一版」。 */
+    /**
+     * 闸机关着**＝全篇里有解不出来的字，而这个人还没明确说过「就存这一版」。查的是母本，不是眼前这一页——
+     * 但这一格现在只读 {@link #lossyCount} 那笔差量记账的数，不再扫一遍母本（1.8 MB 实测 371 ms 的那一趟）。
+     */
     private boolean blockedByLossy() {
-        return !lossyAcked && lossyIn(body.getText().toString()) > 0;
+        syncPage();
+        return !lossyAcked && lossyCount > 0;
     }
 
     /** 💾＝人主动要存，所以带坏字时**问一次**；自动落库那条通路不问人，直接停写（见 {@link #persistCurrent}）。 */
     private void saveNow() {
-        if (!lossyAcked && lossyIn(body.getText().toString()) > 0) {
+        syncPage();
+        if (!lossyAcked && lossyCount > 0) {
             Context context = getContext();
             List<DrawerContent.Item> items = new ArrayList<>(3);
             items.add(greyRow(context.getString(R.string.editor_lossy_force_hint, lossyCount, docCharset)));
@@ -959,9 +1210,9 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         }
     }
 
-    /** 标题＝正文首行（存储层同一口径），空白篇显示「未命名」。 */
+    /** 标题＝正文首行（存储层同一口径），空白篇显示「未命名」。取的是**全篇**首行，不是这一页的首行。 */
     private void updateDocName() {
-        docName.setText(titleOf(NotesCodec.deriveTitle(body.getText().toString())));
+        docName.setText(titleOf(NotesCodec.deriveTitle(fullText())));
         requestStamp();
     }
 
@@ -986,9 +1237,13 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         requestStamp();
     }
 
-    /** 缓冲与盘上不一致＝有未保存的改动（重载那两格先拿它问一次人，人裁 2026-10-22）。换档也算：档还没落到盘上。 */
+    /**
+     * 与盘上不一致＝有未保存的改动（重载那两格先拿它问一次人，人裁 2026-10-22）。换档也算：档还没落到盘上。
+     * <p>判的是"母本在上一次取快照之后有没有被改过"（{@link #editedSinceSave}），不是逐字比——逐字比要吃
+     * 全篇，1.8 MB 那篇实测一次 63 ms，而这一条每戳都要跑。代价见那个字段的说明。
+     */
     private boolean dirty() {
-        return settingStale || !body.getText().toString().equals(savedText);
+        return settingStale || editedSinceSave;
     }
 
     /**
@@ -1009,7 +1264,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 if (doc == null || !uri.equals(docUri) || (id == null ? docId != null : !id.equals(docId))) {
                     return;
                 }
-                installDoc(id, doc.text, doc.record.charset, doc.record.newline, doc.record.uri, false);
+                installDoc(id, doc.text, doc.record.charset, doc.record.newline, doc.record.uri,
+                        doc.lossy, false);
                 settleAfterReload();
             };
             if (id == null) {
@@ -1044,7 +1300,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                             || (id == null ? docId != null : !id.equals(docId))) {
                         return; // 读挂了保持现状；等结果的这段时间人已经换了篇，别把另一篇盖进来
                     }
-                    installDoc(id, doc.text, doc.record.charset, doc.record.newline, doc.record.uri, false);
+                    installDoc(id, doc.text, doc.record.charset, doc.record.newline, doc.record.uri,
+                            doc.lossy, false);
                     settleAfterReload();
                 };
                 if (id != null) {
@@ -1088,7 +1345,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      * 绑定跟着那条走，不由这里的字符串决定。
      */
     private String suggestedName() {
-        String title = NotesCodec.deriveTitle(body.getText().toString()).replace('/', ' ').trim();
+        String title = NotesCodec.deriveTitle(fullText()).replace('/', ' ').trim();
         if (title.isEmpty()) {
             title = getContext().getString(R.string.editor_untitled);
         }
@@ -1107,19 +1364,29 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 return;
             }
             // 外部文件在索引里没有身份：docId 留 null，第一次落库才同时生成 id 与那第七列
-            installDoc(null, doc.text, doc.record.charset, doc.record.newline, doc.record.uri, false);
+            installDoc(null, doc.text, doc.record.charset, doc.record.newline, doc.record.uri,
+                    doc.lossy, false);
             if (lossyCount == 0) {
                 showOpenedExternal(doc); // 有坏字时让闸门那张先说，名字这句不插队
             } else {
                 warnLossy();
             }
         });
+        // 读之前先问大小（人 2026-10-23「应当先检查文件大小」）：整篇进内存的代价是一条 ANR 的十倍，
+        // 而撑爆了不是卡死是崩溃。问不出来（null/负数）按不知道处置，照旧去读——判死只发生在真读不出的时候。
+        Runnable sized = () -> notes.sizeOf(uri, size -> {
+            if (size != null && size > LOAD_LIMIT) {
+                reportTooBig(bindName(null, uri), size);
+                return;
+            }
+            go.run();
+        });
         if (blockedByLossy()) {
-            confirmSwitchAway(go); // 切走＝丢掉当下这篇的改动，闸门拦着时得问
+            confirmSwitchAway(sized); // 切走＝丢掉当下这篇的改动，闸门拦着时得问
             return;
         }
         persistCurrent();
-        go.run();
+        sized.run();
     }
 
     /** 打开成功那一格：文件名＋按哪一档解的＋一条「换一档重解」（UTF-16 之类不报错但会是满屏坏字）。 */
@@ -1231,7 +1498,24 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 null, null, true, items));
         drawerSearch.setHint(R.string.editor_rename_hint);
         drawerSearch.setText(current);
-        drawerSearch.setSelection(drawerSearch.length());
+        // 整名选中，不是光标搁末尾：搁末尾时人打的第一批字会**接在** out1.txt 后面变成 out1.txt新名，
+        // 而"改后缀"要的就是整名可替换（选中后一打字即换，只想动后缀就按 End 再退格）。
+        drawerSearch.setSelection(0, drawerSearch.length());
+        showImeFor(drawerSearch);
+    }
+
+    /**
+     * 把输入法拉到这一格上。实测过的配方：焦点型悬浮窗里光 {@code requestFocus} 起不了键盘
+     * （{@code mInputShown} 一直 false，ADB 键注入也就无处可去），得自己 {@code showSoftInput}——
+     * 与 {@code body} 那颗点击监听走的是同一条。
+     */
+    private void showImeFor(View field) {
+        field.requestFocus();
+        InputMethodManager imm = (InputMethodManager)
+                getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) {
+            imm.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT);
+        }
     }
 
     private void applyRename(String newName) {
@@ -1347,7 +1631,7 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 warnLossy(); // 换档＝用这缓冲里的字重出字节，字是乱码出来的字节也是 → 先拦，理由说在前头
                 return;
             }
-            String missing = NotesCodec.unmappable(body.getText().toString(), charset);
+            String missing = NotesCodec.unmappable(fullText(), charset);
             if (!missing.isEmpty()) {
                 refuseCharset(charset, missing);
                 return;
@@ -1523,7 +1807,13 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         int caret = Math.max(0, Math.min(body.getSelectionStart(), text.length()));
         int[] m = textMetrics(text, caret);
         Context context = getContext();
-        List<DrawerContent.Item> items = new ArrayList<>(7);
+        List<DrawerContent.Item> items = new ArrayList<>(8);
+        syncPage();
+        if (pageCount() > 1) {
+            // 分页时这一屏的数**只覆盖眼前这一页**：行数字节数都不例外。不先说清这一条，统计就成了谎话。
+            items.add(greyRow(context.getString(R.string.editor_stat_page,
+                    pageStart, pageStart + pageLen, master.length())));
+        }
         items.add(greyRow(context.getString(R.string.editor_stat_lines, m[0])));
         items.add(greyRow(context.getString(R.string.editor_stat_glyphs, m[1])));
         items.add(greyRow(context.getString(R.string.editor_stat_chars, text.length())));
@@ -1844,6 +2134,8 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         body.setText(snapshot);
         body.setSelection(snapshot.length());
         applyingUndo = false;
+        syncPage(); // 撤销的是**这一页**，母本得跟着这一页走：不拼回去就是"眼前回滚了、存回去还是旧全篇"
+        updatePageLabel();
         syncEditState();
     }
 
@@ -1877,9 +2169,11 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         String text = body.getText().toString();
         int caret = Math.max(0, Math.min(body.getSelectionStart(), text.length()));
         int[] m = textMetrics(text, caret);
+        syncPage();
         return "doc=" + (docId == null ? "new" : docId)
                 + " title=[" + docName.getText() + "]"
                 + " chars=" + text.length() + " lines=" + m[0] + " glyphs=" + m[1]
+                + " page=" + pageIndex() + "/" + pageCount() + " all=" + master.length()
                 + " caret=" + m[2] + ":" + m[3]
                 + " sel=" + Math.abs(body.getSelectionEnd() - body.getSelectionStart())
                 + " dirty=" + (dirty() ? 1 : 0)
@@ -2026,6 +2320,39 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
     }
 
     /**
+     * 量测用翻页通路（editor-huge-doc-paging）：{@code page:}＝只读，{@code page:next|prev|first|last}，
+     * {@code page:<页码>}＝直跳。翻页走的是抽屉那同一支 {@link #turnPage}/{@link #gotoPage}，
+     * 所以这一格证的是「页码动了、母本没丢」，不是另开的一条旁路。
+     */
+    private String pageForTest(String how) {
+        if (how.isEmpty() || how.equals("state")) {
+            return pageBrief();
+        }
+        boolean moved;
+        switch (how) {
+            case "next":
+                moved = turnPage(1);
+                break;
+            case "prev":
+                moved = turnPage(-1);
+                break;
+            case "first":
+                moved = gotoPage(1);
+                break;
+            case "last":
+                moved = gotoPage(pageCount());
+                break;
+            default:
+                int target = parseIntOr(how, 0);
+                if (target < 1) {
+                    return "bad page arg [" + how + "]";
+                }
+                moved = gotoPage(target);
+        }
+        return "moved=" + (moved ? 1 : 0) + " " + pageBrief();
+    }
+
+    /**
      * 量测用（ui-blind-operation F1/F3）：**不经触摸**执行一条编辑器动作，回「动作结果 + 当时状态戳」一行。
      *
      * <p>语法 {@code <verb>[:<arg>]}，空串＝只读状态：
@@ -2037,6 +2364,10 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      * {@code open-uri:<uri>}／{@code save-uri:<uri>}（E6c 外部文件两格：不经选择器，直接把 URI 读进来／绑上写出去，
      * {@code file://} 串就能测通整条通路——外部文件那一路本来要手指，这一格把它变成不要）。
      * {@code rename:<新名>}（同一支 {@code applyRename}，改盘上名字与索引第七列）。
+     * {@code page:<next|prev|first|last|页码>}（大文档翻页，见 {@link #pageForTest}；{@code page:} 空参＝只读页码）。
+     * {@code drawer-text[:<新内容>]}（读／写抽屉那一格的真内容——改名与搜索都吃它；空参＝只读。
+     * 没有这扇门就只能靠人眼看框里是什么，实测踩过：注入的字没进格，{@code pick:改名} 撞上
+     * "名字没变"守卫，盘上什么都不动）。
      * {@code picker-open}／{@code picker-save-as}（真交接那一趟：收窗、拉系统选择器、回来顶窗——
      * 选择器画的东西机侧读不到，但窗的有无与 IME 归属在 {@code dumpsys} 里是公开的）。
      * {@code focus:<here|list|first|last|next|prev|enter|esc>}（F2 键盘通路，见 {@link #focusForTest}）。
@@ -2090,6 +2421,9 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
                 openUri(arg);
                 outcome = "opening " + arg;
                 break;
+            case "page":
+                outcome = pageForTest(arg);
+                break;
             case "save-uri":
                 // 取证用的另存为：绑上就写一次，回执照发（这样"写不写得进去"也是它自己说的）
                 {
@@ -2125,6 +2459,15 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
             case "open-stats":
                 openStats();
                 outcome = "opened stats";
+                break;
+            case "drawer-text":
+                // 抽屉那一格的**真内容**读写门：改名/搜索都吃这一格，没有它就只能靠人眼看框里是什么
+                if (!arg.isEmpty()) {
+                    drawerSearch.setText(arg);
+                }
+                outcome = "field=[" + drawerSearch.getText() + "] sel="
+                        + drawerSearch.getSelectionStart() + ":" + drawerSearch.getSelectionEnd()
+                        + " visible=" + (drawerSearch.getVisibility() == VISIBLE);
                 break;
             case "pick":
                 outcome = pickByName(arg);
@@ -2271,14 +2614,15 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
         }
     }
 
-    /** 正文当前文本：机读与 E2 插入口（§4.4-3）的落点，形状同 {@link TextPanelView#bodyText()}。 */
+    /** 正文当前文本：机读与 E2 插入口（§4.4-3）的落点，形状同 {@link TextPanelView#bodyText()}。分页时＝**眼前这一页**。 */
     public String bodyText() {
         return body.getText().toString();
     }
 
-    /** 量测用：模拟人已打字（E2/E4 机读前置），走真实 Editable 通路。 */
+    /** 量测用：模拟人已打字（E2/E4 机读前置），走真实 Editable 通路。拼回母本，否则落库读到的还是旧全篇。 */
     public void setBodyForTest(String text) {
         body.setText(text);
+        syncPage();
     }
 
     /** 量测用：走「点正文拉键盘」真实路径，回 IME 状态串（同 {@link TextPanelView#imeTapForTest()}）。 */
@@ -2308,13 +2652,32 @@ public final class FloatingEditorView extends FrameLayout implements PanelView {
      */
     @Override
     protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+        long t0 = android.os.SystemClock.uptimeMillis();
         if (MeasureSpec.getMode(heightMeasureSpec) == MeasureSpec.EXACTLY) {
             super.onMeasure(widthMeasureSpec, heightMeasureSpec);
+            logSlowMeasure(t0, "exactly");
             return;
         }
         editor.measure(widthMeasureSpec, heightMeasureSpec);
         super.onMeasure(widthMeasureSpec,
                 MeasureSpec.makeMeasureSpec(editor.getMeasuredHeight(), MeasureSpec.EXACTLY));
+        logSlowMeasure(t0, "probe+full");
+    }
+
+    /**
+     * 慢帧只报这一行，不报快帧（一帧一行会把日志挤满，也就看不见那一族了）。
+     * 立论依据：ANR 自己说的就是这里——{@code Input dispatching timed out ... Waited 10000ms for
+     * MotionEvent(action=MOVE)}，主线程栈停在 {@code TextView.onMeasure → DynamicLayout.reflow →
+     * StaticLayout.generate}（{@code /data/anr/anr_2026-10-23-07-47-03-773}，当时正文 1.8 MB）。
+     * 拖动面板时每个 MOVE 都走一遍这里，所以正文有多大，手指就有多卡。
+     */
+    private void logSlowMeasure(long t0, String path) {
+        long ms = android.os.SystemClock.uptimeMillis() - t0;
+        if (ms < SLOW_MEASURE_MS) {
+            return;
+        }
+        android.util.Log.w("P5LAYOUT", "onMeasure ms=" + ms + " path=" + path
+                + " chars=" + body.length() + " mode=" + (prefs.smooth() ? "smooth" : "plain"));
     }
 
     @Override

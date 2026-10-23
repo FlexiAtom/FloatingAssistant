@@ -122,16 +122,20 @@ public final class NotesStore {
      * <p>{@code name}＝外部文件的显示名（绑了才有，应用内的篇为 {@code null}）：那串
      * {@code content://} URI 不该逼人读完，所以要在**这条 IO 已经所在的线程**上顺手问一次
      * {@link #displayName}，而不是让视图回头在主线程再查一遍。
+     * <p>{@code lossy}＝这一篇正文里 {@code U+FFFD} 的**全篇**个数，同理在这一趟 IO 上数好：分页之后
+     * 视图手上只有眼前一页，回头在主线程扫母本是 1.8 MB 那篇实测到的 371 ms（见 editor-huge-doc-paging）。
      */
     public static final class Doc {
         public final String text;
         public final Record record;
         public final String name;
+        public final int lossy;
 
         Doc(String text, Record record, String name) {
             this.text = text;
             this.record = record;
             this.name = name;
+            this.lossy = NotesCodec.countLossy(text);
         }
     }
 
@@ -480,6 +484,35 @@ public final class NotesStore {
             Log.w(TAG, "body read failed: " + id, e);
             return null;
         }
+    }
+
+    /**
+     * 在 {@code notes-io} 线程问一次外部文件的大小，回主线程（调用方据此决定**读不读**，见视图那条闸）。
+     * 回 {@code null} 或负数＝问不出来（provider 不给 {@code SIZE} 列、URI 已失效）——那是"不知道"，
+     * 不是"太大"，调用方必须按不知道处置，不能因为 provider 懒就把人手上那个文件判死。
+     */
+    public void sizeOf(String uri, Consumer<Long> onMain) {
+        post(() -> sizeHint(uri), onMain);
+    }
+
+    /** 大小从哪来：{@code file://} 直接 {@code stat}（一次系统调用，不碰内容），其余问 provider。 */
+    private long sizeHint(String uri) {
+        try {
+            Uri parsed = Uri.parse(uri);
+            if (ContentResolver.SCHEME_FILE.equals(parsed.getScheme())) {
+                File file = new File(parsed.getPath());
+                return file.isFile() ? file.length() : -1L;
+            }
+            try (Cursor cursor = resolver.query(parsed,
+                    new String[]{OpenableColumns.SIZE}, null, null, null)) {
+                if (cursor != null && cursor.moveToFirst() && !cursor.isNull(0)) {
+                    return cursor.getLong(0);
+                }
+            }
+        } catch (RuntimeException e) {
+            Log.w(TAG, "size probe failed: " + uri, e);
+        }
+        return -1L;
     }
 
     /**

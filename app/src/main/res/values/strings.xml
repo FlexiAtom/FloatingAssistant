@@ -136,6 +136,19 @@
     <string name="editor_rename_done">现在叫 %1$s｜清单里那条也跟着换了名字，下次「重新加载」读的就是它</string>
     <string name="editor_rename_refused">没改成 %1$s（文件一个字没动，旧名字还在原处）</string>
 
+    <!-- 以下＝人测 2026-10-23「程序卡死…应当先检查文件大小，按字数分页」（editor-huge-doc-paging）：
+         翻页读数、翻页抽屉、以及"太大就不读"那一句。分页后正文缓冲只是全篇的一页，所以每一格读数都得说清是页还是篇。 -->
+    <string name="editor_page_of">第 %1$d/%2$d 页</string>
+    <string name="editor_page_title">翻页</string>
+    <string name="editor_page_now">第 %1$d/%2$d 页｜本页第 %3$d–%4$d 字（全篇 %5$d 字）</string>
+    <string name="editor_page_prev">上一页</string>
+    <string name="editor_page_next">下一页</string>
+    <string name="editor_page_last">跳到最后一页（共 %1$d 页）</string>
+    <string name="editor_page_go">前往</string>
+    <string name="editor_page_hint">页码（整数）</string>
+    <string name="editor_stat_page">下面几格＝本页第 %1$d–%2$d 字（全篇 %3$d 字）</string>
+    <string name="editor_doc_too_big">%1$s 有 %2$d MB，超过编辑器上限 %3$d MB——整篇不读它（读进来会把进程撑爆，截一半存回去又会丢正文）</string>
+
     <string name="translate_panel_title">翻译设置</string>
     <string name="translate_label_target">目标语言</string>
     <string name="translate_current_tgt">当前：%1$s</string>

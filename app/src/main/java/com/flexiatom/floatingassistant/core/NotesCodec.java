@@ -241,15 +241,16 @@ public final class NotesCodec {
      * 缓冲里 {@code U+FFFD}（替换字符）的个数——**盘上字节按这一档解不出来的字**就长这样。
      * 读方向的闸门只看它（人裁 2026-10-22「要装闸」）：带着这些字把缓冲写回盘，原来那一版就救不回来了。
      */
-    public static int countLossy(String buffer) {
-        if (buffer == null || buffer.isEmpty()) {
+    public static int countLossy(CharSequence buffer) {
+        if (buffer == null || buffer.length() == 0) {
             return 0;
         }
         int count = 0;
-        for (int i = 0; i < buffer.length(); ) {
-            int codePoint = buffer.codePointAt(i);
-            i += Character.charCount(codePoint);
-            if (codePoint == REPLACEMENT_CHAR) {
+        // {@code U+FFFD} 在基本平面，所以按 char 扫与按码点扫结果相同，却省掉每个字一次 codePointAt。
+        // 但**再快的扫法也是 O(全篇)**：1.8 MB 那篇主线程一趟实测 371 ms，所以调用方要把它放在
+        // 那条 IO 上数好（{@code NotesStore.Doc#lossy}），别在状态戳或落库前重扫母本。
+        for (int i = 0; i < buffer.length(); i++) {
+            if (buffer.charAt(i) == REPLACEMENT_CHAR) {
                 count++;
             }
         }
